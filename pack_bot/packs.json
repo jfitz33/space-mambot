@@ -1,0 +1,11 @@
+{
+    "yugi_starter": {
+      "slots": [
+        { "rarity": "common", "count": 7 },                          
+        { "rarity": "rare",   "count": 1 },                          
+        { "weighted": { "super": 0.72, "ultra": 0.25, "secret": 0.03 }, "count": 1 }
+      ]
+    }
+  }
+  
+  
