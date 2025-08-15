@@ -1,0 +1,36 @@
+import discord, os
+from discord.ext import commands
+from discord import app_commands
+from collections import Counter
+from core.packs import RARITY_ORDER, open_pack_from_csv
+from core.db import db_add_cards
+from core.views import PacksSelectView
+
+# Set guild ID for development
+GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
+GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+
+class Packs(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    @app_commands.command(name="packlist", description="List available pack types")
+    @app_commands.guilds(GUILD)
+    async def packlist(self, interaction: discord.Interaction):
+        names = sorted((self.bot.state.packs_index or {}).keys())
+        if not names:
+            await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
+        desc = "\n".join(f"• `{n}`" for n in names[:25])
+        await interaction.response.send_message(embed=discord.Embed(title="Available Packs", description=desc, color=0x2b6cb0), ephemeral=True)
+
+    @app_commands.command(name="pack", description="Open packs via dropdown")
+    @app_commands.guilds(GUILD)
+    @app_commands.describe(amount="How many packs (1-10)")
+    async def pack(self, interaction: discord.Interaction, amount: app_commands.Range[int,1,10]=1):
+        if not self.bot.state.packs_index:
+            await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
+        view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)
+        await interaction.response.send_message("Pick a pack from the dropdown:", view=view, ephemeral=True)
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Packs(bot))
