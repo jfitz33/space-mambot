@@ -317,4 +317,94 @@ def db_apply_trade_atomic(state: AppState, trade: dict) -> tuple[bool, str]:
             conn.execute("ROLLBACK;"); conn.close()
         except: pass
         return (False, f"Trade failed: {e}")
+    
+# ---- Wallet: schema + helpers ----------------------------------------------
+
+def db_init_wallet(state):
+    """Create wallet table if needed."""
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS wallet (
+            user_id   TEXT PRIMARY KEY,
+            fitzcoin  INTEGER NOT NULL DEFAULT 0,
+            mambucks  INTEGER NOT NULL DEFAULT 0,
+            updated_ts INTEGER NOT NULL
+        );
+        """)
+
+def db_wallet_get(state, user_id: int) -> dict:
+    """Return {'fitzcoin': int, 'mambucks': int} (zeros if none)."""
+    with sqlite3.connect(state.db_path) as conn:
+        c = conn.cursor()
+        c.execute("SELECT fitzcoin, mambucks FROM wallet WHERE user_id=?", (str(user_id),))
+        row = c.fetchone()
+        if not row:
+            return {"fitzcoin": 0, "mambucks": 0}
+        return {"fitzcoin": int(row[0] or 0), "mambucks": int(row[1] or 0)}
+
+def db_wallet_set(state, user_id: int, fitzcoin: int | None = None, mambucks: int | None = None):
+    """Set absolute values (only the ones provided)."""
+    now = int(time.time())
+    current = db_wallet_get(state, user_id)
+    fz = current["fitzcoin"] if fitzcoin is None else int(fitzcoin)
+    mb = current["mambucks"] if mambucks is None else int(mambucks)
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          fitzcoin=excluded.fitzcoin,
+          mambucks=excluded.mambucks,
+          updated_ts=excluded.updated_ts;
+        """, (str(user_id), fz, mb, now))
+
+def db_wallet_add(state, user_id: int, d_fitzcoin: int = 0, d_mambucks: int = 0) -> dict:
+    """Increment balances (can be negative). Returns new balances dict."""
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        # Upsert row first
+        conn.execute("""
+        INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
+        VALUES (?, 0, 0, ?)
+        ON CONFLICT(user_id) DO NOTHING;
+        """, (str(user_id), now))
+        # Apply delta
+        conn.execute("""
+        UPDATE wallet
+           SET fitzcoin = fitzcoin + ?,
+               mambucks = mambucks + ?,
+               updated_ts = ?
+         WHERE user_id = ?;
+        """, (int(d_fitzcoin), int(d_mambucks), now, str(user_id)))
+    return db_wallet_get(state, user_id)
+
+def db_wallet_try_spend_fitzcoin(state, user_id: int, amount: int) -> dict | None:
+    """
+    Atomically spend 'amount' fitzcoin if user has enough.
+    Returns updated balances dict on success, or None if insufficient funds.
+    """
+    assert amount >= 0
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        # Ensure a row exists
+        conn.execute("""
+        INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
+        VALUES (?, 0, 0, ?)
+        ON CONFLICT(user_id) DO NOTHING;
+        """, (str(user_id), now))
+
+        cur = conn.execute("""
+            UPDATE wallet
+               SET fitzcoin = fitzcoin - ?,
+                   updated_ts = ?
+             WHERE user_id = ?
+               AND fitzcoin >= ?;
+        """, (int(amount), now, str(user_id), int(amount)))
+
+        if cur.rowcount == 0:
+            return None  # not enough funds
+
+    return db_wallet_get(state, user_id)
+
+
 

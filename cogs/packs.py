@@ -3,16 +3,20 @@ from discord.ext import commands
 from discord import app_commands
 from collections import Counter
 from core.packs import RARITY_ORDER, open_pack_from_csv
-from core.db import db_add_cards
+from core.db import db_wallet_get, db_wallet_add, db_wallet_try_spend_fitzcoin
 from core.views import PacksSelectView
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+PACK_COST = 10  # fitzcoin per pack
+MAX_PACKS = 10
+MIN_PACKS = 1
 
 class Packs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.state = bot.state
 
     @app_commands.command(name="packlist", description="List available pack types")
     @app_commands.guilds(GUILD)
@@ -26,7 +30,7 @@ class Packs(commands.Cog):
     @app_commands.command(name="pack", description="Open packs via dropdown")
     @app_commands.guilds(GUILD)
     @app_commands.describe(amount="How many packs (1-10)")
-    async def pack(self, interaction: discord.Interaction, amount: app_commands.Range[int,1,10]=1):
+    async def pack(self, interaction: discord.Interaction, amount: app_commands.Range[int,MIN_PACKS,MAX_PACKS]=1):
         if not self.bot.state.packs_index:
             await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)

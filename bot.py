@@ -6,7 +6,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from core.state import AppState
-from core.db import db_init, db_init_trades
+from core.db import db_init, db_init_trades, db_init_wallet
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 
@@ -22,7 +22,7 @@ tree = bot.tree
 
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 
-COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start"]
+COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet"]
 
 @bot.event
 async def on_ready():
@@ -32,6 +32,7 @@ async def on_ready():
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)
+    db_init_wallet(bot.state)
 
     # 2) Load cogs BEFORE syncing
     for ext in COGS:

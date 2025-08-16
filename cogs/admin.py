@@ -1,15 +1,16 @@
 import discord, os
 from discord.ext import commands
 from discord import app_commands
-from typing import List
+from typing import List, Literal
 from core.packs import resolve_card_in_pack
 
-from core.db import db_admin_add_card, db_admin_remove_card, db_collection_clear
+from core.db import db_admin_add_card, db_admin_remove_card, db_collection_clear, db_wallet_set, db_wallet_add, db_wallet_get
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 STARTER_ROLE_NAME = "starter"
+Currency = Literal["fitzcoin", "mambucks"]
 
 def _ac_pack_names(state, prefix: str) -> List[str]:
     prefix = (prefix or "").lower()
@@ -141,6 +142,9 @@ class Admin(commands.Cog):
         # Clear collection
         deleted = db_collection_clear(self.state, user.id)
 
+        # Empty wallet
+        db_wallet_set(self.state, user.id, fitzcoin=0, mambucks=0)
+
         # Remove starter role (if present)
         removed_role = False
         role = discord.utils.get(interaction.guild.roles, name=STARTER_ROLE_NAME) if interaction.guild else None
@@ -161,6 +165,73 @@ class Admin(commands.Cog):
             lines.append(f"📝 Reason: {reason}")
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    # ---- Add currency -------------------------------------------------------
+    @app_commands.command(name="wallet_add", description="Admin: add currency to a user's wallet")
+    @app_commands.guilds(GUILD)  # remove to register globally
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        user="Player to adjust",
+        currency="Which currency to add",
+        amount="How much to add (positive integer)"
+    )
+    async def wallet_add(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        currency: Currency,
+        amount: app_commands.Range[int, 1, None],  # enforce >= 1
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Apply delta
+        if currency == "fitzcoin":
+            new_bal = db_wallet_add(self.state, user.id, d_fitzcoin=amount, d_mambucks=0)
+        else:
+            new_bal = db_wallet_add(self.state, user.id, d_fitzcoin=0, d_mambucks=amount)
+
+        await interaction.followup.send(
+            f"✅ Added **{amount} {currency}** to {user.mention}.\n"
+            f"New balances → fitzcoin: **{new_bal['fitzcoin']}**, mambucks: **{new_bal['mambucks']}**.",
+            ephemeral=True
+        )
+
+    # ---- Remove currency (clamps at zero) ----------------------------------
+    @app_commands.command(name="wallet_remove", description="Admin: remove currency from a user's wallet")
+    @app_commands.guilds(GUILD)  # remove to register globally
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        user="Player to adjust",
+        currency="Which currency to remove",
+        amount="How much to remove (positive integer)"
+    )
+    async def wallet_remove(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        currency: Currency,
+        amount: app_commands.Range[int, 1, None],  # enforce >= 1
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Read current balances
+        before = db_wallet_get(self.state, user.id)
+
+        if currency == "fitzcoin":
+            new_fitz = max(0, before["fitzcoin"] - amount)
+            db_wallet_set(self.state, user.id, fitzcoin=new_fitz)  # leave mambucks unchanged
+            after = db_wallet_get(self.state, user.id)
+        else:
+            new_mamb = max(0, before["mambucks"] - amount)
+            db_wallet_set(self.state, user.id, mambucks=new_mamb)  # leave fitzcoin unchanged
+            after = db_wallet_get(self.state, user.id)
+
+        await interaction.followup.send(
+            f"🧹 Removed **{amount} {currency}** from {user.mention}.\n"
+            f"Before → fitzcoin: **{before['fitzcoin']}**, mambucks: **{before['mambucks']}**\n"
+            f"After  → fitzcoin: **{after['fitzcoin']}**, mambucks: **{after['mambucks']}**",
+            ephemeral=True
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

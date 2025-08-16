@@ -8,6 +8,7 @@ from core.state import AppState
 from core.starters import load_starters_from_csv, grant_starter_to_user
 from core.packs import open_pack_from_csv, persist_pulls_to_db, RARITY_ORDER  # reuse your pack code  :contentReference[oaicite:4]{index=4}
 from core.views import PackResultsPaginator  # your paginator view
+from core.db import db_wallet_add
 
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -94,9 +95,10 @@ class StarterDeckSelectView(View):
             # Flavor line for Water
             if deck_name.lower().__contains__("water"):
                 await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
+            elif deck_name.lower().__contains__("fire"):
+                await interaction.channel.send(f"Thats Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
             else:
                 await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
-
             paginator = PackResultsPaginator(self.member, pack_name, per_pack_pulls=per_pack_pulls)
             await interaction.channel.send(embed=paginator._embed_for_index(), view=paginator)
 
@@ -108,7 +110,10 @@ class StarterDeckSelectView(View):
             )
             return
 
-        # 4) Assign the 'starter' role only after success
+        # 4) Assign the user's starting currency
+        new_bal = db_wallet_add(self.state, self.member.id, d_fitzcoin=100, d_mambucks=1000)
+
+        # 5) Assign the 'starter' role only after success
         try:
             role = discord.utils.get(interaction.guild.roles, name=STARTER_ROLE_NAME)
             if role is None:
@@ -121,7 +126,7 @@ class StarterDeckSelectView(View):
                 ephemeral=True
             )
 
-        # 5) Disable dropdown and update the original ephemeral message
+        # 6) Disable dropdown and update the original ephemeral message
         for child in self.children:
             child.disabled = True
         if not interaction.response.is_done():
