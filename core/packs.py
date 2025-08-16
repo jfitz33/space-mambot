@@ -1,6 +1,7 @@
 import os, csv, random
 from collections import defaultdict
 from core.state import AppState
+from core.db import db_add_cards
 
 RARITY_MAP = {
     "common":"common","uncommon":"uncommon","rare":"rare",
@@ -97,3 +98,33 @@ def resolve_card_in_pack(state: AppState, card_set: str, card_name: str, card_co
     if len(sigs) > 1:
         raise ValueError("Multiple prints match; specify card_code or card_id.")
     return candidates[0]
+
+def persist_pulls_to_db(state, user_id: int, pack_name: str, pulls: list[dict]) -> int:
+    """
+    Aggregate pulls (qty=1 entries) and upsert them to the user's collection via db_add_cards.
+    Each pull dict should have: name, rarity, set (optional; defaults to pack_name), card_code, card_id, qty (optional; defaults to 1).
+    Returns the total quantity added.
+    """
+    agg = defaultdict(int)
+    for it in pulls or []:
+        name = (it.get("name") or "").strip()
+        if not name:
+            continue
+        rarity = (it.get("rarity") or "").strip().lower()
+        cset   = (it.get("set") or pack_name) or pack_name
+        code   = (it.get("card_code") or "").strip()
+        cid    = (it.get("card_id") or "").strip()
+        qty    = int(it.get("qty", 1) or 1)
+        if qty <= 0:
+            continue
+        key = (name, rarity, cset, code, cid)
+        agg[key] += qty
+
+    if not agg:
+        return 0
+
+    items = [{"name": k[0], "qty": q, "rarity": k[1], "set": k[2], "card_code": k[3], "card_id": k[4]}
+             for k, q in agg.items()]
+
+    db_add_cards(state, user_id, items, pack_name)
+    return sum(q for q in agg.values())

@@ -4,11 +4,12 @@ from discord import app_commands
 from typing import List
 from core.packs import resolve_card_in_pack
 
-from core.db import db_admin_add_card, db_admin_remove_card
+from core.db import db_admin_add_card, db_admin_remove_card, db_collection_clear
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+STARTER_ROLE_NAME = "starter"
 
 def _ac_pack_names(state, prefix: str) -> List[str]:
     prefix = (prefix or "").lower()
@@ -38,6 +39,7 @@ def _read_option(interaction: discord.Interaction, name: str) -> str:
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.state = bot.state
 
     async def ac_card_set(self, interaction: discord.Interaction, current: str):
         return [app_commands.Choice(name=n, value=n) for n in _ac_pack_names(self.bot.state, current)]
@@ -119,6 +121,46 @@ class Admin(commands.Cog):
         await interaction.channel.send(
             f"🗑 **{interaction.user.display_name}** removed x{removed} **{card_name}** from **{user.display_name}**'s collection."
         )
+
+    @app_commands.command(
+    name="admin_reset_user",
+    description="(Admin) Clear a user's collection and remove their starter role."
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(user="Member to reset", reason="Optional reason")
+    async def admin_reset_user(self, interaction: discord.Interaction, user: discord.Member, reason: str | None = None):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("You must be an administrator to use this.", ephemeral=True)
+            return
+
+        if user.bot:
+            await interaction.response.send_message("You can’t reset a bot account.", ephemeral=True)
+            return
+
+        # Clear collection
+        deleted = db_collection_clear(self.state, user.id)
+
+        # Remove starter role (if present)
+        removed_role = False
+        role = discord.utils.get(interaction.guild.roles, name=STARTER_ROLE_NAME) if interaction.guild else None
+        if role and role in user.roles:
+            try:
+                await user.remove_roles(role, reason=reason or "Admin reset user")
+                removed_role = True
+            except discord.Forbidden:
+                pass  # Manage Roles / hierarchy issue
+
+        # Respond
+        lines = [f"✅ Cleared **{deleted}** row(s) for {user.mention}."]
+        if role:
+            lines.append("✅ Starter role removed." if removed_role else "⚠️ Could not remove starter role (permissions/position).")
+        else:
+            lines.append("ℹ️ Starter role not found in this server.")
+        if reason:
+            lines.append(f"📝 Reason: {reason}")
+
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

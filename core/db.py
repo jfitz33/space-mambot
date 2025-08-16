@@ -46,10 +46,17 @@ def db_get_collection(state: AppState, user_id: int):
         """, (str(user_id),))
         return c.fetchall()
 
-def db_clear_collection(state: AppState, user_id: int) -> int:
+def db_collection_clear(state, user_id: int) -> int:
+    """Delete all collection rows for a user. Returns number of rows deleted."""
     with sqlite3.connect(state.db_path) as conn, conn:
-        cur = conn.execute("DELETE FROM user_collection WHERE user_id=?", (str(user_id),))
-        return cur.rowcount
+        conn.execute("DELETE FROM user_collection WHERE user_id = ?", (str(user_id),))
+        # sqlite3 total_changes counts all changes in this transaction (here, just the DELETE)
+        return conn.total_changes
+
+#def db_clear_collection(state: AppState, user_id: int) -> int:
+#    with sqlite3.connect(state.db_path) as conn, conn:
+#        cur = conn.execute("DELETE FROM user_collection WHERE user_id=?", (str(user_id),))
+#        return cur.rowcount
 
 # --- Admin helpers ---
 def db_admin_add_card(state: AppState, user_id: int, *, name: str, rarity: str, card_set: str, card_code: str, card_id: str, qty: int) -> int:
