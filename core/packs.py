@@ -2,6 +2,7 @@ import os, csv, random
 from collections import defaultdict
 from core.state import AppState
 from core.db import db_add_cards
+from typing import List, Dict
 
 RARITY_MAP = {
     "common":"common","uncommon":"uncommon","rare":"rare",
@@ -9,6 +10,57 @@ RARITY_MAP = {
     "ultra rare":"ultra","secret":"secret","secret rare":"secret",
 }
 RARITY_ORDER = ["secret","ultra","super","rare","uncommon","common"]
+
+# Build a rank map from your existing highest->lowest ordering
+RARITY_INDEX = {r: i for i, r in enumerate(RARITY_ORDER)}  # lower index = higher rarity
+
+def _cap_prefs_to_top(top_rarity: str, prefs: List[str]) -> List[str]:
+    """
+    Keep only rarities that are NOT higher than top_rarity.
+    With highest->lowest order, that means index >= index(top_rarity).
+    """
+    top_idx = RARITY_INDEX[top_rarity]
+    return [r for r in prefs if RARITY_INDEX.get(r, 999) >= top_idx]
+
+def open_pack_with_guaranteed_top_from_csv(state, pack_name: str, top_rarity: str) -> list[dict]:
+    """
+    Build ONE pack (same 7+1+1 structure as open_pack_from_csv) whose highest rarity is exactly `top_rarity`.
+      - 7 base pulls: from 'common' pool or capped fallback (never above top_rarity)
+      - 1 'rare' slot: from 'rare' pool or capped fallback (never above top_rarity)
+      - 1 top slot: forced from `top_rarity` pool
+    Returns: list[dict] for a single pack (9 cards), same shape as open_pack_from_csv.
+    """
+    if pack_name not in state.packs_index:
+        raise ValueError(f"Unknown pack '{pack_name}'.")
+    by_rarity: Dict[str, list[dict]] = state.packs_index[pack_name]["by_rarity"]
+
+    if not by_rarity.get(top_rarity):
+        raise ValueError(f"No cards at rarity '{top_rarity}' for pack '{pack_name}'.")
+
+    pulls: list[dict] = []
+
+    # ---- 7 "common" slots (fallback upward, but cap at top_rarity) ----------
+    # Your original upward fallback order for this block was:
+    # ["uncommon","rare","super","ultra","secret"]
+    base_upward = ["uncommon", "rare", "super", "ultra", "secret"]
+    capped_base_upward = _cap_prefs_to_top(top_rarity, base_upward)
+    # Try true 'common' first; if missing, fallback within the cap
+    pool = by_rarity.get("common") or _fallback_pool(by_rarity, capped_base_upward) or by_rarity[top_rarity]
+    for _ in range(7):
+        pulls.append(_weighted_pick(pool))
+
+    # ---- 1 "rare" slot (fallback upward, but cap at top_rarity) -------------
+    # Your original order for this block was:
+    # ["super","ultra","secret","uncommon","common"]  (tries higher first, then lower)
+    rare_prefs = ["super", "ultra", "secret", "uncommon", "common"]
+    capped_rare_prefs = _cap_prefs_to_top(top_rarity, rare_prefs)
+    pool = by_rarity.get("rare") or _fallback_pool(by_rarity, capped_rare_prefs) or by_rarity[top_rarity]
+    pulls.append(_weighted_pick(pool))
+
+    # ---- 1 guaranteed top slot ----------------------------------------------
+    pulls.append(random.choice(by_rarity[top_rarity]))
+
+    return pulls
 
 def normalize_rarity(s: str) -> str:
     return RARITY_MAP.get((s or "").strip().lower(), "rare")

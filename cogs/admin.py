@@ -168,69 +168,67 @@ class Admin(commands.Cog):
 
     # ---- Add currency -------------------------------------------------------
     @app_commands.command(name="wallet_add", description="Admin: add currency to a user's wallet")
-    @app_commands.guilds(GUILD)  # remove to register globally
+    @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        user="Player to adjust",
-        currency="Which currency to add",
-        amount="How much to add (positive integer)"
-    )
+    @app_commands.describe(user="Player to adjust", currency="Currency", amount="Amount to add (>=1)")
+    @app_commands.checks.has_permissions(administrator=True)  # runtime guard
     async def wallet_add(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Currency,
-        amount: app_commands.Range[int, 1, None],  # enforce >= 1
+        amount: app_commands.Range[int, 1, None],
     ):
+        # ⬇️ Defer IMMEDIATELY — no awaits before this
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Apply delta
+        before = db_wallet_get(self.state, user.id)
         if currency == "fitzcoin":
-            new_bal = db_wallet_add(self.state, user.id, d_fitzcoin=amount, d_mambucks=0)
+            after = db_wallet_add(self.state, user.id, d_fitzcoin=amount)
         else:
-            new_bal = db_wallet_add(self.state, user.id, d_fitzcoin=0, d_mambucks=amount)
+            after = db_wallet_add(self.state, user.id, d_mambucks=amount)
 
         await interaction.followup.send(
-            f"✅ Added **{amount} {currency}** to {user.mention}.\n"
-            f"New balances → fitzcoin: **{new_bal['fitzcoin']}**, mambucks: **{new_bal['mambucks']}**.",
-            ephemeral=True
+            (
+                f"✅ Added **{amount} {currency}** to {user.mention}.\n"
+                f"Before → fitzcoin **{before['fitzcoin']}**, mambucks **{before['mambucks']}**\n"
+                f"After  → fitzcoin **{after['fitzcoin']}**, mambucks **{after['mambucks']}**"
+            ),
+            ephemeral=True,
         )
 
-    # ---- Remove currency (clamps at zero) ----------------------------------
+    # ---- Remove currency -------------------------------------------------------
     @app_commands.command(name="wallet_remove", description="Admin: remove currency from a user's wallet")
-    @app_commands.guilds(GUILD)  # remove to register globally
+    @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        user="Player to adjust",
-        currency="Which currency to remove",
-        amount="How much to remove (positive integer)"
-    )
+    @app_commands.describe(user="Player to adjust", currency="Currency", amount="Amount to remove (>=1)")
+    @app_commands.checks.has_permissions(administrator=True)  # runtime guard
     async def wallet_remove(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Currency,
-        amount: app_commands.Range[int, 1, None],  # enforce >= 1
+        amount: app_commands.Range[int, 1, None],
     ):
+        # ⬇️ Defer IMMEDIATELY
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Read current balances
         before = db_wallet_get(self.state, user.id)
-
         if currency == "fitzcoin":
-            new_fitz = max(0, before["fitzcoin"] - amount)
-            db_wallet_set(self.state, user.id, fitzcoin=new_fitz)  # leave mambucks unchanged
-            after = db_wallet_get(self.state, user.id)
+            new_f = max(0, before["fitzcoin"] - amount)
+            db_wallet_set(self.state, user.id, fitzcoin=new_f)
         else:
-            new_mamb = max(0, before["mambucks"] - amount)
-            db_wallet_set(self.state, user.id, mambucks=new_mamb)  # leave fitzcoin unchanged
-            after = db_wallet_get(self.state, user.id)
+            new_m = max(0, before["mambucks"] - amount)
+            db_wallet_set(self.state, user.id, mambucks=new_m)
+        after = db_wallet_get(self.state, user.id)
 
         await interaction.followup.send(
-            f"🧹 Removed **{amount} {currency}** from {user.mention}.\n"
-            f"Before → fitzcoin: **{before['fitzcoin']}**, mambucks: **{before['mambucks']}**\n"
-            f"After  → fitzcoin: **{after['fitzcoin']}**, mambucks: **{after['mambucks']}**",
-            ephemeral=True
+            (
+                f"🧹 Removed **{amount} {currency}** from {user.mention}.\n"
+                f"Before → fitzcoin **{before['fitzcoin']}**, mambucks **{before['mambucks']}**\n"
+                f"After  → fitzcoin **{after['fitzcoin']}**, mambucks **{after['mambucks']}**"
+            ),
+            ephemeral=True,
         )
 
 async def setup(bot: commands.Bot):

@@ -4,6 +4,7 @@ from discord import app_commands
 from core.db import db_get_collection
 from core.views import CollectionPaginator
 
+
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None

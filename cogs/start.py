@@ -9,7 +9,6 @@ from core.starters import load_starters_from_csv, grant_starter_to_user
 from core.packs import open_pack_from_csv, persist_pulls_to_db, RARITY_ORDER  # reuse your pack code  :contentReference[oaicite:4]{index=4}
 from core.views import PackResultsPaginator  # your paginator view
 from core.db import db_wallet_add
-
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None

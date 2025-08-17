@@ -12,6 +12,7 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 PACK_COST = 10  # fitzcoin per pack
 MAX_PACKS = 10
 MIN_PACKS = 1
+PACKS_IN_BOX = 24
 
 class Packs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -35,6 +36,17 @@ class Packs(commands.Cog):
             await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)
         await interaction.response.send_message("Pick a pack from the dropdown:", view=view, ephemeral=True)
+
+    @app_commands.command(name="box", description="Open a sealed box (24 packs; costs 200 fitzcoin).")
+    @app_commands.guilds(GUILD)
+    async def box(self, interaction: discord.Interaction):
+        import inspect
+        print("PacksSelectView from:", PacksSelectView.__module__)
+        print("Ctor:", inspect.signature(PacksSelectView.__init__))
+        view = PacksSelectView(self.bot.state, requester=interaction.user, amount=PACKS_IN_BOX, mode="box")
+        await interaction.response.send_message(
+            "Pick a pack set for your **box**:", view=view, ephemeral=True
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Packs(bot))
