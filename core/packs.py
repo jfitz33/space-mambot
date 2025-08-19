@@ -68,6 +68,7 @@ def normalize_rarity(s: str) -> str:
 def load_packs_from_csv(state: AppState):
     required = ["cardname","cardq","cardrarity","card_edition","cardset","cardcode","cardid","print_id"]
     packs: dict[str, dict] = {}
+
     for fname in os.listdir(state.packs_dir):
         if not fname.lower().endswith(".csv"):
             continue
@@ -80,22 +81,50 @@ def load_packs_from_csv(state: AppState):
             missing = [h for h in required if h not in hm]
             if missing:
                 raise ValueError(f"{fname}: missing columns {missing}. Found: {r.fieldnames}")
+
             for row in r:
                 get = lambda k: (row.get(hm[k]) or "").strip()
+
                 pack_name = get("cardset") or os.path.splitext(fname)[0]
-                name   = get("cardname")
-                rarity = normalize_rarity(get("cardrarity"))
-                code   = get("cardcode")
-                cid    = get("cardid")
-                try: weight = max(1, int(get("cardq")))
-                except: weight = 1
-                pack = packs.setdefault(pack_name, {"by_rarity": defaultdict(list)})
-                pack["by_rarity"][rarity].append({
-                    "name": name, "rarity": rarity,
-                    "card_code": code, "card_id": cid, "weight": weight
-                })
+                name      = get("cardname")
+                rarity_raw= get("cardrarity")
+                rarity    = normalize_rarity(rarity_raw)  # your existing helper
+                code      = get("cardcode")
+                cid       = get("cardid")
+                try:
+                    weight = max(1, int(get("cardq")))
+                except Exception:
+                    weight = 1
+
+                pack = packs.setdefault(pack_name, {"name": pack_name, "by_rarity": defaultdict(list)})
+
+                # IMPORTANT: write canonical keys that the index understands:
+                card_dict = {
+                    # canonical/csv-style keys
+                    "cardname":   name,
+                    "cardrarity": rarity,
+                    "cardset":    pack_name,
+                    "cardcode":   code or None,
+                    "cardid":     cid or None,
+
+                    # short aliases (shop index also reads these)
+                    "name":    name,
+                    "rarity":  rarity,
+                    "set":     pack_name,
+                    "code":    code or None,
+                    "id":      cid or None,
+
+                    # any other fields you want to keep
+                    "print_id": (row.get(hm["print_id"]) or "").strip() or None,
+                    "weight":   weight,
+                }
+
+                pack["by_rarity"][rarity].append(card_dict)
+
+    # freeze defaultdicts
     for p in packs.values():
-        p["by_rarity"] = {k:v for k,v in p["by_rarity"].items()}
+        p["by_rarity"] = {k: v for k, v in p["by_rarity"].items()}
+
     state.packs_index = packs
     return packs
 

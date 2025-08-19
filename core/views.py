@@ -4,7 +4,7 @@ from collections import Counter
 import discord
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv
-from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print
+from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print, _blank_to_none, db_collection_debug_dump
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.constants import BUY_PRICES, SELL_PRICES
 from core.state import AppState
@@ -304,15 +304,18 @@ class ConfirmSellCardView(discord.ui.View):
                     "⚠️ This printing is missing a card set in the data, so it can’t be sold.",
                     ephemeral=True
                 )
-
+            card_code = _blank_to_none(card.get("code") or card.get("cardcode"))
+            card_id   = _blank_to_none(card.get("id") or card.get("cardid"))
+            rows = db_collection_debug_dump(self.state, seller.id, sig_name, sig_rarity, set_name)
+            print("DEBUG owned rows:", rows)
             removed = db_collection_remove_exact_print(
                 self.state,
                 self.requester.id,
                 card_name=card.get("name") or card.get("cardname") or "",
                 card_rarity=rarity,
                 card_set=set_name,  # use the resolved set
-                card_code=card.get("code") or card.get("cardcode"),
-                card_id=card.get("id") or card.get("cardid"),
+                card_code=card_code,
+                card_id=card_id,
                 amount=self.amount,
             )
             if removed <= 0:
@@ -342,6 +345,261 @@ class ConfirmSellCardView(discord.ui.View):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
         await self._remove_ui(interaction, content="Sale cancelled.")
+
+class ConfirmP2PInitiatorView(discord.ui.View):
+    """
+    First step: shown only to the initiator. If they confirm, we post a channel message
+    pinging the counterparty with a second confirm view.
+    """
+    def __init__(
+        self,
+        state,
+        *,
+        requester: discord.Member,
+        counterparty: discord.Member,
+        mode: Literal["buy","sell"],   # 'buy' => requester buys; 'sell' => requester sells
+        print_key: str,
+        copies: int,
+        price_mb: int,
+        timeout: float = 120
+    ):
+        super().__init__(timeout=timeout)
+        self.state = state
+        self.requester = requester
+        self.counterparty = counterparty
+        self.mode = mode
+        self.print_key = print_key
+        self.copies = int(copies)
+        self.price_mb = int(price_mb)
+        self._processing = False
+
+    async def _remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
+        self.stop()
+        for item in self.children: item.disabled = True
+        try:
+            await interaction.response.edit_message(content=content, view=None)
+        except discord.InteractionResponded:
+            await interaction.message.edit(content=content, view=None)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        if self._processing:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self._processing = True
+
+        # Resolve card for display; if missing, abort
+        card = find_card_by_print_key(self.state, self.print_key)
+        if not card:
+            await self._remove_ui(interaction, content="⚠️ Card printing not found.")
+            return
+
+        # Remove this prompt and tell initiator we sent the offer
+        await self._remove_ui(interaction, content="Offer sent for counterparty confirmation…")
+        try:
+            await interaction.followup.send(
+                f"📨 Sent your offer to {self.counterparty.mention}.",
+                ephemeral=True
+            )
+        except: pass
+
+        # Post the counterparty confirmation publicly (so they can click)
+        verb = "buy" if self.mode == "buy" else "sell"
+        direction = ("from you" if self.mode == "buy" else "to you")
+        offer_text = (
+            f"{self.counterparty.mention} — {self.requester.mention} wants to **{verb} "
+            f"{self.copies}× {card_label(card)}** {direction} for **{self.price_mb}** mambucks.\n"
+            f"Do you accept?"
+        )
+        counter_view = ConfirmP2PCounterpartyView(
+            self.state,
+            requester=self.requester,
+            counterparty=self.counterparty,
+            mode=self.mode,
+            print_key=self.print_key,
+            copies=self.copies,
+            price_mb=self.price_mb
+        )
+        msg = await interaction.channel.send(offer_text, view=counter_view)  # <-- send
+        counter_view.message = msg
+
+        # Monitoring message for timeout
+        try:
+            self.state.live_views.add(counter_view)
+        except Exception:
+            pass   
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._remove_ui(interaction, content="Offer cancelled.")
+
+class ConfirmP2PCounterpartyView(discord.ui.View):
+    """
+    Second step: shown to the counterparty. On Accept, we perform the transfer:
+    - Spend mambucks from the buyer
+    - Move cards from seller to buyer
+    - Credit mambucks to the seller
+    """
+    def __init__(
+        self,
+        state,
+        *,
+        requester: discord.Member,
+        counterparty: discord.Member,
+        mode: Literal["buy","sell"],
+        print_key: str,
+        copies: int,
+        price_mb: int,
+        timeout: float = 90
+    ):
+        super().__init__(timeout=timeout)
+        self.state = state
+        self.requester = requester
+        self.counterparty = counterparty
+        self.mode = mode
+        self.print_key = print_key
+        self.copies = int(copies)
+        self.price_mb = int(price_mb)
+        self._processing = False
+        self._completed = False
+        self.message: discord.Message | None = None 
+
+    def _roles(self):
+        # Returns (buyer, seller) based on mode
+        if self.mode == "buy":
+            return (self.requester, self.counterparty)  # requester buys FROM counterparty
+        else:
+            return (self.counterparty, self.requester)  # requester sells TO counterparty
+
+    async def _remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
+        self.stop()
+        for item in self.children: item.disabled = True
+        try:
+            await interaction.response.edit_message(content=content, view=None)
+        except discord.InteractionResponded:
+            await interaction.message.edit(content=content, view=None)
+
+
+    async def on_timeout(self):
+        """If no one clicked within timeout, replace buttons with a cancel notice."""
+        if self._processing or self._completed:
+            return
+        try:
+            if self.message:
+                await self.message.edit(
+                    content="Sale cancelled, user did not respond in time",
+                    view=None
+                )
+            else:
+                # Fallback: best effort disable if we somehow lack the message reference
+                for item in self.children:
+                    item.disabled = True
+        except Exception:
+            pass
+        finally:
+            # Attempt to drop strong ref
+            try:
+                self.state.live_views.discard(self)
+            except Exception:
+                pass
+            self.stop()
+    
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, _: discord.ui.Button):
+        # Only the counterparty can accept/decline
+        if interaction.user.id != self.counterparty.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        if self._processing:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self._processing = True
+
+        await self._remove_ui(interaction, content="Processing trade…")
+        try:
+            await interaction.followup.defer(ephemeral=True)
+        except: pass
+
+        buyer, seller = self._roles()
+        card = find_card_by_print_key(self.state, self.print_key)
+        if not card:
+            return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+
+        set_name = (card.get("set") or card.get("cardset") or "").strip()
+        if not set_name:
+            return await interaction.followup.send("⚠️ Printing has no set; cannot trade.", ephemeral=True)
+
+        # 1) Take payment from buyer (escrow). If insufficient, abort.
+        spent = db_wallet_try_spend_mambucks(self.state, buyer.id, self.price_mb)
+        if spent is None:
+            return await interaction.followup.send(
+                f"❌ {buyer.mention} doesn’t have **{self.price_mb}** mambucks.", ephemeral=True
+            )
+
+        # 2) Remove cards from seller; if seller lacks copies, refund buyer and abort.
+        removed = 0
+        sig_code   = _blank_to_none(card.get("code") or card.get("cardcode"))
+        sig_id     = _blank_to_none(card.get("id") or card.get("cardid"))
+        sig_name = _blank_to_none(card.get("name") or card.get("cardname") or "")
+        sig_rarity = _blank_to_none(card.get("rarity") or card.get("cardrarity") or "")
+        rows = db_collection_debug_dump(self.state, seller.id, sig_name, sig_rarity, set_name)
+        print("DEBUG owned rows:", rows)
+        try:
+            removed = db_collection_remove_exact_print(
+                self.state,
+                seller.id,
+                card_name=sig_name,
+                card_rarity=sig_rarity,
+                card_set=set_name,
+                card_code=sig_code,
+                card_id=sig_id,
+                amount=self.copies
+            )
+            if removed < self.copies:
+                # Restore any partial removal (rare, but safe)
+                if removed > 0:
+                    db_add_cards(self.state, seller.id, [card] * removed, set_name)
+                # Refund buyer
+                db_wallet_add(self.state, buyer.id, d_mambucks=self.price_mb)
+                return await interaction.followup.send(
+                    f"❌ Did not find **{self.copies}× {card_label(card)}** in {seller.mention}'s collection.", ephemeral=True
+                )
+
+            # 3) Grant cards to buyer
+            db_add_cards(self.state, buyer.id, [card] * self.copies, set_name)
+
+            # 4) Credit seller with the mambucks
+            db_wallet_add(self.state, seller.id, d_mambucks=self.price_mb)
+
+            # Success messages
+            await interaction.followup.send("✅ Trade completed.", ephemeral=True)
+            verb = "bought" if self.mode == "buy" else "sold"
+            await interaction.channel.send(
+                f"{buyer.mention} {verb} {self.copies} {card.get('name') or 'card'} "
+                f"{'from' if self.mode=='buy' else 'to'} {seller.mention} "
+                f"for {self.price_mb} mambucks"
+            )
+        except Exception:
+            # On any exception, try to refund buyer
+            try: db_wallet_add(self.state, buyer.id, d_mambucks=self.price_mb)
+            except: pass
+            await interaction.followup.send("⚠️ Trade failed; any funds were refunded.", ephemeral=True)
+            raise
+        finally:
+            self._processing = False
+            self._completed = True
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.counterparty.id:
+            self._completed = True
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._remove_ui(interaction, content="Trade declined.")
 
 class PackResultsPaginator(View):
     def __init__(self, requester: discord.User, pack_name: str, per_pack_pulls: list[list[dict]], timeout: float = 120):

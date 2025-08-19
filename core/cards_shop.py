@@ -115,6 +115,44 @@ def ensure_shop_index(state) -> None:
                     for row in rows_list:
                         _ingest_row(row, eff_default_set)
 
+    # Dedupe: keep the best printing per (name, rarity, code, id) to purge any stale data or faulty imports
+    tmp = {}
+    to_delete = []
+    for k, card in state._shop_print_by_key.items():
+        name = (card.get("name") or card.get("cardname") or "").strip()
+        rarity = (card.get("rarity") or card.get("cardrarity") or "").strip()
+        set_ = (card.get("set") or card.get("cardset") or "").strip()
+        code = (card.get("code") or card.get("cardcode") or "").strip()
+        cid  = (card.get("id") or card.get("cardid") or "").strip()
+        sig = _sig_for_resolution(name, rarity, code, cid)
+        score = (1 if set_ else 0, 1 if code else 0, 1 if cid else 0)
+        prev = tmp.get(sig)
+        if prev is None or score > prev[0]:
+            # mark previous (if any) for deletion
+            if prev is not None:
+                to_delete.append(prev[1])
+            tmp[sig] = (score, k)
+        else:
+            to_delete.append(k)
+
+    # drop the losers
+    for k in to_delete:
+        state._shop_print_by_key.pop(k, None)
+
+    # rebuild resolver map to align with survivors
+    state._shop_sig_to_set.clear()
+    for card in state._shop_print_by_key.values():
+        set_ = (card.get("set") or card.get("cardset") or "").strip()
+        if not set_:
+            continue
+        name = (card.get("name") or card.get("cardname") or "").strip()
+        rarity = (card.get("rarity") or card.get("cardrarity") or "").strip()
+        code = (card.get("code") or card.get("cardcode") or "").strip()
+        cid  = (card.get("id") or card.get("cardid") or "").strip()
+        sig = _sig_for_resolution(name, rarity, code, cid)
+        state._shop_sig_to_set[sig] = set_
+
+
     # Harvest packs and starters (whatever you maintain on state)
     packs_index = getattr(state, "packs_index", None)
     if isinstance(packs_index, dict):

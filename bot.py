@@ -9,6 +9,7 @@ from core.state import AppState
 from core.db import db_init, db_init_trades, db_init_wallet
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
+from core.cards_shop import ensure_shop_index
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -22,6 +23,9 @@ tree = bot.tree
 
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 
+# Set to track live views to properly enforce timeouts
+setattr(bot.state, "live_views", set())
+
 COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop"]
 
 @bot.event
@@ -33,6 +37,13 @@ async def on_ready():
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)
     db_init_wallet(bot.state)
+
+    # After import of cards, check for improper entries and purge incorrect ones
+    for attr in ("_shop_print_by_key", "_shop_sig_to_set"):
+        if hasattr(bot.state, attr):
+            delattr(bot.state, attr)
+    ensure_shop_index(bot.state)
+
 
     # 2) Load cogs BEFORE syncing
     for ext in COGS:

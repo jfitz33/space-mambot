@@ -1,6 +1,7 @@
 import sqlite3, json, time
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any, Optional, Iterable
 from core.state import AppState
+from core.util_norm import normalize_rarity, normalize_set_name, blank_to_none
 
 def db_init(state: AppState):
     with sqlite3.connect(state.db_path) as conn, conn:
@@ -17,18 +18,58 @@ def db_init(state: AppState):
         );
         """)
 
-def db_add_cards(state: AppState, user_id: int, items: list[dict], pack_name: str):
-    from collections import Counter
-    key = lambda it: (it.get("name",""), it.get("rarity","").lower(), it.get("card_code",""), it.get("card_id",""))
-    counts = Counter(key(it) for it in items)
+DEBUG_COLLECTION = False  # set True while testing
+
+def db_add_cards(
+    state,
+    user_id: int,
+    cards: Iterable[dict],
+    default_set: Optional[str] = None,
+) -> int:
+    """
+    Upsert cards into user_collection.
+    Each card dict may contain: name/cardname, rarity/cardrarity, set/cardset, code/cardcode, id/cardid, qty/cardq.
+    If set is missing, use default_set.
+    Returns total quantity added.
+    """
+    total_added = 0
+    user_id_s = str(user_id)
     with sqlite3.connect(state.db_path) as conn, conn:
-        for (name, rarity, code, cid), qty in counts.items():
-            conn.execute("""
-            INSERT INTO user_collection (user_id, card_name, card_qty, card_rarity, card_set, card_code, card_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, card_name, card_rarity, card_set, card_code, card_id)
-            DO UPDATE SET card_qty = card_qty + excluded.card_qty;
-            """, (str(user_id), name, qty, rarity, pack_name, code, cid))
+        for raw in cards:
+            name  = (raw.get("name") or raw.get("cardname") or "").strip()
+            if not name:
+                continue
+
+            rarity = normalize_rarity(raw.get("rarity") or raw.get("cardrarity"))
+            cset = normalize_set_name(
+                (raw.get("set") or raw.get("cardset") or default_set or "")
+            )
+            code = blank_to_none(raw.get("code") or raw.get("cardcode"))
+            cid  = blank_to_none(raw.get("id")   or raw.get("cardid"))
+
+            # qty handling: prefer 'qty' then 'cardq', default to 1
+            try:
+                qty = int(raw.get("qty") if raw.get("qty") is not None else raw.get("cardq") or 1)
+            except Exception:
+                qty = 1
+            if qty <= 0:
+                continue
+
+            if DEBUG_COLLECTION:
+                print(f"[db_add_cards] user={user_id_s} name={name} rarity={rarity} set={cset} code={code} id={cid} qty={qty}")
+
+            conn.execute(
+                """
+                INSERT INTO user_collection
+                  (user_id, card_name, card_rarity, card_set, card_code, card_id, card_qty)
+                VALUES (?,       ?,         ?,           ?,        ?,         ?,       ?)
+                ON CONFLICT(user_id, card_name, card_rarity, card_set, card_code, card_id)
+                DO UPDATE SET card_qty = card_qty + excluded.card_qty;
+                """,
+                (user_id_s, name, rarity, cset, code, cid, qty),
+            )
+            total_added += qty
+    return total_added
 
 def db_get_collection(state: AppState, user_id: int):
     with sqlite3.connect(state.db_path) as conn:
@@ -157,53 +198,111 @@ def db_collection_total_by_name_and_rarity(state, user_id: int, card_name: str, 
         (total,) = cur.fetchone()
         return int(total or 0)
 
-def db_collection_remove_exact_print(state, user_id: int, *,
-                                     card_name: str, card_rarity: str, card_set: str,
-                                     card_code: Optional[str], card_id: Optional[str],
-                                     amount: int) -> int:
+def _blank_to_none(s):
+    return None if s is None or str(s).strip() == "" else str(s).strip()
+
+def db_collection_debug_dump(state, user_id: int, name: str, rarity: str, card_set: str):
+    import sqlite3
+    out = []
+    with sqlite3.connect(state.db_path) as conn:
+        for row in conn.execute(
+            """
+            SELECT rowid, card_name, card_rarity, card_set,
+                   COALESCE(card_code,''), COALESCE(card_id,''), card_qty
+            FROM user_collection
+            WHERE user_id = ?
+              AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+              AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+              AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+            ORDER BY rowid ASC
+            """,
+            (str(user_id), name, rarity.lower().strip(), card_set),
+        ):
+            out.append(row)
+    return out
+
+def db_collection_remove_exact_print(
+    state,
+    user_id: int,
+    *,
+    card_name: str,
+    card_rarity: str,
+    card_set: str,
+    card_code: str | None,
+    card_id: str | None,
+    amount: int = 1,
+) -> int:
     """
-    Remove up to `amount` of the EXACT printing (name+rarity+set+code+id).
-    Return number actually removed (0..amount).
+    Remove up to `amount` copies of a printing from user_collection.
+    - Matches by user_id + (name, rarity, set).
+    - If card_code / card_id are provided, they are matched exactly (case/space-insensitive).
+    - If either is blank (None/''), that field is *ignored* for matching, and we prefer rows
+      where that field is blank in the DB, falling back to any matching row otherwise.
+    Uses SQLite rowid to update/delete exactly 1 row.
     """
-    remaining = int(amount)
-    if remaining <= 0:
+    if amount <= 0:
         return 0
 
+    user_id_s = str(user_id)
+    name   = (card_name or "").strip()
+    rarity = (card_rarity or "").strip().lower()
+    cset   = (card_set or "").strip()
+    code_in = _blank_to_none(card_code)
+    id_in   = _blank_to_none(card_id)
+
+    # Build the probe query
+    base_where = [
+        "user_id = ?",
+        "LOWER(TRIM(card_name))   = LOWER(TRIM(?))",
+        "LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))",
+        "LOWER(TRIM(card_set))    = LOWER(TRIM(?))",
+    ]
+    params = [user_id_s, name, rarity, cset]
+
+    # Only constrain by code/id if they were provided
+    if code_in is not None:
+        base_where.append("LOWER(TRIM(card_code)) = LOWER(TRIM(?))")
+        params.append(code_in)
+    if id_in is not None:
+        base_where.append("LOWER(TRIM(card_id)) = LOWER(TRIM(?))")
+        params.append(id_in)
+
+    where_sql = " AND ".join(base_where)
+
+    # If caller left code/id blank, prefer blank rows first
+    order_bits = []
+    if id_in is None:
+        order_bits.append("CASE WHEN TRIM(COALESCE(card_id,'')) = '' THEN 0 ELSE 1 END")
+    if code_in is None:
+        order_bits.append("CASE WHEN TRIM(COALESCE(card_code,'')) = '' THEN 0 ELSE 1 END")
+    order_sql = (" ORDER BY " + ", ".join(order_bits)) if order_bits else ""
+
     with sqlite3.connect(state.db_path) as conn, conn:
-        where = [
-            "user_id = ?",
-            "LOWER(card_name)  = LOWER(?)",
-            "LOWER(card_rarity)= LOWER(?)",
-            "LOWER(card_set)   = LOWER(?)",
-        ]
-        params = [str(user_id), card_name or "", card_rarity or "", card_set or ""]
+        row = conn.execute(
+            f"""
+            SELECT rowid, card_qty, card_code, card_id
+              FROM user_collection
+             WHERE {where_sql}
+             {order_sql}
+             LIMIT 1;
+            """,
+            params,
+        ).fetchone()
 
-        if _nullish(card_code):
-            where.append("(card_code IS NULL OR card_code = '')")
-        else:
-            where.append("LOWER(card_code) = LOWER(?)")
-            params.append(card_code)
-
-        if _nullish(card_id):
-            where.append("(card_id IS NULL OR card_id = '')")
-        else:
-            where.append("LOWER(card_id) = LOWER(?)")
-            params.append(card_id)
-
-        sql = f"SELECT rowid, card_qty FROM user_collection WHERE {' AND '.join(where)}"
-        row = conn.execute(sql, params).fetchone()
         if not row:
             return 0
 
-        rowid, qty = int(row[0]), int(row[1])
-        take = min(qty, remaining)
-        new_qty = qty - take
-        if new_qty > 0:
-            conn.execute("UPDATE user_collection SET card_qty=? WHERE rowid=?", (new_qty, rowid))
-        else:
-            conn.execute("DELETE FROM user_collection WHERE rowid=?", (rowid,))
-        return take
+        rowid, cur_qty, db_code, db_id = int(row[0]), int(row[1] or 0), row[2], row[3]
+        if cur_qty <= 0:
+            return 0
 
+        take = min(amount, cur_qty)
+        if take == cur_qty:
+            conn.execute("DELETE FROM user_collection WHERE rowid = ?;", (rowid,))
+        else:
+            conn.execute("UPDATE user_collection SET card_qty = card_qty - ? WHERE rowid = ?;", (take, rowid))
+        return take
+    
 # --- Trades: table + migration ---
 def db_init_trades(state: AppState):
     with sqlite3.connect(state.db_path) as conn, conn:
