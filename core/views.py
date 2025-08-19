@@ -1,8 +1,12 @@
+from __future__ import annotations
 from collections import Counter
+
 import discord
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv
-from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add
+from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print
+from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
+from core.constants import BUY_PRICES, SELL_PRICES
 from core.state import AppState
 from typing import List, Tuple, Optional, Literal
 
@@ -165,6 +169,179 @@ class ConfirmSpendView(discord.ui.View):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
         # Remove the UI and leave a small notice (or set content=None to blank it)
         await self._remove_ui(interaction, content="Cancelled.")
+
+class ConfirmBuyCardView(discord.ui.View):
+    def __init__(self, state, requester: discord.Member, print_key: str, amount: int, total_cost: int, *, timeout: float = 90):
+        super().__init__(timeout=timeout)
+        self.state = state
+        self.requester = requester
+        self.print_key = print_key
+        self.amount = amount
+        self.total_cost = total_cost
+        self._processing = False
+
+    async def _remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
+        self.stop()
+        for item in self.children: item.disabled = True
+        try:
+            await interaction.response.edit_message(content=content, view=None)
+        except discord.InteractionResponded:
+            await interaction.message.edit(content=content, view=None)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        if self._processing:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self._processing = True
+
+        await self._remove_ui(interaction, content="Processing purchase…")
+        try:
+            await interaction.followup.defer(ephemeral=True)
+        except: pass
+
+        # Spend mambucks
+        after_spend = db_wallet_try_spend_mambucks(self.state, self.requester.id, self.total_cost)
+        if after_spend is None:
+            self._processing = False
+            return await interaction.followup.send(
+                f"❌ Not enough mambucks (need **{self.total_cost}**).", ephemeral=True
+            )
+
+        try:
+            card = find_card_by_print_key(self.state, self.print_key)
+            if not card:
+                db_wallet_add(self.state, self.requester.id, d_mambucks=self.total_cost)
+                return await interaction.followup.send("⚠️ Card printing not found; you were not charged.", ephemeral=True)
+
+            # 🔎 Resolve set (no fallback). If unresolved, refund and abort.
+            set_name = resolve_card_set(self.state, card)
+            if not set_name:
+                db_wallet_add(self.state, self.requester.id, d_mambucks=self.total_cost)
+                return await interaction.followup.send(
+                    "⚠️ This printing is missing a card set in the data, so it can’t be bought.",
+                    ephemeral=True
+                )
+
+            # Insert with the resolved set
+            db_add_cards(self.state, self.requester.id, [card] * self.amount, set_name)
+
+            await interaction.followup.send(
+                f"✅ Bought **{self.amount}× {card_label(card)}** for **{self.total_cost}** mambucks.",
+                ephemeral=True
+            )
+            await interaction.channel.send(
+                f"{self.requester.mention} bought {self.amount} {card.get('name') or 'card'} for {self.total_cost} mambucks"
+            )
+        except Exception:
+            db_wallet_add(self.state, self.requester.id, d_mambucks=self.total_cost)
+            await interaction.followup.send("⚠️ Purchase failed. You were not charged.", ephemeral=True)
+            raise
+        finally:
+            self._processing = False
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._remove_ui(interaction, content="Purchase cancelled.")
+
+class ConfirmSellCardView(discord.ui.View):
+    def __init__(self, state, requester: discord.Member, print_key: str, amount: int, total_credit: int, *, timeout: float = 90):
+        super().__init__(timeout=timeout)
+        self.state = state
+        self.requester = requester
+        self.print_key = print_key
+        self.amount = amount
+        self.total_credit = total_credit
+        self._processing = False
+
+    async def _remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
+        self.stop()
+        for item in self.children: item.disabled = True
+        try:
+            await interaction.response.edit_message(content=content, view=None)
+        except discord.InteractionResponded:
+            await interaction.message.edit(content=content, view=None)
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        if self._processing:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self._processing = True
+
+        await self._remove_ui(interaction, content="Processing sale…")
+        try:
+            await interaction.followup.defer(ephemeral=True)
+        except: pass
+
+        try:
+            card = find_card_by_print_key(self.state, self.print_key)
+            if not card:
+                self._processing = False
+                return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+
+            rarity = get_card_rarity(card)
+            price_each = SELL_PRICES.get(rarity)
+            if rarity == "starlight" or price_each is None:
+                self._processing = False
+                return await interaction.followup.send(
+                    f"❌ {card_label(card)} cannot be sold to the shop.", ephemeral=True
+                )
+
+            # 🔎 Resolve set (no fallback). If unresolved, block sale.
+            set_name = resolve_card_set(self.state, card)
+            if not set_name:
+                self._processing = False
+                return await interaction.followup.send(
+                    "⚠️ This printing is missing a card set in the data, so it can’t be sold.",
+                    ephemeral=True
+                )
+
+            removed = db_collection_remove_exact_print(
+                self.state,
+                self.requester.id,
+                card_name=card.get("name") or card.get("cardname") or "",
+                card_rarity=rarity,
+                card_set=set_name,  # use the resolved set
+                card_code=card.get("code") or card.get("cardcode"),
+                card_id=card.get("id") or card.get("cardid"),
+                amount=self.amount,
+            )
+            if removed <= 0:
+                self._processing = False
+                return await interaction.followup.send(
+                    f"❌ You don’t own {card_label(card)} x{self.amount}.", ephemeral=True
+                )
+
+            credit = price_each * removed
+            db_wallet_add(self.state, self.requester.id, d_mambucks=credit)
+
+            await interaction.followup.send(
+                f"✅ Sold **{removed}× {card_label(card)}** for **{credit}** mambucks.",
+                ephemeral=True
+            )
+            await interaction.channel.send(
+                f"{self.requester.mention} sold {removed} {card.get('name') or 'card'} for {credit} mambucks"
+            )
+        except Exception:
+            await interaction.followup.send("⚠️ Sale failed.", ephemeral=True)
+            raise
+        finally:
+            self._processing = False
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._remove_ui(interaction, content="Sale cancelled.")
 
 class PackResultsPaginator(View):
     def __init__(self, requester: discord.User, pack_name: str, per_pack_pulls: list[list[dict]], timeout: float = 120):

@@ -22,7 +22,7 @@ tree = bot.tree
 
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 
-COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet"]
+COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop"]
 
 @bot.event
 async def on_ready():

@@ -1,5 +1,5 @@
 import sqlite3, json, time
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 from core.state import AppState
 
 def db_init(state: AppState):
@@ -102,6 +102,107 @@ def db_admin_remove_card(state: AppState, user_id: int, *, name: str, rarity: st
               AND COALESCE(card_code,'')=COALESCE(?,'') AND COALESCE(card_id,'')=COALESCE(?,'');
             """, (str(user_id), name, rarity, card_set, card_code or "", card_id or ""))
             return (current, 0)
+
+# --- Helper functions for selling to shop ---
+
+def _nullish(x) -> bool:
+    return (x is None) or (isinstance(x, str) and x.strip() == "")
+
+# --- Get cards in collection for autocomplet ---
+def db_collection_list_owned_prints(state, user_id: int, name_filter: str | None = None, limit: int = 50):
+    """
+    Return owned rows grouped by exact printing (name, rarity, set, code, id).
+    Each row: dict(name, rarity, set, code, id, qty)
+    """
+    q = """
+    SELECT card_name, card_rarity, card_set, card_code, card_id, SUM(card_qty) AS qty
+      FROM user_collection
+     WHERE user_id = ?
+    """
+    params = [str(user_id)]
+    if name_filter:
+        q += " AND LOWER(card_name) LIKE ?"
+        params.append(f"%{name_filter.strip().lower()}%")
+    q += """
+     GROUP BY card_name, card_rarity, card_set, card_code, card_id
+     HAVING SUM(card_qty) > 0
+     ORDER BY card_name ASC
+     LIMIT ?
+    """
+    params.append(int(limit))
+    out = []
+    with sqlite3.connect(state.db_path) as conn:
+        for row in conn.execute(q, params):
+            out.append({
+                "name":   row[0],
+                "rarity": row[1],
+                "set":    row[2],
+                "code":   row[3],
+                "id":     row[4],
+                "qty":    int(row[5] or 0),
+            })
+    return out
+
+def db_collection_total_by_name_and_rarity(state, user_id: int, card_name: str, rarity: str) -> int:
+    """Optional helper (not strictly required by the shop)."""
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """SELECT COALESCE(SUM(card_qty), 0)
+                 FROM user_collection
+                WHERE user_id = ?
+                  AND LOWER(card_name)=LOWER(?)
+                  AND LOWER(card_rarity)=LOWER(?)""",
+            (str(user_id), card_name, rarity),
+        )
+        (total,) = cur.fetchone()
+        return int(total or 0)
+
+def db_collection_remove_exact_print(state, user_id: int, *,
+                                     card_name: str, card_rarity: str, card_set: str,
+                                     card_code: Optional[str], card_id: Optional[str],
+                                     amount: int) -> int:
+    """
+    Remove up to `amount` of the EXACT printing (name+rarity+set+code+id).
+    Return number actually removed (0..amount).
+    """
+    remaining = int(amount)
+    if remaining <= 0:
+        return 0
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        where = [
+            "user_id = ?",
+            "LOWER(card_name)  = LOWER(?)",
+            "LOWER(card_rarity)= LOWER(?)",
+            "LOWER(card_set)   = LOWER(?)",
+        ]
+        params = [str(user_id), card_name or "", card_rarity or "", card_set or ""]
+
+        if _nullish(card_code):
+            where.append("(card_code IS NULL OR card_code = '')")
+        else:
+            where.append("LOWER(card_code) = LOWER(?)")
+            params.append(card_code)
+
+        if _nullish(card_id):
+            where.append("(card_id IS NULL OR card_id = '')")
+        else:
+            where.append("LOWER(card_id) = LOWER(?)")
+            params.append(card_id)
+
+        sql = f"SELECT rowid, card_qty FROM user_collection WHERE {' AND '.join(where)}"
+        row = conn.execute(sql, params).fetchone()
+        if not row:
+            return 0
+
+        rowid, qty = int(row[0]), int(row[1])
+        take = min(qty, remaining)
+        new_qty = qty - take
+        if new_qty > 0:
+            conn.execute("UPDATE user_collection SET card_qty=? WHERE rowid=?", (new_qty, rowid))
+        else:
+            conn.execute("DELETE FROM user_collection WHERE rowid=?", (rowid,))
+        return take
 
 # --- Trades: table + migration ---
 def db_init_trades(state: AppState):
@@ -249,7 +350,7 @@ def db_user_has_items(state: AppState, user_id: int, items: List[dict]) -> tuple
                 return (False, f"{name} ({rarity}, {cset}) need {qty}, have {have}")
     return (True, "ok")
 
-# --- Atomic swap (same as earlier pattern) ---
+# --- Atomic swap for trades ---
 def db_apply_trade_atomic(state: AppState, trade: dict) -> tuple[bool, str]:
     proposer = trade["proposer_id"]; receiver = trade["receiver_id"]
     give = trade["give"]; get = trade["get"]
@@ -405,6 +506,42 @@ def db_wallet_try_spend_fitzcoin(state, user_id: int, amount: int) -> dict | Non
             return None  # not enough funds
 
     return db_wallet_get(state, user_id)
+
+# core/db.py  (append to your wallet helpers)
+import sqlite3, time
+
+def db_wallet_try_spend_mambucks(state, user_id: int, cost: int):
+    """
+    Atomically subtract `cost` mambucks if the user has enough.
+    Returns the new balances dict on success, or None if insufficient.
+    """
+    if cost <= 0:
+        return db_wallet_get(state, user_id)
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        now = int(time.time())
+        # Ensure row exists
+        conn.execute("""
+            INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
+            VALUES (?, 0, 0, ?)
+            ON CONFLICT(user_id) DO NOTHING;
+        """, (str(user_id), now))
+
+        # Check and spend
+        cur = conn.execute("SELECT mambucks FROM wallet WHERE user_id=?", (str(user_id),))
+        (fz,) = cur.fetchone()
+        if int(fz) < cost:
+            return None
+
+        conn.execute("""
+            UPDATE wallet
+               SET mambucks = mambucks - ?,
+                   updated_ts = ?
+             WHERE user_id = ?;
+        """, (int(cost), now, str(user_id)))
+
+    return db_wallet_get(state, user_id)
+
 
 
 
