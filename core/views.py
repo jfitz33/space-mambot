@@ -578,12 +578,21 @@ class ConfirmP2PCounterpartyView(discord.ui.View):
 
             # Success messages
             await interaction.followup.send("✅ Trade completed.", ephemeral=True)
-            verb = "bought" if self.mode == "buy" else "sold"
-            await interaction.channel.send(
-                f"{buyer.mention} {verb} {self.copies} {card.get('name') or 'card'} "
-                f"{'from' if self.mode=='buy' else 'to'} {seller.mention} "
-                f"for {self.price_mb} mambucks"
-            )
+
+            label = card_label(card)  # or use sig_name if you prefer plain name
+            if self.mode == "buy":
+                # buyer initiated a purchase from the counterparty
+                summary = (
+                    f"{buyer.mention} bought {self.copies}× {label} "
+                    f"from {seller.mention} for {self.price_mb} mambucks"
+                )
+            else:  # self.mode == "sell"
+                # requester sold to the counterparty
+                summary = (
+                    f"{seller.mention} sold {self.copies}× {label} "
+                    f"to {buyer.mention} for {self.price_mb} mambucks"
+                )
+            await interaction.channel.send(summary)
         except Exception:
             # On any exception, try to refund buyer
             try: db_wallet_add(self.state, buyer.id, d_mambucks=self.price_mb)
