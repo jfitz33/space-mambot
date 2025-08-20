@@ -1,12 +1,13 @@
 from __future__ import annotations
 from collections import Counter
 
-import discord
+import discord, asyncio
 from discord.ui import View, Select, button, Button
-from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv
+from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv, normalize_rarity
 from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print, _blank_to_none, db_collection_debug_dump
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.constants import BUY_PRICES, SELL_PRICES
+from core.images import rarity_badge
 from core.state import AppState
 from typing import List, Tuple, Optional, Literal
 
@@ -64,6 +65,29 @@ def _build_pack_options(state) -> List[discord.SelectOption]:
     if not opts:
         opts.append(discord.SelectOption(label="No packs available", value="__none__"))
     return opts
+
+def _rarity_of(card: dict) -> str:
+    return (card.get("rarity") or card.get("cardrarity") or "").strip().lower()
+
+def _pack_embed_for_cards(emoji_ctx, pack_name: str, cards: list[dict], idx: int, total: int) -> discord.Embed:
+    title = f"{pack_name} — Pack {idx}/{total}" if total > 1 else f"{pack_name} — Pack"
+    e = discord.Embed(title=title, color=0x2b6cb0)
+
+    lines = []
+    for c in cards:
+        name   = c.get("name") or c.get("cardname") or "Unknown"
+        raw_r  = (c.get("rarity") or c.get("cardrarity") or "")
+        r      = raw_r.strip().lower()
+        code   = (c.get("code") or c.get("cardcode") or "").strip()
+
+        badge = rarity_badge(emoji_ctx, r)  # << use the bot/client as the context
+        lines.append(f"{badge} **{name}**" + (f" · `{code}`" if code else ""))
+
+    chunk = "\n".join(lines)
+    if len(chunk) > 3800:
+        chunk = "\n".join(lines[:100]) + "\n…"
+    e.description = chunk
+    return e
 
 class PacksDropdown(discord.ui.Select):
     def __init__(self, parent_view: "PacksSelectView"):
@@ -152,8 +176,7 @@ class ConfirmSpendView(discord.ui.View):
                 f"🎉 {self.requester.mention} opened **{self.amount}** pack(s) of **{self.pack_name}**!"
             )
             await interaction.channel.send(
-                f"💰 Remaining balance → **{after_spend['fitzcoin']}** fitzcoin, "
-                f"**{after_spend['mambucks']}** mambucks."
+                f"💰 Remaining balance → **{after_spend['fitzcoin']}** fitzcoin."
             )
         except Exception:
             # Refund on failure
@@ -687,38 +710,126 @@ class PacksSelectView(discord.ui.View):
                 view=confirm_view
             )
 
-    async def _open_and_render(self, interaction, state, requester, pack_name: str, amount: int):
+    async def _open_and_render(self, interaction: discord.Interaction, state, requester, pack_name: str, amount: int):
+        per_pack: list[list[dict]] = []
+        total_cost = amount * PACK_COST
+        try:
+            for _ in range(amount):
+                per_pack.append(open_pack_from_csv(state, pack_name, 1))
+        except Exception as e:
+            # Re-enable UI or just inform and refund
+            for ch in self.view.children: ch.disabled = True
+            # refund
+            from core.db import db_wallet_add
+            db_wallet_add(state, requester.id, d_fitzcoin=total_cost)
+            # remove confirm view if possible, then post error
+            try:
+                await interaction.edit_original_response(content=f"Failed to open: {e}", view=None)
+            except Exception:
+                await interaction.followup.send(f"Failed to open: {e}", ephemeral=True)
+            return
+
+        # Persist cards
+        flat = [c for pack in per_pack for c in pack]
+        db_add_cards(state, requester.id, flat, pack_name)
+
+        # Try to DM results, one embed per pack
+        dm_sent = False
+        try:
+            dm = await requester.create_dm()
+            for i, cards in enumerate(per_pack, start=1):
+                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                await dm.send(embed=embed)
+                # be polite to rate limits if many packs
+                if amount > 5:
+                    await asyncio.sleep(0.2)
+            dm_sent = True
+        except Exception:
+            dm_sent = False
+
+        # Remove/clear the confirm message if it still exists
+        try:
+            await interaction.edit_original_response(content=None, view=None)
+        except Exception:
+            pass
+
+        # Public summary in the channel
+        summary = (
+            f"{requester.mention} opened **{amount}** pack{'s' if amount != 1 else ''} of **{pack_name}**."
+            f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
+        )
+
+        if dm_sent:
+            # Just a tidy, public summary
+            await interaction.channel.send(summary)
+        else:
+            # Fallback: post results in the channel (one embed per pack)
+            await interaction.channel.send(summary)
+            for i, cards in enumerate(per_pack, start=1):
+                embed = _pack_embed_for_cards(requester, pack_name, cards, i, amount)
+                await interaction.channel.send(embed=embed)
+                if amount > 5:
+                    await asyncio.sleep(0.2)
+
+
+    async def _open_box_and_render(
+        self,
+        interaction: discord.Interaction,
+        state,
+        requester,
+        pack_name: str,
+        amount: int | None = None,   # <-- added, not used
+    ):
         per_pack: list[list[dict]] = []
         try:
-            for _ in range(self.amount):
-                per_pack.append(open_pack_from_csv(self.state, pack_name, 1))
+            # 24 packs with your guaranteed top-rarity distribution
+            for i in range(1, PACKS_IN_BOX + 1):
+                top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
+                per_pack.append(open_pack_with_guaranteed_top_from_csv(state, pack_name, top_rarity=top))
         except Exception as e:
-            return await interaction.followup.send(f"Failed to open: {e}", ephemeral=True)
+            # if you spent currency a moment earlier, refund here as needed
+            # db_wallet_add(state, requester.id, d_fitzcoin=BOX_COST)
+            try:
+                await interaction.edit_original_response(content=f"Failed to open box: {e}", view=None)
+            except Exception:
+                await interaction.followup.send(f"Failed to open box: {e}", ephemeral=True)
+            return
 
+        # persist the cards
         flat = [c for pack in per_pack for c in pack]
-        db_add_cards(self.state, self.requester.id, flat, pack_name)
+        db_add_cards(state, requester.id, flat, pack_name)
 
-        paginator = PackResultsPaginator(self.requester, pack_name, per_pack)
-        await interaction.followup.send(embed=paginator._embed_for_index(), view=paginator, ephemeral=True)
-
-
-
-    async def _open_box_and_render(self, interaction, state, requester, pack_name: str, amount: int):
-        per_pack: list[list[dict]] = []
+        # DM one message per pack (same as packs flow)
+        dm_sent = False
         try:
-            for _ in range(18):
-                per_pack.append(open_pack_with_guaranteed_top_from_csv(self.state, pack_name, "super"))
-            for _ in range(5):
-                per_pack.append(open_pack_with_guaranteed_top_from_csv(self.state, pack_name, "ultra"))
-            per_pack.append(open_pack_with_guaranteed_top_from_csv(self.state, pack_name, "secret"))
-        except Exception as e:
-            return await interaction.followup.send(f"Failed to open box: {e}", ephemeral=True)
+            dm = await requester.create_dm()
+            for i, cards in enumerate(per_pack, start=1):
+                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
+                await dm.send(embed=embed)
+                await asyncio.sleep(0.25)  # gentle on rate limits
+            dm_sent = True
+        except Exception:
+            dm_sent = False
 
-        flat = [c for pack in per_pack for c in pack]
-        db_add_cards(self.state, self.requester.id, flat, pack_name)
+        # remove the confirm message if it still exists
+        try:
+            await interaction.edit_original_response(content=None, view=None)
+        except Exception:
+            pass
 
-        paginator = PackResultsPaginator(self.requester, pack_name, per_pack)
-        await interaction.followup.send(embed=paginator._embed_for_index(), view=paginator, ephemeral=True)
+        # public summary
+        summary = (
+            f"{requester.mention} opened a **box** (24 packs) of **{pack_name}**."
+            f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
+        )
+        await interaction.channel.send(summary)
+
+        # fallback to channel if DMs closed
+        if not dm_sent:
+            for i, cards in enumerate(per_pack, start=1):
+                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
+                await interaction.channel.send(embed=embed)
+                await asyncio.sleep(0.25)
 
 class CollectionPaginator(View):
     def __init__(self, requester: discord.User, target: discord.User, rows: List[Tuple[str,int,str,str,str,str]], page_size: int = 20, timeout: float = 180):

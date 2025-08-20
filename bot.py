@@ -10,6 +10,7 @@ from core.db import db_init, db_init_trades, db_init_wallet
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
+from core.images import ensure_rarity_emojis
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -38,12 +39,19 @@ async def on_ready():
     load_starters_from_csv(bot.state)
     db_init_wallet(bot.state)
 
+    # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
+    try:
+        gids = [GUILD_ID] if GUILD_ID else [g.id for g in bot.guilds]
+        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True)
+        print("[rarity] cached emoji IDs:", getattr(bot.state, "rarity_emoji_ids", {}))
+    except Exception as e:
+        print("[rarity] setup skipped:", e)
+
     # After import of cards, check for improper entries and purge incorrect ones
     for attr in ("_shop_print_by_key", "_shop_sig_to_set"):
         if hasattr(bot.state, attr):
             delattr(bot.state, attr)
     ensure_shop_index(bot.state)
-
 
     # 2) Load cogs BEFORE syncing
     for ext in COGS:

@@ -18,3 +18,5 @@ SELL_PRICES = {
     "secret": 40,
     # intentionally no "starlight": UNSALEABLE
 }
+
+PACK_COST=10

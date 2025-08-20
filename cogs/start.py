@@ -1,5 +1,5 @@
 # cogs/start.py
-import os, discord
+import os, discord, asyncio
 from collections import Counter
 from discord.ext import commands
 from discord import app_commands
@@ -7,8 +7,9 @@ from discord import app_commands
 from core.state import AppState
 from core.starters import load_starters_from_csv, grant_starter_to_user
 from core.packs import open_pack_from_csv, persist_pulls_to_db, RARITY_ORDER  # reuse your pack code  :contentReference[oaicite:4]{index=4}
-from core.views import PackResultsPaginator  # your paginator view
-from core.db import db_wallet_add
+from core.views import _pack_embed_for_cards  
+from core.db import db_wallet_add, db_add_cards
+from core.images import ensure_rarity_emojis
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -80,34 +81,56 @@ class StarterDeckSelectView(View):
             await interaction.response.send_message("That starter deck appears to be empty.", ephemeral=True)
             return
 
-        # 2) Which pack to open?
+        if deck_name.lower().__contains__("water"):
+            await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
+        elif deck_name.lower().__contains__("fire"):
+            await interaction.channel.send(f"Thats Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
+        else:
+            await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
+
+        # 2) Open 3 packs
         pack_name = STARTER_TO_PACK.get(deck_name, deck_name)
 
-        # 3) Open 3 packs and show with your paginator
+        # How many packs to open as part of /start
+        START_PACKS = 3
+
+        # (A) Open packs in memory
+        per_pack: list[list[dict]] = []
+        for _ in range(START_PACKS):
+            per_pack.append(open_pack_from_csv(self.state, pack_name, 1))  # pack_name = the pack you want for /start
+
+        # (B) Persist pulled cards to the player's collection
+        flat = [c for cards in per_pack for c in cards]
+        db_add_cards(self.state, interaction.user.id, flat, pack_name)
+
+        # (C) Try to DM one message per pack
+        dm_sent = False
         try:
-            per_pack_pulls: list[list[dict]] = []
-            for _ in range(3):
-                pulls = open_pack_from_csv(self.state, pack_name, amount=1)
-                persist_pulls_to_db(self.state, self.member.id, pack_name, pulls)  # <-- persist to DB
-                per_pack_pulls.append(pulls)
+            dm = await interaction.user.create_dm()
+            for i, cards in enumerate(per_pack, start=1):
+                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
+                await dm.send(embed=embed)
+                if START_PACKS > 5:
+                    await asyncio.sleep(0.2)  # gentle rate limiting safety
+            dm_sent = True
+        except Exception:
+            dm_sent = False
 
-            # Flavor line for Water
-            if deck_name.lower().__contains__("water"):
-                await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
-            elif deck_name.lower().__contains__("fire"):
-                await interaction.channel.send(f"Thats Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
-            else:
-                await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
-            paginator = PackResultsPaginator(self.member, pack_name, per_pack_pulls=per_pack_pulls)
-            await interaction.channel.send(embed=paginator._embed_for_index(), view=paginator)
+        # (D) Post a succinct summary; if DMs failed, fall back with embeds in-channel
+        summary = (
+            f"{interaction.user.mention} opened **{START_PACKS}** "
+            f"pack{'s' if START_PACKS != 1 else ''} of **{pack_name}**."
+            f"{' Results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
+        )
 
-        except Exception as e:
-            # Do not assign role, let user retry after you fix
-            await interaction.response.send_message(
-                f"Starter granted, but opening packs failed: `{e}`. Please try again after the issue is fixed.",
-                ephemeral=True
-            )
-            return
+        await interaction.channel.send(summary)
+
+        if not dm_sent:
+            for i, cards in enumerate(per_pack, start=1):
+                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
+                await interaction.channel.send(embed=embed)
+                if START_PACKS > 5:
+                    await asyncio.sleep(0.2)
 
         # 4) Assign the user's starting currency
         new_bal = db_wallet_add(self.state, self.member.id, d_fitzcoin=100, d_mambucks=1000)
@@ -135,6 +158,12 @@ class StarterDeckSelectView(View):
                 await interaction.followup.edit_message(message_id=interaction.message.id, view=self)
             except Exception:
                 pass
+        
+        # 7) Delete the original message upon completion
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            pass
 
     async def on_timeout(self):
         for child in self.children:
