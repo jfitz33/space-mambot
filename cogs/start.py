@@ -108,8 +108,11 @@ class StarterDeckSelectView(View):
         try:
             dm = await interaction.user.create_dm()
             for i, cards in enumerate(per_pack, start=1):
-                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
-                await dm.send(embed=embed)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
+                if f:
+                    await dm.send(embed=embed, file=f)
+                else:
+                    await dm.send(embed=embed)
                 if START_PACKS > 5:
                     await asyncio.sleep(0.2)  # gentle rate limiting safety
             dm_sent = True
@@ -127,7 +130,10 @@ class StarterDeckSelectView(View):
 
         if not dm_sent:
             for i, cards in enumerate(per_pack, start=1):
-                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+            if f:
+                await interaction.channel.send(embed=embed, file=f)
+            else:
                 await interaction.channel.send(embed=embed)
                 if START_PACKS > 5:
                     await asyncio.sleep(0.2)

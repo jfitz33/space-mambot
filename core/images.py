@@ -1,8 +1,8 @@
 # core/images.py
 from __future__ import annotations
-import os, io
+import re
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 import discord
 
 RARITY_FILES: Dict[str, str] = {
@@ -20,6 +20,10 @@ FALLBACK_BADGES: Dict[str, str] = {
     "ultra":  "🟢",
     "secret": "⚪",
 }
+
+def _slugify(name: str, max_len: int = 100) -> str:
+    base = re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip()).strip("_")
+    return (base or "card")[:max_len]
 
 def rarity_badge(state_or_bot, rarity: str) -> str:
     """
@@ -153,3 +157,78 @@ async def ensure_rarity_emojis(
 
     if verbose:
         print(f"[rarity] cached IDs: {bot.state.rarity_emoji_ids} (fallbacks used for missing)")
+
+def _card_images_dir() -> Path:
+    # repo_root / images / card_images
+    return Path(__file__).resolve().parents[1] / "images" / "card_images"
+
+def find_card_art_path(name: str, card_id: int | str | None = None) -> Optional[Path]:
+    """
+    Return a Path to an existing local image for this card.
+    Tries:
+      <slug>.jpg
+      <slug>-<id>.jpg (if id is provided)
+    Then also tries .png/.jpeg just in case.
+    """
+    base = _card_images_dir()
+    if not base.exists():
+        return None
+
+    slug = _slugify(name)
+    exts = ("jpg", "png", "jpeg")
+
+    cid = None
+    if card_id is not None:
+        s = str(card_id).strip()
+        if s.isdigit():
+            cid = s
+
+    # Prefer explicit <slug>-<id> if present
+    if cid:
+        for ext in exts:
+            p = base / f"{slug}-{cid}.{ext}"
+            if p.exists():
+                return p
+
+    # Then plain <slug>.<ext>
+    for ext in exts:
+        p = base / f"{slug}.{ext}"
+        if p.exists():
+            return p
+
+    # As a final fallback, allow any file that starts with slug (handles multiple prints)
+    for ext in exts:
+        matches = list(base.glob(f"{slug}-*.{ext}"))
+        if matches:
+            return matches[0]
+
+    return None
+
+def card_art_path_for_card(card: dict[str, Any]) -> Optional[Path]:
+    """Convenience wrapper that pulls name/id from a card dict."""
+    name = (card.get("name") or card.get("cardname") or "").strip()
+    raw_id = card.get("card_id") or card.get("cardid") or card.get("id")
+    return find_card_art_path(name, raw_id)
+
+def test_card_thumbnail_file() -> Tuple[Optional[discord.File], Optional[str]]:
+    """
+    Returns (discord.File, 'attachment://filename') for the first image found in /images/card_images.
+    If none found, returns (None, None).
+    """
+    base = _card_images_dir()
+    if not base.exists():
+        return None, None
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        for p in base.glob(f"*.{ext}"):
+            f = discord.File(p, filename=p.name)
+            return f, f"attachment://{p.name}"
+    return None, None
+
+def first_test_card_image_path() -> Path | None:
+    base = Path(__file__).resolve().parents[1] / "images" / "card_images"
+    if not base.exists():
+        return None
+    for ext in ("png","jpg","jpeg","webp"):
+        for p in base.glob(f"*.{ext}"):
+            return p
+    return None

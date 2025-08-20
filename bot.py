@@ -11,10 +11,12 @@ from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
 from core.images import ensure_rarity_emojis
+from core.art_import import download_high_rarity_art_from_state
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
+ART_IMPORT = int(os.getenv("ART_IMPORT", "0") or 0)
 DEV_FORCE_CLEAN = os.getenv("DEV_FORCE_CLEAN", "0") == "1"
 
 # Use default intents (message_content not needed for slash cmds, but default avoids warnings)
@@ -52,6 +54,10 @@ async def on_ready():
         if hasattr(bot.state, attr):
             delattr(bot.state, attr)
     ensure_shop_index(bot.state)
+
+    # If Art Import env var set to 1, download card images (super and higher)
+    if (ART_IMPORT == 1):
+        download_high_rarity_art_from_state(bot.state)
 
     # 2) Load cogs BEFORE syncing
     for ext in COGS:

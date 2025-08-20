@@ -2,18 +2,20 @@ from __future__ import annotations
 from collections import Counter
 
 import discord, asyncio
+from io import BytesIO
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv, normalize_rarity
 from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print, _blank_to_none, db_collection_debug_dump
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.constants import BUY_PRICES, SELL_PRICES
-from core.images import rarity_badge
-from core.state import AppState
+from core.images import card_art_path_for_card
+from core.render import render_pack_panel
 from typing import List, Tuple, Optional, Literal
 
 PACK_COST = 10
 PACKS_IN_BOX = 24
 BOX_COST = 200
+ORDER = {r: i for i, r in enumerate(RARITY_ORDER)}
 
 def _rank(r: str) -> int:
     try: return RARITY_ORDER.index((r or "").lower())
@@ -66,28 +68,45 @@ def _build_pack_options(state) -> List[discord.SelectOption]:
         opts.append(discord.SelectOption(label="No packs available", value="__none__"))
     return opts
 
-def _rarity_of(card: dict) -> str:
-    return (card.get("rarity") or card.get("cardrarity") or "").strip().lower()
+def _norm_rarity(r: str) -> str:
+    r = (r or "").strip().lower()
+    aliases = {
+        "sr": "super", "super rare": "super",
+        "ur": "ultra", "ultra rare": "ultra",
+        "secr": "secret", "secret rare": "secret",
+    }
+    return aliases.get(r, r)
 
-def _pack_embed_for_cards(emoji_ctx, pack_name: str, cards: list[dict], idx: int, total: int) -> discord.Embed:
+def _pick_highest_rarity_card(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
+    best = None
+    best_rank = 10_000
+    for c in cards or []:
+        raw = c.get("rarity") or c.get("cardrarity") or ""
+        rr = _norm_rarity(raw)
+        rank = ORDER.get(rr, 9_999)
+        if rank < best_rank:
+            best, best_rank = c, rank
+    return best
+
+def _pack_embed_for_cards(emoji_ctx, pack_name: str, cards: list[dict], idx: int, total: int) -> tuple[discord.Embed, discord.File | None]:
     title = f"{pack_name} — Pack {idx}/{total}" if total > 1 else f"{pack_name} — Pack"
     e = discord.Embed(title=title, color=0x2b6cb0)
 
-    lines = []
-    for c in cards:
-        name   = c.get("name") or c.get("cardname") or "Unknown"
-        raw_r  = (c.get("rarity") or c.get("cardrarity") or "")
-        r      = raw_r.strip().lower()
-        code   = (c.get("code") or c.get("cardcode") or "").strip()
+    # pick the highest-rarity card's local art (if present)
+    top = _pick_highest_rarity_card(cards) or {}
+    art_path = card_art_path_for_card(top)
 
-        badge = rarity_badge(emoji_ctx, r)  # << use the bot/client as the context
-        lines.append(f"{badge} **{name}**" + (f" · `{code}`" if code else ""))
+    # build the composite panel (left: list, right: top art)
+    png_bytes, fname = render_pack_panel(
+        cards,
+        card_image_path=art_path,     # None is fine; panel renders without art
+        filename=f"pack_{idx}.png",
+        scale=2.0,                    # keep the crisp 2x render
+    )
 
-    chunk = "\n".join(lines)
-    if len(chunk) > 3800:
-        chunk = "\n".join(lines[:100]) + "\n…"
-    e.description = chunk
-    return e
+    file = discord.File(fp=BytesIO(png_bytes), filename=fname)
+    e.set_image(url=f"attachment://{fname}")
+    return e, file
 
 class PacksDropdown(discord.ui.Select):
     def __init__(self, parent_view: "PacksSelectView"):
@@ -738,8 +757,11 @@ class PacksSelectView(discord.ui.View):
         try:
             dm = await requester.create_dm()
             for i, cards in enumerate(per_pack, start=1):
-                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
-                await dm.send(embed=embed)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                if f:
+                    await dm.send(embed=embed, file=f)
+                else:
+                    await dm.send(embed=embed)
                 # be polite to rate limits if many packs
                 if amount > 5:
                     await asyncio.sleep(0.2)
@@ -766,8 +788,11 @@ class PacksSelectView(discord.ui.View):
             # Fallback: post results in the channel (one embed per pack)
             await interaction.channel.send(summary)
             for i, cards in enumerate(per_pack, start=1):
-                embed = _pack_embed_for_cards(requester, pack_name, cards, i, amount)
-                await interaction.channel.send(embed=embed)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                if f:
+                    await interaction.channel.send(embed=embed, file=f)
+                else:
+                    await interaction.channel.send(embed=embed)
                 if amount > 5:
                     await asyncio.sleep(0.2)
 
@@ -804,8 +829,11 @@ class PacksSelectView(discord.ui.View):
         try:
             dm = await requester.create_dm()
             for i, cards in enumerate(per_pack, start=1):
-                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
-                await dm.send(embed=embed)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                if f:
+                    await dm.send(embed=embed, file=f)
+                else:
+                    await dm.send(embed=embed)
                 await asyncio.sleep(0.25)  # gentle on rate limits
             dm_sent = True
         except Exception:
@@ -827,8 +855,11 @@ class PacksSelectView(discord.ui.View):
         # fallback to channel if DMs closed
         if not dm_sent:
             for i, cards in enumerate(per_pack, start=1):
-                embed = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
-                await interaction.channel.send(embed=embed)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                if f:
+                    await interaction.channel.send(embed=embed, file=f)
+                else:
+                    await interaction.channel.send(embed=embed)
                 await asyncio.sleep(0.25)
 
 class CollectionPaginator(View):
