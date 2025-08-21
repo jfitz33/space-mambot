@@ -190,10 +190,6 @@ class ConfirmSpendView(discord.ui.View):
             # Open + render (your renderer must use followup.send)
             await self.on_confirm(interaction, self.state, self.requester, self.pack_name, self.amount)
 
-            # Public announcements
-            await interaction.channel.send(
-                f"🎉 {self.requester.mention} opened **{self.amount}** pack(s) of **{self.pack_name}**!"
-            )
             await interaction.channel.send(
                 f"💰 Remaining balance → **{after_spend['fitzcoin']}** fitzcoin."
             )
