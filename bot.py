@@ -29,7 +29,7 @@ bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 # Set to track live views to properly enforce timeouts
 setattr(bot.state, "live_views", set())
 
-COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop"]
+COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop", "cogs.wheel"]
 
 @bot.event
 async def on_ready():
