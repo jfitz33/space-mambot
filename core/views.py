@@ -777,6 +777,11 @@ class PacksSelectView(discord.ui.View):
             f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
         )
 
+        # Update packs opened counter for quests
+        quests_cog = interaction.client.get_cog("Quests")
+        if quests_cog:
+            await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=amount)
+
         if dm_sent:
             # Just a tidy, public summary
             await interaction.channel.send(summary)
@@ -840,6 +845,11 @@ class PacksSelectView(discord.ui.View):
             await interaction.edit_original_response(content=None, view=None)
         except Exception:
             pass
+
+        # Update packs opened counter for quests
+        quests_cog = interaction.client.get_cog("Quests")
+        if quests_cog:
+            await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=amount)
 
         # public summary
         summary = (

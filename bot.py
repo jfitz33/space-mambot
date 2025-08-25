@@ -12,6 +12,7 @@ from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
 from core.images import ensure_rarity_emojis
 from core.art_import import download_high_rarity_art_from_state
+from core.quests.schema import db_init_quests, db_seed_example_quests
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -29,13 +30,15 @@ bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 # Set to track live views to properly enforce timeouts
 setattr(bot.state, "live_views", set())
 
-COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop", "cogs.wheel"]
+COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop", "cogs.wheel", "cogs.quests"]
 
 @bot.event
 async def on_ready():
     # 1) Core init
     db_init(bot.state)
     db_init_trades(bot.state)
+    await db_init_quests(bot.state)
+    await db_seed_example_quests(bot.state)
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)

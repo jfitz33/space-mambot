@@ -125,12 +125,16 @@ class StarterDeckSelectView(View):
             f"pack{'s' if START_PACKS != 1 else ''} of **{pack_name}**."
             f"{' Results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
         )
+        # Update packs opened counter for quests
+        quests_cog = interaction.client.get_cog("Quests")  # same as self.bot
+        if quests_cog:
+            await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=START_PACKS)
 
         await interaction.channel.send(summary)
 
         if not dm_sent:
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
             if f:
                 await interaction.channel.send(embed=embed, file=f)
             else:
