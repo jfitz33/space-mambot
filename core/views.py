@@ -5,9 +5,8 @@ import discord, asyncio
 from io import BytesIO
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv, normalize_rarity
-from core.db import db_add_cards, db_wallet_try_spend_fitzcoin, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print, _blank_to_none, db_collection_debug_dump
+from core.db import db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print, _blank_to_none, db_collection_debug_dump, db_shards_add, db_shards_get
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
-from core.constants import BUY_PRICES, SELL_PRICES
 from core.images import card_art_path_for_card
 from core.render import render_pack_panel
 from typing import List, Tuple, Optional, Literal
@@ -139,26 +138,23 @@ class ConfirmSpendView(discord.ui.View):
         self.total_cost = total_cost
         self._processing = False
 
-    async def _remove_ui(self, interaction: discord.Interaction, content: str | None = None):
-        """Remove the confirm buttons from the message that contains them."""
+    async def remove_ui(self, interaction: discord.Interaction, content: str | None = None):
         self.stop()
         for item in self.children:
             item.disabled = True
         try:
-            # This edits the message that the button/select lives on
             await interaction.response.edit_message(content=content, view=None)
         except discord.InteractionResponded:
-            # If we already responded/deferred, edit the message object directly
             await interaction.message.edit(content=content, view=None)
         except Exception:
             pass
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from core.db import db_wallet_try_spend_mambucks, db_wallet_add
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
 
-        # Re-entrancy guard (ignore spam clicks)
         if self._processing:
             try:
                 await interaction.response.defer_update()
@@ -167,35 +163,37 @@ class ConfirmSpendView(discord.ui.View):
             return
         self._processing = True
 
-        # 🔒 Immediately remove the buttons so they can’t be clicked again
-        await self._remove_ui(interaction, content="Processing…")
-
-        # Acknowledge so we can send followups
+        await self.remove_ui(interaction, content="Processing…")
         try:
             await interaction.followup.defer(ephemeral=True)
         except Exception:
             pass
 
-        total_cost = self.total_cost if self.total_cost is not None else self.amount * PACK_COST
-        after_spend = db_wallet_try_spend_fitzcoin(self.state, self.requester.id, total_cost)
+        total_cost = int(self.total_cost or 0)
+        if total_cost <= 0:
+            # fallback if you still use PACK_COST * amount pattern elsewhere
+            from core.constants import PACK_COST
+            total_cost = self.amount * PACK_COST
+
+        after_spend = db_wallet_try_spend_mambucks(self.state, self.requester.id, total_cost)
         if after_spend is None:
             self._processing = False
             return await interaction.followup.send(
-                f"❌ Not enough fitzcoin to open **{self.amount}** pack(s) of **{self.pack_name}**.\n"
+                f"❌ Not enough **Mambucks** to open **{self.amount}** pack(s) of **{self.pack_name}**.\n"
                 f"Cost: **{total_cost}**.",
                 ephemeral=True
             )
 
         try:
-            # Open + render (your renderer must use followup.send)
             await self.on_confirm(interaction, self.state, self.requester, self.pack_name, self.amount)
-
-            await interaction.channel.send(
-                f"💰 Remaining balance → **{after_spend['fitzcoin']}** fitzcoin."
-            )
+            # (channel could be None for DMs)
+            if interaction.channel:
+                await interaction.channel.send(
+                    f"💰 Remaining balance → **{after_spend['mambucks']}** Mambucks."
+                )
         except Exception:
-            # Refund on failure
-            db_wallet_add(self.state, self.requester.id, d_fitzcoin=total_cost)
+            # refund Mambucks on failure
+            db_wallet_add(self.state, self.requester.id, d_mambucks=total_cost)
             await interaction.followup.send("⚠️ Something went wrong opening packs. You were not charged.", ephemeral=True)
             raise
         finally:
@@ -205,8 +203,8 @@ class ConfirmSpendView(discord.ui.View):
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
-        # Remove the UI and leave a small notice (or set content=None to blank it)
-        await self._remove_ui(interaction, content="Cancelled.")
+        await self.remove_ui(interaction, content="Cancelled.")
+
 
 class ConfirmBuyCardView(discord.ui.View):
     def __init__(self, state, requester: discord.Member, print_key: str, amount: int, total_cost: int, *, timeout: float = 90):
@@ -215,12 +213,13 @@ class ConfirmBuyCardView(discord.ui.View):
         self.requester = requester
         self.print_key = print_key
         self.amount = amount
-        self.total_cost = total_cost
+        self.total_cost = total_cost  # recomputed via shard cost
         self._processing = False
 
-    async def _remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
+    async def remove_ui(self, interaction: discord.Interaction, content: str | None = None):
         self.stop()
-        for item in self.children: item.disabled = True
+        for item in self.children:
+            item.disabled = True
         try:
             await interaction.response.edit_message(content=content, view=None)
         except discord.InteractionResponded:
@@ -228,55 +227,80 @@ class ConfirmBuyCardView(discord.ui.View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        from core.cards_shop import find_card_by_print_key, card_label, get_card_rarity, resolve_card_set
+        from core.db import db_add_cards, db_shards_get, db_shards_add
+        from core.constants import CRAFT_COST_BY_RARITY, set_id_for_pack
+        from core.currency import shard_set_name
+
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
         if self._processing:
-            try: await interaction.response.defer_update()
-            except: pass
+            try:
+                await interaction.response.defer_update()
+            except Exception:
+                pass
             return
         self._processing = True
 
-        await self._remove_ui(interaction, content="Processing purchase…")
+        await self.remove_ui(interaction, content="Processing craft…")
         try:
             await interaction.followup.defer(ephemeral=True)
-        except: pass
+        except Exception:
+            pass
 
-        # Spend mambucks
-        after_spend = db_wallet_try_spend_mambucks(self.state, self.requester.id, self.total_cost)
-        if after_spend is None:
+        card = find_card_by_print_key(self.state, self.print_key)
+        if not card:
+            self._processing = False
+            return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+
+        set_name = resolve_card_set(self.state, card)
+        if not set_name:
             self._processing = False
             return await interaction.followup.send(
-                f"❌ Not enough mambucks (need **{self.total_cost}**).", ephemeral=True
-            )
-
-        try:
-            card = find_card_by_print_key(self.state, self.print_key)
-            if not card:
-                db_wallet_add(self.state, self.requester.id, d_mambucks=self.total_cost)
-                return await interaction.followup.send("⚠️ Card printing not found; you were not charged.", ephemeral=True)
-
-            # 🔎 Resolve set (no fallback). If unresolved, refund and abort.
-            set_name = resolve_card_set(self.state, card)
-            if not set_name:
-                db_wallet_add(self.state, self.requester.id, d_mambucks=self.total_cost)
-                return await interaction.followup.send(
-                    "⚠️ This printing is missing a card set in the data, so it can’t be bought.",
-                    ephemeral=True
-                )
-
-            # Insert with the resolved set
-            db_add_cards(self.state, self.requester.id, [card] * self.amount, set_name)
-
-            await interaction.followup.send(
-                f"✅ Bought **{self.amount}× {card_label(card)}** for **{self.total_cost}** mambucks.",
+                "⚠️ This printing is missing a card set in the data, so it can’t be crafted.",
                 ephemeral=True
             )
-            await interaction.channel.send(
-                f"{self.requester.mention} bought {self.amount} {card.get('name') or 'card'} for {self.total_cost} mambucks"
+
+        rarity = (get_card_rarity(card) or "").lower()
+        cost_each = CRAFT_COST_BY_RARITY.get(rarity)
+        if cost_each is None:
+            self._processing = False
+            return await interaction.followup.send("❌ This printing cannot be crafted.", ephemeral=True)
+
+        total_cost = cost_each * self.amount
+
+        set_id = set_id_for_pack(set_name) or 1  # default Set 1
+        have = db_shards_get(self.state, self.requester.id, set_id)
+        if have < total_cost:
+            self._processing = False
+            pretty = shard_set_name(set_id)
+            return await interaction.followup.send(
+                f"❌ Not enough {pretty}. Need **{total_cost}**, you have **{have}**.",
+                ephemeral=True
             )
+
+        # debit shards (non-atomic by design, you chose this path)
+        db_shards_add(self.state, self.requester.id, set_id, -total_cost)
+
+        try:
+            db_add_cards(self.state, self.requester.id, [card] * self.amount, set_name)
+            after = db_shards_get(self.state, self.requester.id, set_id)
+            pretty = shard_set_name(set_id)
+            await interaction.followup.send(
+                f"✅ Crafted **{self.amount}× {card_label(card)}** "
+                f"for **{total_cost}** {pretty}.\n"
+                f"**Remaining {pretty}:** {after}",
+                ephemeral=True
+            )
+            if interaction.channel:
+                await interaction.channel.send(
+                    f"{self.requester.mention} crafted {self.amount} {card.get('name') or 'card'} "
+                    f"for {total_cost} {pretty}"
+                )
         except Exception:
-            db_wallet_add(self.state, self.requester.id, d_mambucks=self.total_cost)
-            await interaction.followup.send("⚠️ Purchase failed. You were not charged.", ephemeral=True)
+            # refund shards on failure
+            db_shards_add(self.state, self.requester.id, set_id, total_cost)
+            await interaction.followup.send("⚠️ Craft failed. You were not charged.", ephemeral=True)
             raise
         finally:
             self._processing = False
@@ -285,7 +309,8 @@ class ConfirmBuyCardView(discord.ui.View):
     async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
-        await self._remove_ui(interaction, content="Purchase cancelled.")
+        await self.remove_ui(interaction, content="Craft cancelled.")
+
 
 class ConfirmSellCardView(discord.ui.View):
     def __init__(self, state, requester: discord.Member, print_key: str, amount: int, total_credit: int, *, timeout: float = 90):
@@ -297,9 +322,10 @@ class ConfirmSellCardView(discord.ui.View):
         self.total_credit = total_credit
         self._processing = False
 
-    async def _remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
+    async def remove_ui(self, interaction: discord.Interaction, content: Optional[str] = None):
         self.stop()
-        for item in self.children: item.disabled = True
+        for item in self.children:
+            item.disabled = True
         try:
             await interaction.response.edit_message(content=content, view=None)
         except discord.InteractionResponded:
@@ -307,82 +333,79 @@ class ConfirmSellCardView(discord.ui.View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        from core.cards_shop import find_card_by_print_key, card_label, get_card_rarity, resolve_card_set
+        from core.db import db_collection_remove_exact_print, db_shards_add, db_shards_get
+        from core.constants import SHARD_YIELD_BY_RARITY, set_id_for_pack
+        from core.currency import shard_set_name
+
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
         if self._processing:
-            try: await interaction.response.defer_update()
-            except: pass
+            try:
+                await interaction.response.defer_update()
+            except Exception:
+                pass
             return
         self._processing = True
 
-        await self._remove_ui(interaction, content="Processing sale…")
+        await self.remove_ui(interaction, content="Processing sharding…")
         try:
             await interaction.followup.defer(ephemeral=True)
-        except: pass
+        except Exception:
+            pass
 
-        try:
-            card = find_card_by_print_key(self.state, self.print_key)
-            if not card:
-                self._processing = False
-                return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+        card = find_card_by_print_key(self.state, self.print_key)
+        if not card:
+            self._processing = False
+            return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
 
-            rarity = get_card_rarity(card)
-            price_each = SELL_PRICES.get(rarity)
-            if rarity == "starlight" or price_each is None:
-                self._processing = False
-                return await interaction.followup.send(
-                    f"❌ {card_label(card)} cannot be sold to the shop.", ephemeral=True
-                )
-
-            # 🔎 Resolve set (no fallback). If unresolved, block sale.
-            set_name = resolve_card_set(self.state, card)
-            if not set_name:
-                self._processing = False
-                return await interaction.followup.send(
-                    "⚠️ This printing is missing a card set in the data, so it can’t be sold.",
-                    ephemeral=True
-                )
-            card_code = _blank_to_none(card.get("code") or card.get("cardcode"))
-            card_id   = _blank_to_none(card.get("id") or card.get("cardid"))
-            rows = db_collection_debug_dump(self.state, seller.id, sig_name, sig_rarity, set_name)
-            print("DEBUG owned rows:", rows)
-            removed = db_collection_remove_exact_print(
-                self.state,
-                self.requester.id,
-                card_name=card.get("name") or card.get("cardname") or "",
-                card_rarity=rarity,
-                card_set=set_name,  # use the resolved set
-                card_code=card_code,
-                card_id=card_id,
-                amount=self.amount,
-            )
-            if removed <= 0:
-                self._processing = False
-                return await interaction.followup.send(
-                    f"❌ You don’t own {card_label(card)} x{self.amount}.", ephemeral=True
-                )
-
-            credit = price_each * removed
-            db_wallet_add(self.state, self.requester.id, d_mambucks=credit)
-
-            await interaction.followup.send(
-                f"✅ Sold **{removed}× {card_label(card)}** for **{credit}** mambucks.",
+        set_name = resolve_card_set(self.state, card)
+        if not set_name:
+            self._processing = False
+            return await interaction.followup.send(
+                "⚠️ This printing is missing a card set in the data, so it can’t be fragmented.",
                 ephemeral=True
             )
-            await interaction.channel.send(
-                f"{self.requester.mention} sold {removed} {card.get('name') or 'card'} for {credit} mambucks"
-            )
-        except Exception:
-            await interaction.followup.send("⚠️ Sale failed.", ephemeral=True)
-            raise
-        finally:
+
+        rarity = (get_card_rarity(card) or "").lower()
+        yield_each = SHARD_YIELD_BY_RARITY.get(rarity)
+        if yield_each is None:
             self._processing = False
+            return await interaction.followup.send("❌ This printing cannot be fragmented.", ephemeral=True)
+
+        # remove exact print from collection
+        removed = db_collection_remove_exact_print(
+            self.state,
+            self.requester.id,
+            card_name=(card.get("name") or card.get("cardname") or ""),
+            card_rarity=(card.get("rarity") or card.get("cardrarity") or ""),
+            card_set=set_name,
+            card_code=(card.get("code") or card.get("cardcode")),
+            card_id=(card.get("id") or card.get("cardid")),
+            amount=int(self.amount),
+        )
+        if removed <= 0:
+            self._processing = False
+            return await interaction.followup.send("❌ You don’t have the specified copies to shard.", ephemeral=True)
+
+        set_id = set_id_for_pack(set_name) or 1
+        credit = removed * yield_each
+        db_shards_add(self.state, self.requester.id, set_id, credit)
+        after = db_shards_get(self.state, self.requester.id, set_id)
+        pretty = shard_set_name(set_id)
+
+        await interaction.followup.send(
+            f"🔨 Fragmented **{removed}× {card_label(card)}** into **{credit}** {pretty}.\n"
+            f"**Total {pretty}:** {after}",
+            ephemeral=True
+        )
+        self._processing = False
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
     async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
-        await self._remove_ui(interaction, content="Sale cancelled.")
+        await self.remove_ui(interaction, content="Sale cancelled.")
 
 class ConfirmP2PInitiatorView(discord.ui.View):
     """
@@ -702,7 +725,7 @@ class PacksSelectView(discord.ui.View):
             )
             await interaction.response.edit_message(
                 content=(
-                    f"Open a **box** of **{pack_name}** for **{BOX_COST}** fitzcoin?\n"
+                    f"Open a **box** of **{pack_name}** for **{BOX_COST}** Mambucks?\n"
                     f"That’s **{PACKS_IN_BOX}** packs with guarantees:\n"
                     f"• Packs 1–18: Super Rare top\n"
                     f"• Packs 19–23: Ultra Rare top\n"
@@ -720,29 +743,16 @@ class PacksSelectView(discord.ui.View):
                 on_confirm=self._open_and_render
             )
             await interaction.response.edit_message(
-                content=(f"Are you sure you want to spend **{total_cost}** fitzcoin on "
+                content=(f"Are you sure you want to spend **{total_cost}** Mambucks on "
                          f"**{self.amount}** pack(s) of **{pack_name}**?"),
                 view=confirm_view
             )
 
     async def _open_and_render(self, interaction: discord.Interaction, state, requester, pack_name: str, amount: int):
+        # ConfirmSpendView has already charged Mambucks and will refund on exceptions.
         per_pack: list[list[dict]] = []
-        total_cost = amount * PACK_COST
-        try:
-            for _ in range(amount):
-                per_pack.append(open_pack_from_csv(state, pack_name, 1))
-        except Exception as e:
-            # Re-enable UI or just inform and refund
-            for ch in self.view.children: ch.disabled = True
-            # refund
-            from core.db import db_wallet_add
-            db_wallet_add(state, requester.id, d_fitzcoin=total_cost)
-            # remove confirm view if possible, then post error
-            try:
-                await interaction.edit_original_response(content=f"Failed to open: {e}", view=None)
-            except Exception:
-                await interaction.followup.send(f"Failed to open: {e}", ephemeral=True)
-            return
+        for _ in range(amount):
+            per_pack.append(open_pack_from_csv(state, pack_name, 1))
 
         # Persist cards
         flat = [c for pack in per_pack for c in pack]
@@ -797,29 +807,20 @@ class PacksSelectView(discord.ui.View):
                 if amount > 5:
                     await asyncio.sleep(0.2)
 
-
     async def _open_box_and_render(
         self,
         interaction: discord.Interaction,
         state,
         requester,
         pack_name: str,
-        amount: int | None = None,   # <-- added, not used
+        amount: int | None = None,   # not used; ConfirmSpendView passes PACKS_IN_BOX in .amount
     ):
+        # ConfirmSpendView has already charged Mambucks and will refund on exceptions.
         per_pack: list[list[dict]] = []
-        try:
-            # 24 packs with your guaranteed top-rarity distribution
-            for i in range(1, PACKS_IN_BOX + 1):
-                top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
-                per_pack.append(open_pack_with_guaranteed_top_from_csv(state, pack_name, top_rarity=top))
-        except Exception as e:
-            # if you spent currency a moment earlier, refund here as needed
-            # db_wallet_add(state, requester.id, d_fitzcoin=BOX_COST)
-            try:
-                await interaction.edit_original_response(content=f"Failed to open box: {e}", view=None)
-            except Exception:
-                await interaction.followup.send(f"Failed to open box: {e}", ephemeral=True)
-            return
+        # 24 packs with your guaranteed top-rarity distribution
+        for i in range(1, PACKS_IN_BOX + 1):
+            top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
+            per_pack.append(open_pack_with_guaranteed_top_from_csv(state, pack_name, top_rarity=top))
 
         # persist the cards
         flat = [c for pack in per_pack for c in pack]
@@ -830,7 +831,7 @@ class PacksSelectView(discord.ui.View):
         try:
             dm = await requester.create_dm()
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
                 if f:
                     await dm.send(embed=embed, file=f)
                 else:
@@ -846,10 +847,10 @@ class PacksSelectView(discord.ui.View):
         except Exception:
             pass
 
-        # Update packs opened counter for quests
+        # Update packs opened counter for quests (box = 24)
         quests_cog = interaction.client.get_cog("Quests")
         if quests_cog:
-            await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=amount)
+            await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=PACKS_IN_BOX)
 
         # public summary
         summary = (
@@ -861,7 +862,7 @@ class PacksSelectView(discord.ui.View):
         # fallback to channel if DMs closed
         if not dm_sent:
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
                 if f:
                     await interaction.channel.send(embed=embed, file=f)
                 else:

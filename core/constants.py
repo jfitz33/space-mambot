@@ -1,22 +1,36 @@
-# core/constants.py
-
-# Shop pricing (by canonical rarity)
-BUY_PRICES = {
-    "common": 5,
-    "rare": 10,
-    "super": 20,
-    "ultra": 50,
-    "secret": 100,
-    # intentionally no "starlight": not buyable by default
-}
-
-SELL_PRICES = {
-    "common": 2,
-    "rare": 4,
-    "super": 7,
-    "ultra": 20,
-    "secret": 40,
-    # intentionally no "starlight": UNSALEABLE
-}
-
 PACK_COST=10
+BOX_COST=200
+
+# Which packs belong to which Set (uppercase pack names)
+PACKS_BY_SET = {
+    1: {"FIRE", "WATER"},  # Set 1 → Elemental Shards
+    # 2: {"...","..."},    # Add future sets here
+}
+
+def set_id_for_pack(pack_name: str) -> int | None:
+    if not pack_name:
+        return None
+    p = (pack_name or "").strip().upper()
+    for sid, names in PACKS_BY_SET.items():
+        if p in names:
+            return sid
+    return None
+
+# Shard economy (rarity keys match your get_card_rarity values: lowercased)
+CRAFT_COST_BY_RARITY = {
+    "common": 5,
+    "rare": 60,
+    "super": 90,
+    "ultra": 300,
+    "secret": 1500,
+    # "starlight": 0 or omitted if not craftable
+}
+
+SHARD_YIELD_BY_RARITY = {
+    "common": 1,
+    "rare": 20,
+    "super": 30,
+    "ultra": 100,
+    "secret": 500,
+    # "starlight": 0 or omitted if not shardable
+}

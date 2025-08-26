@@ -1,10 +1,9 @@
+# core/engine.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Optional, Iterable, List
-from datetime import datetime
+from typing import Any, Optional, Iterable, List, Tuple
 from zoneinfo import ZoneInfo
 import asyncio
-import json
 
 from core.quests.schema import (
     db_fetch_active_quests,
@@ -14,7 +13,9 @@ from core.quests.schema import (
     db_mark_claimed_step,
 )
 from .timekeys import now_et, period_key_for_category
-from core.db import db_wallet_add
+from core.db import db_wallet_add, db_shards_add
+from core.constants import set_id_for_pack
+from core.currency import shard_set_name
 
 ET = ZoneInfo("America/New_York")
 
@@ -25,8 +26,8 @@ class QuestDef:
     description: str
     category: str            # daily/weekly/permanent
     target_count: int
-    reward_type: str         # e.g., 'mambucks'
-    reward_payload: dict     # e.g., {'amount': 50} or {'rarity': 'RARE'}
+    reward_type: str         # 'mambucks' | 'fitzcoin' | 'shards' | 'pack'
+    reward_payload: dict     # e.g., {'amount': 50} or {'amount': 50, 'set_id': 1} or {'pack': 'FIRE', 'qty': 3}
     active: bool = True
 
     @property
@@ -45,10 +46,10 @@ class QuestManager:
     """
     Storage-agnostic manager; expects you to provide 3 tiny DB functions on state:
       - db_fetch_active_quests(state) -> list[QuestDef-like dicts]
-      - db_upsert_progress(state, user_id, quest_id, period_key, delta) -> (progress, completed)
+      - db_upsert_progress(state, user_id, quest_id, period_key, delta, target_count) -> (progress, completed)
       - db_get_user_progress(state, user_id, quest_ids, period_key) -> dict[quest_id] -> row
       - db_mark_claimed(state, user_id, quest_id, period_key) -> bool
-    You can map these to your existing DB layer.
+      - db_mark_claimed_step(state, user_id, quest_id, period_key, expect_steps) -> bool
     """
     def __init__(self, state: Any):
         self.state = state
@@ -160,11 +161,13 @@ class QuestManager:
         return True, f"Reward claimed! {ack}"
 
 async def maybe_await(x):
-    if asyncio.iscoroutine(x): return await x
+    if asyncio.iscoroutine(x):
+        return await x
     return x
 
-# --- Reward hook (wire to your wallet / cards) ---
-async def _credit_currency(state, user_id: int, currency: str, amount: int):
+# --- Reward hooks ------------------------------------------------------------
+
+async def credit_currency(state, user_id: int, currency: str, amount: int):
     """
     Credit using core.db.db_wallet_add.
 
@@ -202,30 +205,39 @@ async def give_reward(state, user_id: int, reward_type: str, payload: dict) -> s
     """
     Performs the reward side-effect and returns a short human message
     describing what was granted (for UI).
+    Supported types: 'mambucks', 'fitzcoin' (legacy), 'shards', 'pack'
     """
     rt = (reward_type or "").lower()
     data = payload or {}
 
     if rt == "mambucks":
         amt = int(data.get("amount", 0))
-        await _credit_currency(state, user_id, "mambucks", amt)
+        await credit_currency(state, user_id, "mambucks", amt)
         return f"{amt} Mambucks credited to your wallet."
 
     if rt == "fitzcoin":
         amt = int(data.get("amount", 0))
-        await _credit_currency(state, user_id, "fitzcoin", amt)
+        await credit_currency(state, user_id, "fitzcoin", amt)
         return f"{amt} Fitzcoin credited to your wallet."
 
-    #if rt == "card_random_rarity":
-    #    rarity = str(data.get("rarity", "COMMON"))
-    #    qty = int(data.get("qty", 1))
-    #    from cogs.rewards_wheel import _pick_random_card_by_rarity, _award_card_to_user
-    #    card = _pick_random_card_by_rarity(state, rarity)
-    #    if not card:
-    #        raise RuntimeError(f"No cards available for rarity {rarity}")
-    #    await _award_card_to_user(state, user_id, card, qty=qty)
-    #    # Friendly line; you can tweak wording
-    #    return f"{qty} random {rarity.title()} card added to your collection."
+    if rt == "shards":
+        amt = int(data.get("amount", 0))
+        # resolve set id from payload variants: set_id | set (int) | set (str pack name) | pack
+        set_id: Optional[int] = None
+        if "set_id" in data:
+            set_id = int(data["set_id"])
+        elif "set" in data and isinstance(data["set"], int):
+            set_id = int(data["set"])
+        elif "set" in data and isinstance(data["set"], str):
+            set_id = set_id_for_pack(str(data["set"]))
+        elif "pack" in data:
+            set_id = set_id_for_pack(str(data["pack"]))
+        if not set_id:
+            set_id = 1  # default to Set 1
+        if amt <= 0:
+            return "No shards credited."
+        db_shards_add(state, user_id, set_id, amt)
+        return f"{amt} {shard_set_name(set_id)} credited to your wallet."
 
     if rt == "pack":
         pack_name = data["pack"]

@@ -1,7 +1,12 @@
-import sqlite3, json, time
+import sqlite3, json, time, asyncio
 from typing import Tuple, List, Dict, Any, Optional, Iterable
 from core.state import AppState
 from core.util_norm import normalize_rarity, normalize_set_name, blank_to_none
+
+def conn(path: str) -> sqlite3.Connection:
+    c = sqlite3.connect(path)
+    c.execute("PRAGMA foreign_keys = ON;")
+    return c
 
 def db_init(state: AppState):
     with sqlite3.connect(state.db_path) as conn, conn:
@@ -578,9 +583,9 @@ def db_wallet_add(state, user_id: int, d_fitzcoin: int = 0, d_mambucks: int = 0)
         """, (int(d_fitzcoin), int(d_mambucks), now, str(user_id)))
     return db_wallet_get(state, user_id)
 
-def db_wallet_try_spend_fitzcoin(state, user_id: int, amount: int) -> dict | None:
+def db_wallet_try_spend_mambucks(state, user_id: int, amount: int) -> dict | None:
     """
-    Atomically spend 'amount' fitzcoin if user has enough.
+    Atomically spend 'amount' mambucks if user has enough.
     Returns updated balances dict on success, or None if insufficient funds.
     """
     assert amount >= 0
@@ -588,17 +593,18 @@ def db_wallet_try_spend_fitzcoin(state, user_id: int, amount: int) -> dict | Non
     with sqlite3.connect(state.db_path) as conn, conn:
         # Ensure a row exists
         conn.execute("""
-        INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
-        VALUES (?, 0, 0, ?)
-        ON CONFLICT(user_id) DO NOTHING;
+            INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
+            VALUES (?, 0, 0, ?)
+            ON CONFLICT(user_id) DO NOTHING;
         """, (str(user_id), now))
 
+        # Atomic conditional spend (mirrors your fitzcoin version)
         cur = conn.execute("""
             UPDATE wallet
-               SET fitzcoin = fitzcoin - ?,
+               SET mambucks = mambucks - ?,
                    updated_ts = ?
              WHERE user_id = ?
-               AND fitzcoin >= ?;
+               AND mambucks >= ?;
         """, (int(amount), now, str(user_id), int(amount)))
 
         if cur.rowcount == 0:
@@ -606,41 +612,78 @@ def db_wallet_try_spend_fitzcoin(state, user_id: int, amount: int) -> dict | Non
 
     return db_wallet_get(state, user_id)
 
-# core/db.py  (append to your wallet helpers)
-import sqlite3, time
-
-def db_wallet_try_spend_mambucks(state, user_id: int, cost: int):
+async def db_wallet_migrate_to_mambucks_and_shards_per_set(state) -> None:
     """
-    Atomically subtract `cost` mambucks if the user has enough.
-    Returns the new balances dict on success, or None if insufficient.
+    One-time migration (idempotent via app_migrations):
+      - Create wallet (legacy), wallet_shards (new), app_migrations (marker)
+      - Move legacy wallet.mambucks -> wallet_shards(set_id=1)  [Elemental Shards]
+      - Fold wallet.fitzcoin -> wallet.mambucks                  [mambucks = pack currency]
     """
-    if cost <= 0:
-        return db_wallet_get(state, user_id)
+    def work():
+        with conn(state.db_path) as c, c:
+            # migration marker
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS app_migrations (
+                    key TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            if c.execute("SELECT 1 FROM app_migrations WHERE key=?", ("wallet_mambucks_shards_v1",)).fetchone():
+                return  # already migrated
 
-    with sqlite3.connect(state.db_path) as conn, conn:
-        now = int(time.time())
-        # Ensure row exists
-        conn.execute("""
-            INSERT INTO wallet (user_id, fitzcoin, mambucks, updated_ts)
-            VALUES (?, 0, 0, ?)
-            ON CONFLICT(user_id) DO NOTHING;
-        """, (str(user_id), now))
+            # legacy wallet (if absent)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS wallet (
+                    user_id   TEXT PRIMARY KEY,
+                    fitzcoin  INTEGER NOT NULL DEFAULT 0,
+                    mambucks  INTEGER NOT NULL DEFAULT 0
+                );
+            """)
 
-        # Check and spend
-        cur = conn.execute("SELECT mambucks FROM wallet WHERE user_id=?", (str(user_id),))
-        (fz,) = cur.fetchone()
-        if int(fz) < cost:
-            return None
+            # per-set shards
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS wallet_shards (
+                    user_id TEXT NOT NULL,
+                    set_id  INTEGER NOT NULL,
+                    shards  INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, set_id)
+                );
+            """)
 
-        conn.execute("""
-            UPDATE wallet
-               SET mambucks = mambucks - ?,
-                   updated_ts = ?
-             WHERE user_id = ?;
-        """, (int(cost), now, str(user_id)))
+            # 1) seed shards for Set 1 from legacy mambucks
+            c.execute("""
+                INSERT OR IGNORE INTO wallet_shards(user_id, set_id, shards)
+                SELECT user_id, 1, COALESCE(mambucks,0) FROM wallet;
+            """)
 
-    return db_wallet_get(state, user_id)
+            # 2) fold fitzcoin into mambucks (pack currency)
+            c.execute("""
+                UPDATE wallet
+                   SET mambucks = COALESCE(mambucks,0) + COALESCE(fitzcoin,0);
+            """)
 
+            # mark done
+            c.execute("INSERT OR REPLACE INTO app_migrations(key) VALUES (?)", ("wallet_mambucks_shards_v1",))
+    await asyncio.to_thread(work)
 
+def db_shards_get(state, user_id: int, set_id: int) -> int:
+    with conn(state.db_path) as c:
+        row = c.execute(
+            "SELECT shards FROM wallet_shards WHERE user_id=? AND set_id=?",
+            (str(user_id), int(set_id))
+        ).fetchone()
+    return int(row[0]) if row else 0
 
-
+def db_shards_add(state, user_id: int, set_id: int, d_shards: int) -> None:
+    d = int(d_shards or 0)
+    if d == 0:
+        return
+    with conn(state.db_path) as c, c:
+        c.execute(
+            "INSERT OR IGNORE INTO wallet_shards(user_id,set_id,shards) VALUES (?,?,0)",
+            (str(user_id), int(set_id))
+        )
+        c.execute(
+            "UPDATE wallet_shards SET shards = shards + ? WHERE user_id=? AND set_id=?",
+            (d, str(user_id), int(set_id))
+        )

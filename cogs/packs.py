@@ -1,15 +1,12 @@
 import discord, os
 from discord.ext import commands
 from discord import app_commands
-from collections import Counter
-from core.packs import RARITY_ORDER, open_pack_from_csv
-from core.db import db_wallet_get, db_wallet_add, db_wallet_try_spend_fitzcoin
 from core.views import PacksSelectView
+from core.constants import BOX_COST, PACK_COST
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
-PACK_COST = 10  # fitzcoin per pack
 MAX_PACKS = 10
 MIN_PACKS = 1
 PACKS_IN_BOX = 24
@@ -37,7 +34,7 @@ class Packs(commands.Cog):
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)
         await interaction.response.send_message("Pick a pack from the dropdown:", view=view, ephemeral=True)
 
-    @app_commands.command(name="box", description="Open a sealed box (24 packs; costs 200 fitzcoin).")
+    @app_commands.command(name="box", description=f"Open a sealed box (24 packs; costs **{BOX_COST}** mambucks).")
     @app_commands.guilds(GUILD)
     async def box(self, interaction: discord.Interaction):
         import inspect

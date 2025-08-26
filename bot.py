@@ -6,7 +6,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 from core.state import AppState
-from core.db import db_init, db_init_trades, db_init_wallet
+from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
@@ -43,6 +43,8 @@ async def on_ready():
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)
     db_init_wallet(bot.state)
+    await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
+    print("Wallet migration complete: mambucks=pack currency, shards per set ready")
 
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:

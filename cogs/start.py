@@ -10,6 +10,9 @@ from core.packs import open_pack_from_csv, persist_pulls_to_db, RARITY_ORDER  # 
 from core.views import _pack_embed_for_cards  
 from core.db import db_wallet_add, db_add_cards
 from core.images import ensure_rarity_emojis
+from core.wallet_api import get_mambucks, credit_mambucks, get_shards, add_shards
+from core.constants import PACKS_BY_SET
+from core.currency import shard_set_name
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -143,7 +146,18 @@ class StarterDeckSelectView(View):
                     await asyncio.sleep(0.2)
 
         # 4) Assign the user's starting currency
-        new_bal = db_wallet_add(self.state, self.member.id, d_fitzcoin=100, d_mambucks=1000)
+        cur_mb = get_mambucks(self.state, self.member.id)
+        delta_mb = 100 - cur_mb
+        if delta_mb != 0:
+            credit_mambucks(self.state, self.member.id, delta_mb)
+
+        # --- Set shards to exactly 300 for each known set ---
+        set_ids = sorted(PACKS_BY_SET.keys()) or [1]  # default to Set 1 if mapping empty
+        for sid in set_ids:
+            cur_sh = get_shards(self.state, self.member.id, sid)
+            delta_sh = 300 - cur_sh
+            if delta_sh != 0:
+                add_shards(self.state, self.member.id, sid, delta_sh)
 
         # 5) Assign the 'starter' role only after success
         try:

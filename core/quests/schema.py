@@ -157,14 +157,14 @@ async def db_seed_example_quests(state) -> None:
         "title": "Open Packs",
         "description": "Open packs today to earn multiple rewards.",
         "category": "daily",
-        "target_count": 24,               # max threshold (not used for milestones, but nice to have)
+        "target_count": 24,               
         "reward_type": "mambucks",        # ignored for milestones; kept for compatibility
         "reward_payload": json.dumps({
             "milestones": [
-                {"count": 1,  "reward": {"type": "mambucks", "amount": 5}},
-                {"count": 5,  "reward": {"type": "mambucks", "amount": 25}},
-                {"count": 10, "reward": {"type": "mambucks", "amount": 60}},
-                {"count": 24, "reward": {"type": "mambucks", "amount": 180}},
+                {"count": 1,  "reward": {"type": "mambucks", "amount": 10}},
+                {"count": 5,  "reward": {"type": "mambucks", "amount": 10}},
+                {"count": 10, "reward": {"type": "mambucks", "amount": 10}},
+                {"count": 24, "reward": {"type": "mambucks", "amount": 10}},
             ]
         }),
         "active": 1,

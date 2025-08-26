@@ -1,16 +1,24 @@
 import discord, os
 from discord.ext import commands
 from discord import app_commands
-from typing import List, Literal
-from core.packs import resolve_card_in_pack
+from typing import List, Literal, Optional
 
-from core.db import db_admin_add_card, db_admin_remove_card, db_collection_clear, db_wallet_set, db_wallet_add, db_wallet_get
+from core.packs import resolve_card_in_pack
+from core.db import (
+    db_admin_add_card, db_admin_remove_card, db_collection_clear,
+    db_wallet_set, db_wallet_add, db_wallet_get,
+    db_shards_get, db_shards_add,
+)
+from core.constants import PACKS_BY_SET
+from core.currency import shard_set_name  # pretty name per set
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 STARTER_ROLE_NAME = "starter"
-Currency = Literal["fitzcoin", "mambucks"]
+
+# NEW: currency selector for admin wallet ops
+Currency = Literal["mambucks", "shards"]
 
 def _ac_pack_names(state, prefix: str) -> List[str]:
     prefix = (prefix or "").lower()
@@ -37,6 +45,19 @@ def _read_option(interaction: discord.Interaction, name: str) -> str:
     opts = {opt.get("name"): opt.get("value") for opt in data.get("options", []) if isinstance(opt, dict)}
     return (opts.get(name) or "").strip()
 
+# NEW: autocomplete for shard_set (int choices based on PACKS_BY_SET keys)
+def _available_set_choices() -> List[app_commands.Choice[int]]:
+    # Present known set IDs with friendly names
+    out: List[app_commands.Choice[int]] = []
+    for sid in sorted(PACKS_BY_SET.keys()):
+        out.append(app_commands.Choice(name=f"{sid} — {shard_set_name(sid)}", value=int(sid)))
+        if len(out) >= 25:
+            break
+    # Ensure Set 1 exists even if PACKS_BY_SET is empty (safety)
+    if not out:
+        out.append(app_commands.Choice(name=f"1 — {shard_set_name(1)}", value=1))
+    return out
+
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -49,6 +70,15 @@ class Admin(commands.Cog):
         selected_set = _read_option(interaction, "card_set") or _read_option(interaction, "cardset")
         names = _ac_card_names_for_set(self.bot.state, selected_set, current)
         return [app_commands.Choice(name=n, value=n) for n in names]
+
+    # NEW: autocomplete for shard_set (int)
+    async def ac_shard_set(self, interaction: discord.Interaction, current: str):
+        # We can optionally filter by `current` if user types a digit; otherwise show all
+        choices = _available_set_choices()
+        if current:
+            cur = (current or "").strip()
+            choices = [c for c in choices if cur in c.name or cur == str(c.value)]
+        return choices[:25]
 
     @app_commands.command(name="admin_add_card", description="(Admin) Add a card to a user's collection (rarity from pack)")
     @app_commands.guilds(GUILD)
@@ -124,8 +154,8 @@ class Admin(commands.Cog):
         )
 
     @app_commands.command(
-    name="admin_reset_user",
-    description="(Admin) Clear a user's collection and remove their starter role."
+        name="admin_reset_user",
+        description="(Admin) Clear a user's collection and remove their starter role."
     )
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
@@ -142,8 +172,14 @@ class Admin(commands.Cog):
         # Clear collection
         deleted = db_collection_clear(self.state, user.id)
 
-        # Empty wallet
+        # Empty wallet balances (mambucks & legacy fitzcoin)
         db_wallet_set(self.state, user.id, fitzcoin=0, mambucks=0)
+
+        # NEW: zero shards across all known sets
+        for sid in sorted(PACKS_BY_SET.keys() or [1]):
+            before = db_shards_get(self.state, user.id, sid)
+            if before:
+                db_shards_add(self.state, user.id, sid, -before)
 
         # Remove starter role (if present)
         removed_role = False
@@ -155,7 +191,6 @@ class Admin(commands.Cog):
             except discord.Forbidden:
                 pass  # Manage Roles / hierarchy issue
 
-        # Respond
         lines = [f"✅ Cleared **{deleted}** row(s) for {user.mention}."]
         if role:
             lines.append("✅ Starter role removed." if removed_role else "⚠️ Could not remove starter role (permissions/position).")
@@ -167,66 +202,110 @@ class Admin(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     # ---- Add currency -------------------------------------------------------
-    @app_commands.command(name="wallet_add", description="Admin: add currency to a user's wallet")
+    @app_commands.command(name="wallet_add", description="(Admin) Add currency to a user's wallet")
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(user="Player to adjust", currency="Currency", amount="Amount to add (>=1)")
-    @app_commands.checks.has_permissions(administrator=True)  # runtime guard
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        user="Player to adjust",
+        currency="Choose Mambucks or Shards",
+        amount="Amount to add (>=1)",
+        shard_set="Required if currency=shards",
+    )
+    @app_commands.autocomplete(shard_set=ac_shard_set)
     async def wallet_add(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Currency,
         amount: app_commands.Range[int, 1, None],
+        shard_set: Optional[int] = None,
     ):
-        # ⬇️ Defer IMMEDIATELY — no awaits before this
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        before = db_wallet_get(self.state, user.id)
-        if currency == "fitzcoin":
-            after = db_wallet_add(self.state, user.id, d_fitzcoin=amount)
-        else:
+        if currency == "mambucks":
+            before = db_wallet_get(self.state, user.id)
             after = db_wallet_add(self.state, user.id, d_mambucks=amount)
+            await interaction.followup.send(
+                (
+                    f"✅ Added **{amount} Mambucks** to {user.mention}.\n"
+                    f"Before → Mambucks **{before['mambucks']}**\n"
+                    f"After  → Mambucks **{after['mambucks']}**"
+                ),
+                ephemeral=True,
+            )
+            return
 
+        # shards path
+        if shard_set is None:
+            return await interaction.followup.send("❌ Please choose a **shard_set** for shards.", ephemeral=True)
+
+        before = db_shards_get(self.state, user.id, shard_set)
+        db_shards_add(self.state, user.id, shard_set, amount)
+        after = db_shards_get(self.state, user.id, shard_set)
+        title = shard_set_name(shard_set)
         await interaction.followup.send(
             (
-                f"✅ Added **{amount} {currency}** to {user.mention}.\n"
-                f"Before → fitzcoin **{before['fitzcoin']}**, mambucks **{before['mambucks']}**\n"
-                f"After  → fitzcoin **{after['fitzcoin']}**, mambucks **{after['mambucks']}**"
+                f"✅ Added **{amount} {title}** to {user.mention}.\n"
+                f"Before → **{before}**\n"
+                f"After  → **{after}**"
             ),
             ephemeral=True,
         )
 
-    # ---- Remove currency -------------------------------------------------------
-    @app_commands.command(name="wallet_remove", description="Admin: remove currency from a user's wallet")
+    # ---- Remove currency ----------------------------------------------------
+    @app_commands.command(name="wallet_remove", description="(Admin) Remove currency from a user's wallet")
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(user="Player to adjust", currency="Currency", amount="Amount to remove (>=1)")
-    @app_commands.checks.has_permissions(administrator=True)  # runtime guard
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        user="Player to adjust",
+        currency="Choose Mambucks or Shards",
+        amount="Amount to remove (>=1)",
+        shard_set="Required if currency=shards",
+    )
+    @app_commands.autocomplete(shard_set=ac_shard_set)
     async def wallet_remove(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Currency,
         amount: app_commands.Range[int, 1, None],
+        shard_set: Optional[int] = None,
     ):
-        # ⬇️ Defer IMMEDIATELY
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        before = db_wallet_get(self.state, user.id)
-        if currency == "fitzcoin":
-            new_f = max(0, before["fitzcoin"] - amount)
-            db_wallet_set(self.state, user.id, fitzcoin=new_f)
-        else:
-            new_m = max(0, before["mambucks"] - amount)
+        if currency == "mambucks":
+            before = db_wallet_get(self.state, user.id)
+            new_m = max(0, int(before["mambucks"]) - int(amount))
             db_wallet_set(self.state, user.id, mambucks=new_m)
-        after = db_wallet_get(self.state, user.id)
+            after = db_wallet_get(self.state, user.id)
+            await interaction.followup.send(
+                (
+                    f"🧹 Removed **{amount} Mambucks** from {user.mention}.\n"
+                    f"Before → Mambucks **{before['mambucks']}**\n"
+                    f"After  → Mambucks **{after['mambucks']}**"
+                ),
+                ephemeral=True,
+            )
+            return
 
+        # shards path
+        if shard_set is None:
+            return await interaction.followup.send("❌ Please choose a **shard_set** for shards.", ephemeral=True)
+
+        before = db_shards_get(self.state, user.id, shard_set)
+        delta = -min(int(amount), int(before))
+        if delta == 0:
+            return await interaction.followup.send("ℹ️ Nothing to remove (balance is already 0).", ephemeral=True)
+        db_shards_add(self.state, user.id, shard_set, delta)
+        after = db_shards_get(self.state, user.id, shard_set)
+        title = shard_set_name(shard_set)
         await interaction.followup.send(
             (
-                f"🧹 Removed **{amount} {currency}** from {user.mention}.\n"
-                f"Before → fitzcoin **{before['fitzcoin']}**, mambucks **{before['mambucks']}**\n"
-                f"After  → fitzcoin **{after['fitzcoin']}**, mambucks **{after['mambucks']}**"
+                f"🧹 Removed **{abs(delta)} {title}** from {user.mention}.\n"
+                f"Before → **{before}**\n"
+                f"After  → **{after}**"
             ),
             ephemeral=True,
         )
