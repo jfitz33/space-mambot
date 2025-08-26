@@ -687,3 +687,101 @@ def db_shards_add(state, user_id: int, set_id: int, d_shards: int) -> None:
             "UPDATE wallet_shards SET shards = shards + ? WHERE user_id=? AND set_id=?",
             (d, str(user_id), int(set_id))
         )
+
+# --- User stats helpers ---
+def db_init_user_stats(state):
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id    TEXT PRIMARY KEY,
+            wins       INTEGER NOT NULL DEFAULT 0,
+            losses     INTEGER NOT NULL DEFAULT 0,
+            games      INTEGER NOT NULL DEFAULT 0,
+            updated_ts INTEGER NOT NULL DEFAULT 0
+        );
+        """)
+
+def db_stats_get(state, user_id: int) -> dict:
+    with sqlite3.connect(state.db_path) as conn:
+        row = conn.execute(
+            "SELECT wins, losses, games FROM user_stats WHERE user_id=?",
+            (str(user_id),)
+        ).fetchone()
+    if not row:
+        return {"wins": 0, "losses": 0, "games": 0}
+    return {"wins": int(row[0] or 0), "losses": int(row[1] or 0), "games": int(row[2] or 0)}
+
+def db_stats_record_loss(state, loser_id: int, winner_id: int) -> tuple[dict, dict]:
+    """
+    Record a single match where `loser_id` lost to `winner_id`.
+    Updates user_stats and appends to match_log atomically.
+    Returns (loser_stats_after, winner_stats_after).
+    """
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        # ensure rows exist
+        conn.execute("INSERT OR IGNORE INTO user_stats (user_id, updated_ts) VALUES (?,?)", (str(loser_id), now))
+        conn.execute("INSERT OR IGNORE INTO user_stats (user_id, updated_ts) VALUES (?,?)", (str(winner_id), now))
+
+        # update aggregates
+        conn.execute("""
+            UPDATE user_stats
+               SET losses = losses + 1,
+                   games  = games  + 1,
+                   updated_ts = ?
+             WHERE user_id = ?;""", (now, str(loser_id)))
+        conn.execute("""
+            UPDATE user_stats
+               SET wins   = wins   + 1,
+                   games  = games  + 1,
+                   updated_ts = ?
+             WHERE user_id = ?;""", (now, str(winner_id)))
+
+        # log the match
+        conn.execute(
+            "INSERT INTO match_log (ts, winner_id, loser_id) VALUES (?,?,?)",
+            (now, str(winner_id), str(loser_id)),
+        )
+
+        lrow = conn.execute("SELECT wins, losses, games FROM user_stats WHERE user_id=?", (str(loser_id),)).fetchone()
+        wrow = conn.execute("SELECT wins, losses, games FROM user_stats WHERE user_id=?", (str(winner_id),)).fetchone()
+
+    loser = {"wins": int(lrow[0]), "losses": int(lrow[1]), "games": int(lrow[2])}
+    winner = {"wins": int(wrow[0]), "losses": int(wrow[1]), "games": int(wrow[2])}
+    return loser, winner
+
+def db_init_match_log(state):
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS match_log (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts        INTEGER NOT NULL,
+            winner_id TEXT NOT NULL,
+            loser_id  TEXT NOT NULL
+        );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_match_log_pair ON match_log(winner_id, loser_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_match_log_ts ON match_log(ts);")
+
+def db_match_log_insert(state, winner_id: int, loser_id: int):
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            "INSERT INTO match_log (ts, winner_id, loser_id) VALUES (?,?,?)",
+            (now, str(winner_id), str(loser_id)),
+        )
+
+def db_match_h2h(state, a_id: int, b_id: int) -> dict:
+    """Return {'a_wins': int, 'b_wins': int, 'games': int} for A vs B."""
+    with sqlite3.connect(state.db_path) as conn:
+        (a_wins,) = conn.execute(
+            "SELECT COUNT(*) FROM match_log WHERE winner_id=? AND loser_id=?",
+            (str(a_id), str(b_id)),
+        ).fetchone()
+        (b_wins,) = conn.execute(
+            "SELECT COUNT(*) FROM match_log WHERE winner_id=? AND loser_id=?",
+            (str(b_id), str(a_id)),
+        ).fetchone()
+    a_wins = int(a_wins or 0)
+    b_wins = int(b_wins or 0)
+    return {"a_wins": a_wins, "b_wins": b_wins, "games": a_wins + b_wins}

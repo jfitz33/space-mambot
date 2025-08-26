@@ -1,18 +1,18 @@
 # bot.py
-import os
+import os, asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
 from core.state import AppState
-from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set
+from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set, db_init_user_stats
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
 from core.images import ensure_rarity_emojis
 from core.art_import import download_high_rarity_art_from_state
-from core.quests.schema import db_init_quests, db_seed_example_quests
+from core.quests.schema import db_init_quests, db_seed_example_quests, db_seed_quests_from_json
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
@@ -30,7 +30,7 @@ bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 # Set to track live views to properly enforce timeouts
 setattr(bot.state, "live_views", set())
 
-COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop", "cogs.wheel", "cogs.quests"]
+COGS = ["cogs.system", "cogs.packs", "cogs.collection", "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", "cogs.cards_shop", "cogs.wheel", "cogs.quests", "cogs.stats"]
 
 @bot.event
 async def on_ready():
@@ -38,7 +38,9 @@ async def on_ready():
     db_init(bot.state)
     db_init_trades(bot.state)
     await db_init_quests(bot.state)
-    await db_seed_example_quests(bot.state)
+    #await db_seed_example_quests(bot.state)
+    await db_seed_quests_from_json(bot.state, "data/quests.json", deactivate_missing=True)
+    db_init_user_stats(bot.state)
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)
@@ -61,8 +63,14 @@ async def on_ready():
     ensure_shop_index(bot.state)
 
     # If Art Import env var set to 1, download card images (super and higher)
+    async def prefetch_art():
+        try:
+            await asyncio.to_thread(download_high_rarity_art_from_state, bot.state)
+        except Exception as e:
+            print("[art] prefetch failed (continuing without art):", e)
+    
     if (ART_IMPORT == 1):
-        download_high_rarity_art_from_state(bot.state)
+        await prefetch_art()
 
     # 2) Load cogs BEFORE syncing
     for ext in COGS:

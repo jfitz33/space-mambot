@@ -88,13 +88,45 @@ class QuestManager:
             pkey = period_key_for_category(q.category)
             row = await db_get_user_progress(self.state, user_id, [q.quest_id], pkey)
             r = row.get(q.quest_id) or {}
+
             progress = int(r.get("progress", 0))
             claimed_steps = int(r.get("claimed_steps", 0))
-            ms = self.next_milestone(q, claimed_steps)
-            if ms:
-                target = int(ms["count"])
-                completed = progress >= target
-                claimed = False  # not yet claimed this step
+            has_milestones = bool(q.milestones)
+
+            if has_milestones:
+                ms = self.next_milestone(q, claimed_steps)
+                if ms:
+                    target = int(ms["count"])
+                    completed = progress >= target
+                    claimed = False  # not yet claimed this step
+                    display_progress = min(progress, target)
+                    view.append({
+                        "quest": q,
+                        "progress": display_progress,
+                        "target": target,
+                        "completed": completed,
+                        "claimed": claimed,
+                        "claimed_steps": claimed_steps,
+                        "period_key": pkey,
+                        "milestone_mode": True,
+                    })
+                else:
+                    # All milestones done & claimed
+                    view.append({
+                        "quest": q,
+                        "progress": q.target_count,
+                        "target": q.target_count,
+                        "completed": True,
+                        "claimed": True,
+                        "claimed_steps": claimed_steps,
+                        "period_key": pkey,
+                        "milestone_mode": True,
+                    })
+            else:
+                # Single-step quest
+                target = q.target_count
+                completed = progress >= target or bool(r.get("completed_at"))
+                claimed = bool(r.get("claimed_at"))
                 display_progress = min(progress, target)
                 view.append({
                     "quest": q,
@@ -104,19 +136,7 @@ class QuestManager:
                     "claimed": claimed,
                     "claimed_steps": claimed_steps,
                     "period_key": pkey,
-                    "milestone_mode": True,
-                })
-            else:
-                # no more milestones -> treat as fully done
-                view.append({
-                    "quest": q,
-                    "progress": progress,
-                    "target": q.target_count,
-                    "completed": True,
-                    "claimed": True,
-                    "claimed_steps": claimed_steps,
-                    "period_key": pkey,
-                    "milestone_mode": True,
+                    "milestone_mode": False,
                 })
         return view
 

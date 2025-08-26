@@ -52,9 +52,8 @@ class Quests(commands.Cog):
 
     @app_commands.command(name="quests", description="View your quests and claim rewards.")
     @app_commands.guilds(GUILD)
-    @app_commands.describe(private="Show privately (ephemeral).")
-    async def quests(self, interaction: discord.Interaction, private: bool = True):
-        await interaction.response.defer(ephemeral=private)
+    async def quests(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         viewdata = await self.qm.get_user_view(interaction.user.id)
         if not viewdata:
             await interaction.edit_original_response(content="No quests available right now.")

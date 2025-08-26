@@ -1,10 +1,8 @@
-import asyncio, sqlite3, json
+import asyncio, sqlite3, json, os
 from typing import Iterable, Dict, Any, Tuple
 from datetime import datetime, timezone
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    # sqlite3.Row iterates values; use keys() to build a dict
-    return {k: row[k] for k in row.keys()}
+ALLOWED_CATS = {"daily", "weekly", "permanent"}
 
 def _conn(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -146,6 +144,103 @@ async def db_init_quests(state) -> None:
             if "claimed_steps" not in cols:
                 conn.execute("ALTER TABLE user_quest_progress ADD COLUMN claimed_steps INTEGER NOT NULL DEFAULT 0")
     await asyncio.to_thread(_work)
+
+def _ensure_table(state):
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS quests (
+            quest_id       TEXT PRIMARY KEY,
+            title          TEXT NOT NULL,
+            description    TEXT NOT NULL,
+            category       TEXT NOT NULL,         -- daily|weekly|permanent
+            target_count   INTEGER NOT NULL,
+            reward_type    TEXT NOT NULL,         -- mambucks|fitzcoin|shards|pack
+            reward_payload TEXT NOT NULL,         -- JSON string; milestones or single-step payload
+            active         INTEGER NOT NULL       -- 1/0
+        );
+        """)
+
+def _max_milestone_count(payload: Dict[str, Any]) -> int:
+    ms = (payload or {}).get("milestones") or []
+    try:
+        return max(int(m.get("count", 0)) for m in ms) if ms else 0
+    except Exception:
+        return 0
+
+async def db_seed_quests_from_json(state, json_path: str, *, deactivate_missing: bool = False) -> None:
+    """
+    Read quests from a JSON file (list of objects) and upsert.
+    If deactivate_missing=True, marks any quest not present in the file as inactive.
+    """
+    def work():
+        if not os.path.isfile(json_path):
+            raise FileNotFoundError(json_path)
+
+        _ensure_table(state)
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            items = json.load(f)
+        if not isinstance(items, list):
+            raise ValueError("Quest seed must be a JSON list of quest objects")
+
+        seen_ids: set[str] = set()
+
+        with sqlite3.connect(state.db_path) as conn, conn:
+            for q in items:
+                if not isinstance(q, dict):
+                    continue
+                quest_id = str(q.get("quest_id") or "").strip()
+                title = str(q.get("title") or "").strip()
+                description = str(q.get("description") or "").strip()
+                category = str(q.get("category") or "").strip().lower()
+                reward_type = str(q.get("reward_type") or "").strip().lower()
+                active = 1 if bool(q.get("active", True)) else 0
+
+                if not quest_id or not title or category not in ALLOWED_CATS:
+                    # skip invalid rows silently (or log if you prefer)
+                    continue
+
+                payload_obj = q.get("reward_payload") or {}
+                # allow payload to already be a JSON string or an object
+                if isinstance(payload_obj, str):
+                    try:
+                        payload_obj = json.loads(payload_obj)
+                    except Exception:
+                        payload_obj = {}
+                payload_json = json.dumps(payload_obj, separators=(",", ":"))
+
+                # target_count: explicit or derive from milestones max, else fallback 1
+                target_count = q.get("target_count")
+                if target_count is None:
+                    inferred = _max_milestone_count(payload_obj)
+                    target_count = inferred if inferred > 0 else 1
+                target_count = int(target_count)
+
+                conn.execute(
+                    """
+                    INSERT INTO quests
+                        (quest_id,title,description,category,target_count,reward_type,reward_payload,active)
+                    VALUES (?,?,?,?,?,?,?,?)
+                    ON CONFLICT(quest_id) DO UPDATE SET
+                        title=excluded.title,
+                        description=excluded.description,
+                        category=excluded.category,
+                        target_count=excluded.target_count,
+                        reward_type=excluded.reward_type,
+                        reward_payload=excluded.reward_payload,
+                        active=excluded.active;
+                    """,
+                    (quest_id, title, description, category, target_count, reward_type, payload_json, active),
+                )
+                seen_ids.add(quest_id)
+
+            if deactivate_missing and seen_ids:
+                conn.execute(
+                    f"UPDATE quests SET active=0 WHERE quest_id NOT IN ({','.join('?' for _ in seen_ids)})",
+                    tuple(seen_ids),
+                )
+
+    await asyncio.to_thread(work)
 
 async def db_seed_example_quests(state) -> None:
     """
