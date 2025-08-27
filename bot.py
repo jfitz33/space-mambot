@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
+from pathlib import Path
 
 from core.state import AppState
 from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set, db_init_user_stats
@@ -19,6 +20,16 @@ TOKEN    = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 ART_IMPORT = int(os.getenv("ART_IMPORT", "0") or 0)
 DEV_FORCE_CLEAN = os.getenv("DEV_FORCE_CLEAN", "0") == "1"
+
+BASE_DIR  = Path(__file__).resolve().parent
+DB_PATH   = os.getenv("DB_PATH", "collections.sqlite3")
+PACKS_DIR = os.getenv("PACKS_DIR", "packs_csv")
+
+# make relative paths project-relative
+if not os.path.isabs(DB_PATH):
+    DB_PATH = str((BASE_DIR / DB_PATH).resolve())
+if not os.path.isabs(PACKS_DIR):
+    PACKS_DIR = str((BASE_DIR / PACKS_DIR).resolve())
 
 # Use default intents (message_content not needed for slash cmds, but default avoids warnings)
 intents = discord.Intents.default()
