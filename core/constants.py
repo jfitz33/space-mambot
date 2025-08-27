@@ -1,6 +1,17 @@
 PACK_COST=10
 BOX_COST=200
 
+RARITY_ORDER = ["common", "rare", "super", "ultra", "secret", "starlight"]
+RARITY_ALIASES = {
+    "c": "common", "comm": "common",
+    "r": "rare",
+    "sr": "super", "super rare": "super",
+    "ur": "ultra", "ultra rare": "ultra",
+    "secr": "secret", "secret rare": "secret",
+    "starlight rare": "starlight", "slr": "starlight",
+}
+FRAGMENTABLE_RARITIES = ["common", "rare", "super", "ultra", "secret"]
+
 # Which packs belong to which Set (uppercase pack names)
 PACKS_BY_SET = {
     1: {"FIRE", "WATER"},  # Set 1 → Elemental Shards
@@ -16,14 +27,13 @@ def set_id_for_pack(pack_name: str) -> int | None:
             return sid
     return None
 
-# Shard economy (rarity keys match your get_card_rarity values: lowercased)
+# Shard economy
 CRAFT_COST_BY_RARITY = {
     "common": 5,
     "rare": 60,
     "super": 90,
     "ultra": 300,
-    "secret": 1500,
-    # "starlight": 0 or omitted if not craftable
+    "secret": 1500
 }
 
 SHARD_YIELD_BY_RARITY = {
@@ -31,6 +41,5 @@ SHARD_YIELD_BY_RARITY = {
     "rare": 20,
     "super": 30,
     "ultra": 100,
-    "secret": 500,
-    # "starlight": 0 or omitted if not shardable
+    "secret": 500
 }

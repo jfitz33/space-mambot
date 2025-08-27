@@ -1,6 +1,6 @@
 # cogs/trade.py
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import discord
 from discord.ext import commands
@@ -12,34 +12,39 @@ from core.db import (
     db_trade_create, db_trade_get, db_trade_set_receiver_offer,
     db_trade_set_confirm, db_trade_cancel, db_user_has_items,
     db_apply_trade_atomic, db_trade_set_status,
+    db_trade_get_active_for_user, db_trade_store_public_message,
+    db_shards_get,
+    db_collection_list_owned_prints,
 )
+from core.cards_shop import (
+    register_print_if_missing,
+    find_card_by_print_key,
+    card_label,
+    get_card_rarity,
+    resolve_card_set,
+)
+from core.currency import shard_set_name, SHARD_SET_NAMES
 
-# ---- Guild scoping (as requested) ----
+# ---- Guild scoping ----
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 
-# ---------------- Helpers ----------------
-def _iter_all_cards(state: AppState):
-    """Yield dicts: {pack,name,rarity,card_code,card_id} for every card in all packs."""
-    for pack_name, pack in (state.packs_index or {}).items():
-        for items in pack["by_rarity"].values():
-            for it in items:
-                yield {
-                    "pack": pack_name,
-                    "name": it.get("name", ""),
-                    "rarity": it.get("rarity", ""),
-                    "card_code": it.get("card_code", "") or "",
-                    "card_id": it.get("card_id", "") or "",
-                }
-
-def _fmt_item(it: dict) -> str:
-    # no code/id in display
+# ---------------- Formatting helpers ----------------
+def _fmt_card_line(it: dict) -> str:
+    # expects: {"qty", "name", "rarity", "card_set"}
     return f"x{it['qty']} {it['name']} ({it['rarity']}, set:{it['card_set']})"
 
+def _fmt_item_line(it: dict) -> str:
+    if it.get("kind") == "shards":
+        pretty = shard_set_name(int(it["set_id"]))
+        return f"+{int(it['amount'])} {pretty}"
+    # card
+    return _fmt_card_line(it)
+
 def _trade_embed(t: dict) -> discord.Embed:
-    give_str = "\n".join(f"• {_fmt_item(it)}" for it in t.get("give", [])) or "• (nothing)"
-    get_str  = "\n".join(f"• {_fmt_item(it)}" for it in t.get("get",  [])) or "• (nothing)"
+    give_str = "\n".join(f"• {_fmt_item_line(it)}" for it in t.get("give", [])) or "• (nothing)"
+    get_str  = "\n".join(f"• {_fmt_item_line(it)}" for it in t.get("get",  [])) or "• (nothing)"
     status = t["status"]
     checks = []
     if t.get("confirm_proposer"): checks.append("Proposer ✅")
@@ -57,39 +62,62 @@ def _trade_embed(t: dict) -> discord.Embed:
     )
     return emb
 
-def _parse_card_value(state: AppState, value: str) -> dict:
-    """Choice value format: pack|||name|||code|||id -> canonical item dict (no qty)."""
-    parts = (value or "").split("|||")
-    while len(parts) < 4:
-        parts.append("")
-    pack, name, code, cid = parts[:4]
-    item = resolve_card_in_pack(state, pack, name, code, cid)
+
+# ---------------- Card print-key plumbing ----------------
+def _item_dict_from_print_key(state: AppState, key: str) -> dict:
+    """
+    Convert a shop print_key -> canonical item dict for DB checks:
+      { "name","rarity","card_set","card_code","card_id","qty": <later> }
+    Raises ValueError if the key cannot be resolved or set missing.
+    """
+    card = find_card_by_print_key(state, key)
+    if not card:
+        raise ValueError("Card printing not found.")
+    set_name = resolve_card_set(state, card)
+    if not set_name:
+        raise ValueError("Printing has no set; cannot trade.")
     return {
-        "name": name,
-        "rarity": item.get("rarity", ""),
-        "card_set": pack,
-        "card_code": item.get("card_code", "") or "",
-        "card_id": item.get("card_id", "") or "",
+        "name": (card.get("name") or card.get("cardname") or "").strip(),
+        "rarity": (card.get("rarity") or card.get("cardrarity") or "").strip(),
+        "card_set": set_name,
+        "card_code": (card.get("code") or card.get("cardcode") or "") or "",
+        "card_id": (card.get("id") or card.get("cardid") or "") or "",
     }
 
-def _collect_items(state: AppState, pairs: List[Tuple[int | None, str | None]]) -> List[dict]:
-    """Build a list of items from (qty, card_value) pairs. Skips empty pairs; validates consistency."""
+def _collect_items_from_keys(state: AppState, pairs: List[Tuple[Optional[int], Optional[str]]]) -> List[dict]:
+    """
+    Build list of CARD items from (qty, print_key) pairs.
+    Skips fully-empty rows; errors if one part missing.
+    """
     items: List[dict] = []
-    for qty, card in pairs:
-        if (qty is None) and (not card):
-            continue  # fully empty pair -> ignore
-        if (qty is None) or (not card):
+    for qty, key in pairs:
+        if (qty is None) and (not key):
+            continue
+        if (qty is None) or (not key):
             raise ValueError("Each provided pair must have both quantity and card.")
-        base = _parse_card_value(state, card)
-        items.append({**base, "qty": int(qty)})
+        base = _item_dict_from_print_key(state, key)
+        base["qty"] = int(qty)
+        items.append(base)
     return items
 
+
+# ---------------- Shard helpers ----------------
+def _parse_shard_type(raw: Optional[str]) -> Optional[int]:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    try:
+        return int(s)
+    except Exception:
+        # allow passing a name like "Elemental Shards" -> set_id=1 if your helper supports reverse lookup
+        # simplest: expect numeric set_id in value; names only for display
+        return None
 
 # --------------- Confirm UI ---------------
 class TradeConfirmView(discord.ui.View):
     def __init__(self, state: AppState, trade_id: int, timeout: float = 300):
         super().__init__(timeout=timeout)
-        self.state = state          # MUST be AppState
+        self.state = state
         self.trade_id = trade_id
 
     async def _refresh(self, interaction: discord.Interaction, notice: str | None = None):
@@ -101,6 +129,23 @@ class TradeConfirmView(discord.ui.View):
             await interaction.response.send_message(notice, ephemeral=True)
         await interaction.message.edit(embed=_trade_embed(t), view=self if t["status"].startswith("await") else None)
 
+    async def on_timeout(self):
+        # Turn the UI into a cancelled notice if still pending
+        try:
+            t = db_trade_get(self.state, self.trade_id)
+            if t and t["status"].startswith("await"):
+                db_trade_cancel(self.state, self.trade_id)
+                # If we still have the original message, replace components with text
+                try:
+                    # Typically we don't have direct message ref here; best-effort:
+                    # We cannot fetch interaction.message in on_timeout, so rely on channel storage:
+                    # If you saved public message IDs in DB, you could refetch and edit; here we just noop.
+                    pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         t = db_trade_get(self.state, self.trade_id)
@@ -111,6 +156,16 @@ class TradeConfirmView(discord.ui.View):
             await interaction.response.send_message("Only trade participants can confirm.", ephemeral=True); return
         if t["status"] != "awaiting_confirm":
             await interaction.response.send_message("Trade is not awaiting confirmation.", ephemeral=True); return
+
+        # Ensure at least one side has a CARD (no shards-for-shards)
+        def any_card(items: List[dict]) -> bool:
+            for it in items or []:
+                if it.get("kind") != "shards":
+                    return True
+            return False
+        if not (any_card(t.get("give")) or any_card(t.get("get"))):
+            await interaction.response.send_message("❌ At least one side must include a card.", ephemeral=True)
+            return
 
         both = db_trade_set_confirm(self.state, self.trade_id, interaction.user.id)
         if both:
@@ -145,22 +200,7 @@ class TradeConfirmView(discord.ui.View):
         if not t["status"].startswith("await"):
             await interaction.response.send_message("Trade is no longer cancelable.", ephemeral=True); return
 
-        # Cancel in DB
         db_trade_cancel(self.state, self.trade_id)
-
-        # Try to delete the public confirmation message
-        try:
-            if t.get("public_chan_id") and t.get("public_msg_id"):
-                ch = interaction.client.get_channel(int(t["public_chan_id"])) or await interaction.client.fetch_channel(int(t["public_chan_id"]))
-                msg = await ch.fetch_message(int(t["public_msg_id"]))
-                await msg.delete()
-            else:
-                # Fallback: delete the interaction message if that's the confirm UI
-                await interaction.message.delete()
-        except discord.Forbidden:
-            await interaction.channel.send("⚠️ I don't have permission to delete the confirmation message.")
-        except discord.NotFound:
-            pass
 
         # Public cancel notice with display names
         def name_for(user_id: str) -> str:
@@ -173,8 +213,6 @@ class TradeConfirmView(discord.ui.View):
         await interaction.channel.send(
             f"🛑 trade between **{name_for(t['proposer_id'])}** and **{name_for(t['receiver_id'])}** was cancelled"
         )
-
-        # Ephemeral ack to clicker
         await interaction.response.send_message("🛑 Trade cancelled.", ephemeral=True)
 
 
@@ -184,49 +222,95 @@ class Trade(commands.Cog):
         self.bot = bot
         self.state: AppState = self.bot.state
 
-    # ---- Autocomplete: card fields (shared) ----
-    async def ac_card(self, interaction: discord.Interaction, current: str):
+    # ---- Autocomplete: OWNED prints only (for both proposer & receiver) ----
+    async def ac_card_owned(self, interaction: discord.Interaction, current: str):
         """
-        Suggest card names across all packs, disambiguated by pack/rarity.
-        Choice.value encodes: pack|||name|||code|||id
+        Suggest ONLY prints the CALLER owns.
+        Choice.value = shop print_key (short, safe for Discord limits)
         """
         cur = (current or "").lower()
         choices: List[app_commands.Choice[str]] = []
         seen = set()
-        for c in _iter_all_cards(self.state):
-            if cur and cur not in c["name"].lower():
+
+        owned = db_collection_list_owned_prints(self.state, interaction.user.id, name_filter=None, limit=200)
+        for row in owned:
+            name = (row.get("name") or "").strip()
+            pack = (row.get("set") or "").strip()
+            rarity = (row.get("rarity") or "").strip()
+            code = (row.get("code") or "") or ""
+            cid  = (row.get("id") or "") or ""
+
+            if cur and cur not in name.lower():
                 continue
-            key = (c["pack"], c["name"], c["card_code"], c["card_id"])
+
+            # Register a print_key for this exact row so value is compact and consistent
+            key = register_print_if_missing(self.state, {
+                "cardname": name,
+                "cardrarity": rarity,
+                "cardset": pack,
+                "cardcode": code,
+                "cardid": cid,
+            })
             if key in seen:
                 continue
             seen.add(key)
-            label = f"{c['name']} — set:{c['pack']} [{c['rarity']}]"
-            value = f"{c['pack']}|||{c['name']}|||{c['card_code']}|||{c['card_id']}"
-            # API limits ~100 chars each
-            choices.append(app_commands.Choice(name=label[:100], value=value[:100]))
+
+            label = f"{name} — set:{pack} [{rarity}]"
+            choices.append(app_commands.Choice(name=label[:100], value=key))  # value=print_key
+            if len(choices) >= 25:
+                break
+        return choices
+    
+    def _known_shard_sets(self) -> list[tuple[int, str]]:
+        """
+        [(set_id, pretty_name)] for shard types that actually exist now.
+        Uses core.currency.SHARD_SET_NAMES so only real types are suggested.
+        Preserves insertion order of the dict (e.g., Elemental first).
+        """
+        return [(int(sid), name) for sid, name in SHARD_SET_NAMES.items()]
+
+    async def ac_shard_type(self, interaction: discord.Interaction, current: str):
+        """
+        Autocomplete shard types by pretty name.
+        Choice.value = set_id (as string), Choice.name = pretty.
+        """
+        q = (current or "").lower()
+        choices: list[app_commands.Choice[str]] = []
+        for sid, pretty in self._known_shard_sets():
+            if q and q not in pretty.lower():
+                continue
+            choices.append(app_commands.Choice(name=pretty[:100], value=str(sid)))
             if len(choices) >= 25:
                 break
         return choices
 
     # ---------- Commands ----------
 
-    @app_commands.command(name="trade_propose", description="Propose a trade: offer up to 5 items to another user")
+    @app_commands.command(
+        name="trade_propose",
+        description="Propose a trade: offer up to 5 card items (and optional shards) to another user"
+    )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
         to_user="User you want to trade with (bots not allowed)",
-        quantity1="Qty for card1", card1="Card 1",
+        quantity1="Qty for card1 (optional)", card1="Card 1 (optional)",
         quantity2="Qty for card2 (optional)", card2="Card 2 (optional)",
         quantity3="Qty for card3 (optional)", card3="Card 3 (optional)",
         quantity4="Qty for card4 (optional)", card4="Card 4 (optional)",
         quantity5="Qty for card5 (optional)", card5="Card 5 (optional)",
+        shard_type="(optional) Shard type to include",
+        shard_amount="(optional) Amount of shards to include (>=1)",
     )
-    @app_commands.autocomplete(card1=ac_card, card2=ac_card, card3=ac_card, card4=ac_card, card5=ac_card)
+    @app_commands.autocomplete(
+        card1=ac_card_owned, card2=ac_card_owned, card3=ac_card_owned, card4=ac_card_owned, card5=ac_card_owned,
+        shard_type=ac_shard_type
+    )
     async def trade_propose(
         self,
         interaction: discord.Interaction,
         to_user: discord.User,
-        quantity1: app_commands.Range[int,1,999],
-        card1: str,
+        quantity1: app_commands.Range[int,1,999] | None = None,
+        card1: str | None = None,   # print_key
         quantity2: app_commands.Range[int,1,999] | None = None,
         card2: str | None = None,
         quantity3: app_commands.Range[int,1,999] | None = None,
@@ -235,14 +319,17 @@ class Trade(commands.Cog):
         card4: str | None = None,
         quantity5: app_commands.Range[int,1,999] | None = None,
         card5: str | None = None,
+        shard_type: Optional[str] = None,
+        shard_amount: Optional[app_commands.Range[int,1,1_000_000]] = None,
     ):
         if to_user.bot:
             await interaction.response.send_message("❌ You cannot trade with bots.", ephemeral=True); return
         if to_user.id == interaction.user.id:
             await interaction.response.send_message("❌ You can’t trade with yourself.", ephemeral=True); return
 
+        # Build CARD items (can be empty; shards-only allowed at this stage)
         try:
-            give_items = _collect_items(self.state, [
+            give_cards = _collect_items_from_keys(self.state, [
                 (quantity1, card1),
                 (quantity2, card2),
                 (quantity3, card3),
@@ -252,9 +339,25 @@ class Trade(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True); return
 
-        if not give_items:
-            await interaction.response.send_message("❌ Provide at least one (quantity, card) pair.", ephemeral=True); return
+        give_items: List[dict] = list(give_cards)
 
+        # Optional shards for proposer
+        sid = _parse_shard_type(shard_type)
+        if sid and shard_amount:
+            have = db_shards_get(self.state, interaction.user.id, sid)
+            if have < int(shard_amount):
+                pretty = SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+                await interaction.response.send_message(
+                    f"❌ You don’t have enough **{pretty}** (have {have}, need {int(shard_amount)}).",
+                    ephemeral=True,
+                )
+                return
+            give_items.append({"kind": "shards", "set_id": sid, "amount": int(shard_amount)})
+
+        if not give_items:
+            await interaction.response.send_message("❌ Provide at least one item (card or shards).", ephemeral=True); return
+
+        # Verify the proposer actually owns the offered items
         ok, msg = db_user_has_items(self.state, interaction.user.id, give_items)
         if not ok:
             await interaction.response.send_message(f"❌ You don’t have the offered items: {msg}", ephemeral=True); return
@@ -267,23 +370,31 @@ class Trade(commands.Cog):
             embed=_trade_embed(t)
         )
 
-    @app_commands.command(name="trade_accept", description="Receiver adds up to 5 items to a pending trade")
+    @app_commands.command(
+        name="trade_accept",
+        description="Receiver adds up to 5 items (and optional shards) to a pending trade"
+    )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
         trade_id="Pending trade ID",
-        quantity1="Qty for card1", card1="Card 1",
+        quantity1="Qty for card1 (optional)", card1="Card 1 (optional)",
         quantity2="Qty for card2 (optional)", card2="Card 2 (optional)",
         quantity3="Qty for card3 (optional)", card3="Card 3 (optional)",
         quantity4="Qty for card4 (optional)", card4="Card 4 (optional)",
         quantity5="Qty for card5 (optional)", card5="Card 5 (optional)",
+        shard_type="(optional) Shard type to include",
+        shard_amount="(optional) Amount of shards to include (>=1)",
     )
-    @app_commands.autocomplete(card1=ac_card, card2=ac_card, card3=ac_card, card4=ac_card, card5=ac_card)
+    @app_commands.autocomplete(
+        card1=ac_card_owned, card2=ac_card_owned, card3=ac_card_owned, card4=ac_card_owned, card5=ac_card_owned,
+        shard_type=ac_shard_type
+    )
     async def trade_accept(
         self,
         interaction: discord.Interaction,
         trade_id: int,
-        quantity1: app_commands.Range[int,1,999],
-        card1: str,
+        quantity1: app_commands.Range[int,1,999] | None = None,
+        card1: str | None = None,
         quantity2: app_commands.Range[int,1,999] | None = None,
         card2: str | None = None,
         quantity3: app_commands.Range[int,1,999] | None = None,
@@ -292,6 +403,8 @@ class Trade(commands.Cog):
         card4: str | None = None,
         quantity5: app_commands.Range[int,1,999] | None = None,
         card5: str | None = None,
+        shard_type: Optional[str] = None,
+        shard_amount: Optional[app_commands.Range[int,1,1_000_000]] = None,
     ):
         t = db_trade_get(self.state, trade_id)
         if not t:
@@ -302,7 +415,7 @@ class Trade(commands.Cog):
             await interaction.response.send_message("This trade is not awaiting a receiver offer.", ephemeral=True); return
 
         try:
-            get_items = _collect_items(self.state, [
+            get_cards = _collect_items_from_keys(self.state, [
                 (quantity1, card1),
                 (quantity2, card2),
                 (quantity3, card3),
@@ -312,9 +425,24 @@ class Trade(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True); return
 
-        if not get_items:
-            await interaction.response.send_message("❌ Provide at least one (quantity, card) pair.", ephemeral=True); return
+        get_items: List[dict] = list(get_cards)
 
+        sid = _parse_shard_type(shard_type)
+        if sid and shard_amount:
+            have = db_shards_get(self.state, interaction.user.id, sid)
+            if have < int(shard_amount):
+                pretty = SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+                await interaction.response.send_message(
+                    f"❌ You don’t have enough **{pretty}** (have {have}, need {int(shard_amount)}).",
+                    ephemeral=True,
+                )
+                return
+            get_items.append({"kind": "shards", "set_id": sid, "amount": int(shard_amount)})
+
+        if not get_items:
+            await interaction.response.send_message("❌ Provide at least one item (card or shards).", ephemeral=True); return
+
+        # Receiver must own whatever they’re adding
         ok, msg = db_user_has_items(self.state, interaction.user.id, get_items)
         if not ok:
             await interaction.response.send_message(f"❌ You don’t have those items: {msg}", ephemeral=True); return
@@ -322,23 +450,18 @@ class Trade(commands.Cog):
         db_trade_set_receiver_offer(self.state, trade_id, interaction.user.id, get_items)
         t = db_trade_get(self.state, trade_id)
 
-        # after: db_trade_set_receiver_offer(...); t = db_trade_get(...)
-
         view = TradeConfirmView(self.bot.state, trade_id)
 
-        # Send the confirmation UI in the channel
         await interaction.response.send_message(
             content=(f"{interaction.user.mention} has added their items to trade **#{trade_id}**.\n"
-                    f"**Both players** must now confirm."),
+                     f"**Both players** must now confirm."),
             embed=_trade_embed(t),
             view=view
         )
 
-        # Grab the created message and save channel/message IDs
+        # Save channel/message IDs (for potential timeout housekeeping)
         msg = await interaction.original_response()
-        from core.db import db_trade_store_public_message
         db_trade_store_public_message(self.state, trade_id, chan_id=msg.channel.id, msg_id=msg.id)
-
 
     @app_commands.command(name="trade_show", description="Show a trade’s details")
     @app_commands.guilds(GUILD)
@@ -361,10 +484,22 @@ class Trade(commands.Cog):
         uid = str(interaction.user.id)
         if uid not in (str(t["proposer_id"]), str(t["receiver_id"])):
             await interaction.response.send_message("Only participants can confirm.", ephemeral=True); return
+
+        # At least one side must include a card (no shards-for-shards)
+        def any_card(items: List[dict]) -> bool:
+            for it in items or []:
+                if it.get("kind") != "shards":
+                    return True
+            return False
+        if not (any_card(t.get("give")) or any_card(t.get("get"))):
+            await interaction.response.send_message("❌ At least one side must include a card.", ephemeral=True)
+            return
+
         both = db_trade_set_confirm(self.state, trade_id, interaction.user.id)
         if not both:
             await interaction.response.send_message("✅ Confirmation recorded. Waiting on the other player.", ephemeral=True)
             return
+
         t = db_trade_get(self.state, trade_id)
         ok, msg = db_user_has_items(self.state, t["proposer_id"], t["give"])
         if not ok: await interaction.response.send_message(f"❌ Proposer lacks items: {msg}", ephemeral=True); return
@@ -382,7 +517,6 @@ class Trade(commands.Cog):
     @app_commands.guilds(GUILD)
     @app_commands.describe(trade_id="Trade ID (optional). If omitted, cancels your latest pending trade.")
     async def trade_cancel_cmd(self, interaction: discord.Interaction, trade_id: int | None = None):
-        # Resolve which trade to cancel
         t = db_trade_get(self.state, trade_id) if trade_id else db_trade_get_active_for_user(self.state, interaction.user.id)
         if not t:
             await interaction.response.send_message("No pending trade found.", ephemeral=True); return
@@ -393,21 +527,8 @@ class Trade(commands.Cog):
         if not t["status"].startswith("await"):
             await interaction.response.send_message("Trade is no longer cancelable.", ephemeral=True); return
 
-        # Cancel in DB
         db_trade_cancel(self.state, t["trade_id"])
 
-        # Try to delete the public confirmation message
-        try:
-            if t.get("public_chan_id") and t.get("public_msg_id"):
-                ch = interaction.client.get_channel(int(t["public_chan_id"])) or await interaction.client.fetch_channel(int(t["public_chan_id"]))
-                msg = await ch.fetch_message(int(t["public_msg_id"]))
-                await msg.delete()
-        except discord.Forbidden:
-            await interaction.channel.send("⚠️ I don't have permission to delete the confirmation message.")
-        except discord.NotFound:
-            pass
-
-        # Public cancel notice with display names
         def name_for(user_id: str) -> str:
             try:
                 m = interaction.guild.get_member(int(user_id)) if interaction.guild else None
@@ -415,12 +536,11 @@ class Trade(commands.Cog):
             except Exception:
                 return f"<@{user_id}>"
 
-        # Post in the channel where the command was used (you could also use stored public_chan_id instead)
         await interaction.channel.send(
             f"🛑 trade between **{name_for(t['proposer_id'])}** and **{name_for(t['receiver_id'])}** was cancelled"
         )
-
         await interaction.response.send_message("🛑 Trade cancelled.", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Trade(bot))

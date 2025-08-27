@@ -1,6 +1,6 @@
 # cogs/cards_shop.py
-import os, discord
-from typing import List
+import os, discord, textwrap
+from typing import List, Dict
 from discord.ext import commands
 from discord import app_commands
 
@@ -12,12 +12,19 @@ from core.cards_shop import (
     get_card_rarity,
     register_print_if_missing,
 )
-from core.constants import CRAFT_COST_BY_RARITY, SHARD_YIELD_BY_RARITY
+from core.constants import (
+    CRAFT_COST_BY_RARITY, SHARD_YIELD_BY_RARITY, set_id_for_pack, 
+    RARITY_ORDER, RARITY_ALIASES, FRAGMENTABLE_RARITIES
+)
 from core.views import (
     ConfirmBuyCardView,
     ConfirmSellCardView,
 )
-from core.db import db_collection_list_owned_prints
+from core.currency import SHARD_SET_NAMES
+from core.db import (
+    db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
+    db_shards_add, db_collection_remove_exact_print
+)
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -121,6 +128,108 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
 
     return choices
 
+def norm_rarity(s: str) -> str:
+    r = (s or "").strip().lower()
+    return RARITY_ALIASES.get(r, r)
+
+def shorten(s: str, n: int = 80) -> str:
+    return s if len(s) <= n else s[:n-1] + "…"
+
+async def ac_pack_names(interaction: discord.Interaction, current: str):
+    state: AppState = interaction.client.state
+    q = (current or "").lower()
+    names = sorted((state.packs_index or {}).keys())
+    out = []
+    for n in names:
+        if q and q not in n.lower():
+            continue
+        out.append(app_commands.Choice(name=shorten(n, 100), value=n[:100]))
+        if len(out) >= 25:
+            break
+    return out
+
+async def ac_fragmentable_rarity(interaction: discord.Interaction, current: str):
+    q = (current or "").lower()
+    out = []
+    for r in FRAGMENTABLE_RARITIES:  # starlight excluded here
+        label = r.title()
+        alias_blob = " ".join(k for k, v in RARITY_ALIASES.items() if v == r)
+        if q and (q not in r and q not in label.lower() and q not in alias_blob.lower()):
+            continue
+        out.append(app_commands.Choice(name=label, value=r))
+    return out
+
+class BulkFragmentConfirmView(discord.ui.View):
+    def __init__(self, state: AppState, user: discord.Member, plan_rows: List[Dict], pack_name: str, rarity: str, keep: int, total_yield: int, *, timeout: float = 120):
+        super().__init__(timeout=timeout)
+        self.state = state
+        self.user = user
+        self.plan_rows = plan_rows
+        self.pack_name = pack_name
+        self.rarity = rarity
+        self.keep = int(keep)
+        self.total_yield = int(total_yield)
+        self._locked = False
+
+    def shard_label(self) -> str:
+        sid = set_id_for_pack(self.pack_name) or 1
+        return SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+
+    async def finalize(self, interaction: discord.Interaction, content: str | None = None):
+        self.stop()
+        for c in self.children:
+            c.disabled = True
+        try:
+            await interaction.response.edit_message(content=content, view=None)
+        except discord.InteractionResponded:
+            await interaction.message.edit(content=content, view=None)
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        if self._locked:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self._locked = True
+
+        sid = set_id_for_pack(self.pack_name) or 1
+        yield_per = int(SHARD_YIELD_BY_RARITY.get(self.rarity, 0))
+        credited = 0
+
+        try:
+            for row in self.plan_rows:
+                amt = int(row["to_frag"])
+                if amt <= 0:
+                    continue
+                removed = db_collection_remove_exact_print(
+                    self.state, self.user.id,
+                    card_name=row["name"],
+                    card_rarity=row["rarity"],
+                    card_set=row["set"],
+                    card_code=row["code"],
+                    card_id=row["id"],
+                    amount=amt
+                )
+                if removed > 0:
+                    credited += removed * yield_per
+
+            if credited > 0:
+                db_shards_add(self.state, self.user.id, sid, credited)
+
+            pretty = self.shard_label()
+            await self.finalize(interaction, content=f"✅ Fragmented these cards into **{credited} {pretty}**.")
+        except Exception:
+            self._locked = False
+            raise
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self.finalize(interaction, content="Cancelled.")
+
 class CardsShop(commands.Cog):
     """
     Refactor: /craft (was /buy) and /shard (was /sell), shop-only.
@@ -211,6 +320,67 @@ class CardsShop(commands.Cog):
             f"Are you sure you want to **fragment** **{amount}× {card_label(c)}** into **{total}** Elemental Shards?",
             view=view,
             ephemeral=True
+        )
+    
+    @app_commands.command(name="fragment_bulk", description="Fragment many cards at once by pack + rarity, keeping a minimum number of each.")
+    @app_commands.guilds(GUILD)
+    @app_commands.describe(
+        pack_name="Set/pack to filter",
+        rarity="Card rarity to fragment",
+        keep="Keep at least this many copies per card (default 3)"
+    )
+    @app_commands.autocomplete(pack_name=ac_pack_names, rarity=ac_fragmentable_rarity)
+    async def fragment_bulk(
+        self,
+        interaction: discord.Interaction,
+        pack_name: str,
+        rarity: str,
+        keep: app_commands.Range[int, 0, 99] = 3,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if pack_name not in (self.state.packs_index or {}):
+            return await interaction.followup.send("❌ Unknown pack/set.", ephemeral=True)
+
+        r = norm_rarity(rarity)
+        if r not in FRAGMENTABLE_RARITIES:
+            return await interaction.followup.send("❌ That rarity can’t be fragmented.", ephemeral=True)
+
+        # DB helper gathers rows (exact prints) with qty > keep
+        rows = db_collection_list_for_bulk_fragment(self.state, interaction.user.id, pack_name, r, int(keep))
+        if not rows:
+            return await interaction.followup.send("Nothing to fragment with those filters (or all at/under the keep amount).", ephemeral=True)
+
+        # Compute total yield
+        yield_per = int(SHARD_YIELD_BY_RARITY.get(r, 0))
+        total_yield = sum(int(x["to_frag"]) * yield_per for x in rows)
+        sid = set_id_for_pack(pack_name) or 1
+        pretty = SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+
+        # Build preview
+        lines = []
+        for x in rows:
+            keep = min(int(x["qty"]), int(keep))
+            lines.append(f"• x{x['to_frag']} {shorten(x['name'], 64)} (keep {keep})")
+
+        preview = "\n".join(lines)
+        if len(preview) > 1800:
+            preview = preview[:1800] + "\n…"
+
+        view = BulkFragmentConfirmView(self.state, interaction.user, rows, pack_name, r, keep, total_yield)
+        content_lines = [
+            "Are you sure you want to fragment the following cards?",
+            "",
+            preview,
+            "",
+            f"This will yield **{total_yield} {pretty}**."
+        ]
+        content = "\n".join(content_lines)
+
+        await interaction.followup.send(
+            content=content,
+            ephemeral=True,
+            view=view
         )
 
 async def setup(bot: commands.Bot):

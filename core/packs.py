@@ -151,7 +151,7 @@ def open_pack_from_csv(state: AppState, pack_name: str, amount: int = 1) -> list
         pool = by_rarity.get("rare") or _fallback_pool(by_rarity, ["super","ultra","secret","uncommon","common"])
         pulls.append(_weighted_pick(pool))
         roll = random.random()
-        target = "secret" if roll < 0.03 else ("ultra" if roll < 0.28 else "super")
+        target = "secret" if roll < 0.04 else ("ultra" if roll < 0.25 else "super")
         prefs = {"secret":["secret","ultra","super","rare","uncommon","common"],
                  "ultra":["ultra","super","rare","uncommon","common","secret"],
                  "super":["super","rare","uncommon","common","ultra","secret"]}[target]

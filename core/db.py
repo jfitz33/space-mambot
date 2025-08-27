@@ -437,91 +437,160 @@ def db_trade_cancel(state: AppState, trade_id: int):
         conn.execute("UPDATE trades SET status='canceled' WHERE trade_id=?", (trade_id,))
 
 # --- Validate availability for items (exact row key match) ---
-def db_user_has_items(state: AppState, user_id: int, items: List[dict]) -> tuple[bool, str]:
+def db_user_has_items(state, user_id: int, items: list[dict]) -> tuple[bool, str]:
+    """
+    Returns (ok, message). Supports both card items and shard entries:
+      - Card: {name, rarity, card_set, card_code, card_id, qty}
+      - Shards: {"kind":"shards", "set_id": int, "amount": int}
+    """
+    import sqlite3
+    from core.db import db_shards_get
+
+    # Check shards first
+    for it in items:
+        if (it or {}).get("kind") == "shards":
+            sid = int(it.get("set_id", 0) or 0)
+            amt = int(it.get("amount", 0) or 0)
+            if sid <= 0 or amt <= 0:
+                return (False, "invalid shards entry")
+            have = db_shards_get(state, user_id, sid)
+            if have < amt:
+                return (False, f"needs {amt} {sid}, has {have}")
+
+    # Check cards (exact print rows)
     with sqlite3.connect(state.db_path) as conn:
         for it in items:
+            if (it or {}).get("kind") == "shards":
+                continue
             name = it["name"]; rarity = it["rarity"]; cset = it["card_set"]
-            code = it.get("card_code","") or ""; cid = it.get("card_id","") or ""
-            qty  = int(it.get("qty", 0))
-            cur = conn.execute("""
-              SELECT card_qty FROM user_collection
-              WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
-                AND COALESCE(card_code,'')=? AND COALESCE(card_id,'')=?;
-            """, (str(user_id), name, rarity, cset, code, cid))
-            row = cur.fetchone()
-            have = int(row[0]) if row else 0
-            if have < qty:
-                return (False, f"{name} ({rarity}, {cset}) need {qty}, have {have}")
-    return (True, "ok")
+            code = it.get("card_code") or None
+            cid  = it.get("card_id") or None
+            need = int(it["qty"])
+            row = conn.execute("""
+                SELECT COALESCE(card_qty,0) FROM user_collection
+                 WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                   AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+            """, (str(user_id), name, rarity, cset, code, code, cid, cid)).fetchone()
+            have = int(row[0] if row else 0)
+            if have < need:
+                return (False, f"needs x{need} {name} [{rarity}] in {cset}, has {have}")
+    return (True, "")
+
 
 # --- Atomic swap for trades ---
-def db_apply_trade_atomic(state: AppState, trade: dict) -> tuple[bool, str]:
-    proposer = trade["proposer_id"]; receiver = trade["receiver_id"]
-    give = trade["give"]; get = trade["get"]
+def db_apply_trade_atomic(state, t: dict) -> tuple[bool, str]:
+    """
+    Applies a trade atomically. Input `t` is a full trade row dict with:
+      t["proposer_id"], t["receiver_id"], t["give"] (list), t["get"] (list).
+    Card rows: {name, rarity, card_set, card_code, card_id, qty}
+    Shard rows: {"kind":"shards","set_id":int,"amount":int}
+    """
+    import sqlite3
+    from core.db import db_shards_add
+
+    A = str(t["proposer_id"])
+    B = str(t["receiver_id"])
+    give = t.get("give", []) or []
+    get  = t.get("get", []) or []
+
     try:
-        conn = sqlite3.connect(state.db_path)
-        conn.isolation_level = None
-        conn.execute("BEGIN IMMEDIATE;")
+        with sqlite3.connect(state.db_path) as conn, conn:
+            # 1) Remove A's card items; credit to B
+            for it in give:
+                if (it or {}).get("kind") == "shards":
+                    continue
+                # remove from A
+                conn.execute("""
+                    UPDATE user_collection
+                       SET card_qty = card_qty - ?
+                     WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                       AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+                       AND card_qty >= ?;
+                """, (int(it["qty"]), A, it["name"], it["rarity"], it["card_set"],
+                      it.get("card_code") or None, it.get("card_code") or None,
+                      it.get("card_id") or None, it.get("card_id") or None,
+                      int(it["qty"])))
+                if conn.total_changes <= 0:
+                    raise RuntimeError(f"proposer missing {it['name']} x{it['qty']}")
 
-        # re-check availability
-        ok, msg = db_user_has_items(state, proposer, give)
-        if not ok: conn.execute("ROLLBACK;"); conn.close(); return (False, f"Proposer lacks items: {msg}")
-        ok, msg = db_user_has_items(state, receiver, get)
-        if not ok: conn.execute("ROLLBACK;"); conn.close(); return (False, f"Receiver lacks items: {msg}")
-
-        def dec(user, items):
-            for it in items:
-                name, rarity, cset = it["name"], it["rarity"], it["card_set"]
-                code = it.get("card_code","") or ""; cid = it.get("card_id","") or ""
-                qty  = int(it["qty"])
-                cur = conn.execute("""
-                  SELECT card_qty FROM user_collection
-                  WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
-                    AND COALESCE(card_code,'')=? AND COALESCE(card_id,'')=?;
-                """, (str(user), name, rarity, cset, code, cid))
-                row = cur.fetchone()
-                have = int(row[0]) if row else 0
-                newq = have - qty
-                if newq < 0:
-                    raise RuntimeError("Race: negative quantity")
-                if newq == 0:
+                # add to B (upsert)
+                row = conn.execute("""
+                    SELECT card_qty FROM user_collection
+                     WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                       AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+                """, (B, it["name"], it["rarity"], it["card_set"],
+                      it.get("card_code") or None, it.get("card_code") or None,
+                      it.get("card_id") or None, it.get("card_id") or None)).fetchone()
+                if row:
                     conn.execute("""
-                      DELETE FROM user_collection
-                      WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
-                        AND COALESCE(card_code,'')=? AND COALESCE(card_id,'')=?;
-                    """, (str(user), name, rarity, cset, code, cid))
+                        UPDATE user_collection
+                           SET card_qty = card_qty + ?
+                         WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                           AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+                    """, (int(it["qty"]), B, it["name"], it["rarity"], it["card_set"],
+                          it.get("card_code") or None, it.get("card_code") or None,
+                          it.get("card_id") or None, it.get("card_id") or None))
                 else:
                     conn.execute("""
-                      UPDATE user_collection SET card_qty=?
-                      WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
-                        AND COALESCE(card_code,'')=? AND COALESCE(card_id,'')=?;
-                    """, (newq, str(user), name, rarity, cset, code, cid))
+                        INSERT INTO user_collection (user_id, card_name, card_rarity, card_set, card_code, card_id, card_qty)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (B, it["name"], it["rarity"], it["card_set"],
+                          it.get("card_code") or None, it.get("card_id") or None, int(it["qty"])))
 
-        def inc(user, items):
-            for it in items:
-                name, rarity, cset = it["name"], it["rarity"], it["card_set"]
-                code = it.get("card_code","") or ""; cid = it.get("card_id","") or ""
-                qty  = int(it["qty"])
+            # 2) Remove B's card items; credit to A
+            for it in get:
+                if (it or {}).get("kind") == "shards":
+                    continue
                 conn.execute("""
-                  INSERT INTO user_collection (user_id, card_name, card_qty, card_rarity, card_set, card_code, card_id)
-                  VALUES (?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(user_id, card_name, card_rarity, card_set, card_code, card_id)
-                  DO UPDATE SET card_qty = card_qty + excluded.card_qty;
-                """, (str(user), name, qty, rarity, cset, code, cid))
+                    UPDATE user_collection
+                       SET card_qty = card_qty - ?
+                     WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                       AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+                       AND card_qty >= ?;
+                """, (int(it["qty"]), B, it["name"], it["rarity"], it["card_set"],
+                      it.get("card_code") or None, it.get("card_code") or None,
+                      it.get("card_id") or None, it.get("card_id") or None,
+                      int(it["qty"])))
+                if conn.total_changes <= 0:
+                    raise RuntimeError(f"receiver missing {it['name']} x{it['qty']}")
 
-        # proposer -> receiver
-        dec(proposer, give); inc(receiver, give)
-        # receiver -> proposer
-        dec(receiver, get); inc(proposer, get)
+                row = conn.execute("""
+                    SELECT card_qty FROM user_collection
+                     WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                       AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+                """, (A, it["name"], it["rarity"], it["card_set"],
+                      it.get("card_code") or None, it.get("card_code") or None,
+                      it.get("card_id") or None, it.get("card_id") or None)).fetchone()
+                if row:
+                    conn.execute("""
+                        UPDATE user_collection
+                           SET card_qty = card_qty + ?
+                         WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
+                           AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+                    """, (int(it["qty"]), A, it["name"], it["rarity"], it["card_set"],
+                          it.get("card_code") or None, it.get("card_code") or None,
+                          it.get("card_id") or None, it.get("card_id") or None))
+                else:
+                    conn.execute("""
+                        INSERT INTO user_collection (user_id, card_name, card_rarity, card_set, card_code, card_id, card_qty)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (A, it["name"], it["rarity"], it["card_set"],
+                          it.get("card_code") or None, it.get("card_id") or None, int(it["qty"])))
 
-        conn.execute("COMMIT;")
-        conn.close()
-        return (True, "ok")
+        # shards (non-card) are simpler and don’t need to be in the same SQL txn as cards
+        # but you can also move them inside the same `with conn, conn:` if you prefer strict atomicity
+        for it in give:
+            if (it or {}).get("kind") == "shards":
+                db_shards_add(state, int(A), int(it["set_id"]), -int(it["amount"]))
+                db_shards_add(state, int(B), int(it["set_id"]),  int(it["amount"]))
+        for it in get:
+            if (it or {}).get("kind") == "shards":
+                db_shards_add(state, int(B), int(it["set_id"]), -int(it["amount"]))
+                db_shards_add(state, int(A), int(it["set_id"]),  int(it["amount"]))
+
+        return (True, "")
     except Exception as e:
-        try:
-            conn.execute("ROLLBACK;"); conn.close()
-        except: pass
-        return (False, f"Trade failed: {e}")
+        return (False, str(e))
     
 # ---- Wallet: schema + helpers ----------------------------------------------
 
@@ -687,6 +756,55 @@ def db_shards_add(state, user_id: int, set_id: int, d_shards: int) -> None:
             "UPDATE wallet_shards SET shards = shards + ? WHERE user_id=? AND set_id=?",
             (d, str(user_id), int(set_id))
         )
+
+def db_collection_list_for_bulk_fragment(
+    state,
+    user_id: int,
+    pack_name: str,
+    rarity: str,
+    keep: int
+) -> List[Dict]:
+    """
+    Returns rows of exact prints to fragment, each:
+      {
+        "name": str,
+        "qty": int,
+        "to_frag": int,  # qty - keep, clamped >= 0
+        "rarity": str,
+        "set": str,
+        "code": str|None,
+        "id": str|None,
+      }
+    Only includes rows where to_frag > 0.
+    NOTE: Starlight is handled at the caller level; this function does not enforce rarity rules.
+    """
+    out: List[Dict] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT card_name, card_qty, card_rarity, card_set, card_code, card_id
+              FROM user_collection
+             WHERE user_id = ?
+               AND card_set = ?
+               AND LOWER(card_rarity) = ?
+            """,
+            (str(user_id), pack_name, rarity.lower().strip())
+        )
+        for name, qty, r, cset, code, cid in cur.fetchall():
+            qty = int(qty or 0)
+            to_frag = max(0, qty - int(keep))
+            if to_frag <= 0:
+                continue
+            out.append({
+                "name": name,
+                "qty": qty,
+                "to_frag": to_frag,
+                "rarity": rarity.lower().strip(),
+                "set": cset,
+                "code": (code or None),
+                "id": (cid or None),
+            })
+    return out
 
 # --- User stats helpers ---
 def db_init_user_stats(state):
