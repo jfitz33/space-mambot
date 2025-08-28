@@ -806,6 +806,159 @@ def db_collection_list_for_bulk_fragment(
             })
     return out
 
+def db_init_shard_overrides(state):
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS shard_overrides (
+            oid           INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_name     TEXT NOT NULL,
+            card_set      TEXT NOT NULL,
+            card_rarity   TEXT,
+            card_code     TEXT,
+            card_id       TEXT,
+            yield_override INTEGER NOT NULL,    -- absolute shards per copy
+            starts_at     INTEGER NOT NULL,     -- epoch seconds
+            ends_at       INTEGER NOT NULL,     -- epoch seconds
+            reason        TEXT,
+            created_at    INTEGER NOT NULL
+        );
+        """)
+        # Helpful indexes
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_shard_overrides_key ON shard_overrides(card_name, card_set);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_shard_overrides_time ON shard_overrides(ends_at, starts_at);")
+
+def db_shard_override_set(
+    state,
+    *,
+    card_name: str,
+    card_set: str,
+    yield_override: int,
+    duration_seconds: int,
+    starts_at: Optional[int] = None,
+    card_rarity: Optional[str] = None,
+    card_code: Optional[str] = None,
+    card_id: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> int:
+    """Create a new timed override. Returns row id."""
+    now = int(time.time())
+    start = int(starts_at or now)
+    end = start + max(1, int(duration_seconds))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute("""
+            INSERT INTO shard_overrides
+                (card_name, card_set, card_rarity, card_code, card_id,
+                 yield_override, starts_at, ends_at, reason, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            card_name, card_set, (card_rarity or None),
+            (card_code or None), (card_id or None),
+            int(yield_override), start, end, (reason or None), now
+        ))
+        return int(cur.lastrowid)
+
+def db_shard_override_clear(
+    state,
+    *,
+    card_name: str,
+    card_set: str,
+    card_code: Optional[str] = None,
+    card_id: Optional[str] = None,
+) -> int:
+    """
+    Remove overrides for a specific printing if code/id provided;
+    otherwise remove any overrides for (name+set). Returns rows deleted.
+    """
+    with sqlite3.connect(state.db_path) as conn, conn:
+        if card_code or card_id:
+            cur = conn.execute("""
+                DELETE FROM shard_overrides
+                WHERE card_name=? AND card_set=? AND (card_code IS ? OR card_code=?) AND (card_id IS ? OR card_id=?)
+            """, (card_name, card_set, None if not card_code else None, card_code or None,
+                  None if not card_id else None, card_id or None))
+        else:
+            cur = conn.execute("""
+                DELETE FROM shard_overrides
+                WHERE card_name=? AND card_set=?
+            """, (card_name, card_set))
+        return int(cur.rowcount)
+
+def db_shard_override_list_active(state) -> list[Dict[str, Any]]:
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("""
+            SELECT * FROM shard_overrides
+            WHERE starts_at<=? AND ends_at>=?
+            ORDER BY ends_at ASC
+        """, (now, now))
+        return [dict(r) for r in cur.fetchall()]
+
+def db_shard_override_match_for_print(state, *, name: str, set_name: str,
+                                      rarity: Optional[str], code: Optional[str], cid: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Return the most specific active override for this printing (if any):
+      1) exact code+id
+      2) exact code
+      3) exact id
+      4) name+set+rarity
+      5) name+set
+    """
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        # Try in order of specificity
+        queries = [
+            ("code+id",  "card_code IS ? AND card_id IS ?"),
+            ("code",     "card_code IS ?"),
+            ("id",       "card_id IS ?"),
+            ("n+s+r",    "card_rarity IS ?"),
+            ("n+s",      "1=1"),
+        ]
+        params_sets = [
+            (code or None, cid or None),
+            (code or None,),
+            (cid or None,),
+            ((rarity or None),),
+            tuple(),
+        ]
+        base = """
+            SELECT * FROM shard_overrides
+             WHERE card_name=? AND card_set=?
+               AND starts_at<=? AND ends_at>=?
+               AND {where}
+             ORDER BY ends_at DESC LIMIT 1
+        """
+        for (_, where), p in zip(queries, params_sets):
+            cur = conn.execute(base.format(where=where),
+                               (name, set_name, now, now, *p))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+    return None
+
+def db_fragment_yield_for_card(state, card: dict, set_name: str) -> tuple[int, Optional[Dict[str, Any]]]:
+    """
+    Compute the per-copy shard yield for this printing, honoring any active override.
+    Returns (yield_each, override_row_or_None).
+    """
+    from core.constants import SHARD_YIELD_BY_RARITY  # your canonical map
+    rarity = (card.get("rarity") or card.get("cardrarity") or "").strip().lower()
+    if rarity == "starlight":
+        return (0, None)  # not fragmentable
+
+    base = int(SHARD_YIELD_BY_RARITY.get(rarity, 0))
+    name = (card.get("name") or card.get("cardname") or "").strip()
+    code = (card.get("code") or card.get("cardcode")) or None
+    cid  = (card.get("id")   or card.get("cardid"))   or None
+
+    ov = db_shard_override_match_for_print(state,
+                                           name=name, set_name=set_name,
+                                           rarity=rarity, code=code, cid=cid)
+    if ov:
+        return (int(ov["yield_override"]), ov)
+    return (base, None)
+
 # --- User stats helpers ---
 def db_init_user_stats(state):
     with sqlite3.connect(state.db_path) as conn, conn:

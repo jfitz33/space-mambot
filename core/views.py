@@ -5,7 +5,9 @@ import discord, asyncio
 from io import BytesIO
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv, normalize_rarity
-from core.db import db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks, db_collection_remove_exact_print, _blank_to_none, db_collection_debug_dump, db_shards_add, db_shards_get
+from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks, 
+                     db_collection_remove_exact_print, _blank_to_none, 
+                     db_collection_debug_dump, db_shards_add, db_fragment_yield_for_card)
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.images import card_art_path_for_card
 from core.render import render_pack_panel
@@ -368,7 +370,7 @@ class ConfirmSellCardView(discord.ui.View):
             )
 
         rarity = (get_card_rarity(card) or "").lower()
-        yield_each = SHARD_YIELD_BY_RARITY.get(rarity)
+        yield_each, ov = db_fragment_yield_for_card(self.state, card, set_name)
         if yield_each is None:
             self._processing = False
             return await interaction.followup.send("❌ This printing cannot be fragmented.", ephemeral=True)

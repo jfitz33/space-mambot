@@ -3,7 +3,7 @@ import os, discord, textwrap
 from typing import List, Dict
 from discord.ext import commands
 from discord import app_commands
-
+from typing import Optional, Tuple
 from core.state import AppState
 from core.cards_shop import (
     ensure_shop_index,
@@ -23,7 +23,7 @@ from core.views import (
 from core.currency import SHARD_SET_NAMES
 from core.db import (
     db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
-    db_shards_add, db_collection_remove_exact_print
+    db_shards_add, db_collection_remove_exact_print, db_fragment_yield_for_card
 )
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -195,19 +195,19 @@ class BulkFragmentConfirmView(discord.ui.View):
         self._locked = True
 
         sid = set_id_for_pack(self.pack_name) or 1
-        yield_per = int(SHARD_YIELD_BY_RARITY.get(self.rarity, 0))
         credited = 0
 
         try:
             for row in self.plan_rows:
                 amt = int(row["to_frag"])
+                yield_per = int(row.get("yield_each", 0))
                 if amt <= 0:
                     continue
                 removed = db_collection_remove_exact_print(
                     self.state, self.user.id,
                     card_name=row["name"],
-                    card_rarity=row["rarity"],
-                    card_set=row["set"],
+                    card_rarity=self.rarity,
+                    card_set=self.pack_name,
                     card_code=row["code"],
                     card_id=row["id"],
                     amount=amt
@@ -310,7 +310,8 @@ class CardsShop(commands.Cog):
             return await interaction.response.send_message("This printing is missing a set and can’t be fragmented.", ephemeral=True)
 
         rarity = get_card_rarity(c)
-        price_each = SHARD_YIELD_BY_RARITY.get(rarity)
+        #price_each = SHARD_YIELD_BY_RARITY.get(rarity)
+        price_each, ov = db_fragment_yield_for_card(self.state, c, set_present)
         if rarity == "starlight" or price_each is None:
             return await interaction.response.send_message("❌ This printing cannot be crafted.", ephemeral=True)
         total = price_each * amount
@@ -346,42 +347,72 @@ class CardsShop(commands.Cog):
         if r not in FRAGMENTABLE_RARITIES:
             return await interaction.followup.send("❌ That rarity can’t be fragmented.", ephemeral=True)
 
-        # DB helper gathers rows (exact prints) with qty > keep
+        # Exact-print rows with qty > keep: [{"name","qty","to_frag","code","id"}, ...]
         rows = db_collection_list_for_bulk_fragment(self.state, interaction.user.id, pack_name, r, int(keep))
         if not rows:
-            return await interaction.followup.send("Nothing to fragment with those filters (or all at/under the keep amount).", ephemeral=True)
+            return await interaction.followup.send(
+                "Nothing to fragment with those filters (or all at/under the keep amount).",
+                ephemeral=True
+            )
 
-        # Compute total yield
-        yield_per = int(SHARD_YIELD_BY_RARITY.get(r, 0))
-        total_yield = sum(int(x["to_frag"]) * yield_per for x in rows)
+        # --- compute per-print yield (with overrides) and grand total ---
         sid = set_id_for_pack(pack_name) or 1
         pretty = SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+        total_yield = 0
+        preview_lines = []
+        keep_floor = int(keep)
 
-        # Build preview
-        lines = []
-        for x in rows:
-            keep = min(int(x["qty"]), int(keep))
-            lines.append(f"• x{x['to_frag']} {shorten(x['name'], 64)} (keep {keep})")
+        # Pass an enriched list (with yield_each) to the confirm view so we don’t
+        # recompute and risk drift between preview and execution.
+        enriched_rows = []
+        for row in rows:
+            # minimal "card" dict for the helper (uses your field names)
+            card_min = {
+                "name": row["name"],
+                "rarity": r,
+                "code": row.get("code"),
+                "id": row.get("id"),
+            }
+            yield_each, ov = db_fragment_yield_for_card(self.state, card_min, set_name=pack_name)
+            qty_to_frag = int(row["to_frag"])
+            total_yield += qty_to_frag * yield_each
 
-        preview = "\n".join(lines)
+            boost = ""
+            if ov is not None and int(ov.get("yield_override", yield_each)) != int(SHARD_YIELD_BY_RARITY.get(r, 0)):
+                # keep it short; you can expand this if you store reason/expiry, etc.
+                boost = " (override)"
+
+            keep_shown = min(int(row["qty"]), keep_floor)
+            preview_lines.append(
+                f"• x{qty_to_frag} {shorten(row['name'], 64)} — {qty_to_frag * yield_each} {pretty}{boost} (keep {keep_shown})"
+            )
+
+            enriched_rows.append({**row, "yield_each": int(yield_each)})
+
+        preview = "\n".join(preview_lines)
         if len(preview) > 1800:
             preview = preview[:1800] + "\n…"
 
-        view = BulkFragmentConfirmView(self.state, interaction.user, rows, pack_name, r, keep, total_yield)
-        content_lines = [
+        view = BulkFragmentConfirmView(
+            self.state,
+            interaction.user,
+            enriched_rows,           # <-- pass yields to the view
+            pack_name,
+            r,
+            keep_floor,
+            total_yield,
+        )
+
+        content = "\n".join([
             "Are you sure you want to fragment the following cards?",
             "",
             preview,
             "",
             f"This will yield **{total_yield} {pretty}**."
-        ]
-        content = "\n".join(content_lines)
+        ])
 
-        await interaction.followup.send(
-            content=content,
-            ephemeral=True,
-            view=view
-        )
+        await interaction.followup.send(content=content, ephemeral=True, view=view)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))

@@ -1,4 +1,4 @@
-import discord, os
+import discord, os, time
 from discord.ext import commands
 from discord import app_commands
 from typing import List, Literal, Optional
@@ -7,10 +7,12 @@ from core.packs import resolve_card_in_pack
 from core.db import (
     db_admin_add_card, db_admin_remove_card, db_collection_clear,
     db_wallet_set, db_wallet_add, db_wallet_get,
-    db_shards_get, db_shards_add,
+    db_shards_get, db_shards_add, db_shard_override_set,
+    db_shard_override_clear, db_shard_override_clear, db_shard_override_list_active
 )
 from core.constants import PACKS_BY_SET
 from core.currency import shard_set_name  # pretty name per set
+from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -44,6 +46,7 @@ def _read_option(interaction: discord.Interaction, name: str) -> str:
     data = getattr(interaction, "data", {}) or {}
     opts = {opt.get("name"): opt.get("value") for opt in data.get("options", []) if isinstance(opt, dict)}
     return (opts.get(name) or "").strip()
+    
 
 # NEW: autocomplete for shard_set (int choices based on PACKS_BY_SET keys)
 def _available_set_choices() -> List[app_commands.Choice[int]]:
@@ -71,7 +74,6 @@ class Admin(commands.Cog):
         names = _ac_card_names_for_set(self.bot.state, selected_set, current)
         return [app_commands.Choice(name=n, value=n) for n in names]
 
-    # NEW: autocomplete for shard_set (int)
     async def ac_shard_set(self, interaction: discord.Interaction, current: str):
         # We can optionally filter by `current` if user types a digit; otherwise show all
         choices = _available_set_choices()
@@ -79,6 +81,11 @@ class Admin(commands.Cog):
             cur = (current or "").strip()
             choices = [c for c in choices if cur in c.name or cur == str(c.value)]
         return choices[:25]
+    
+    # Re-using shop's suggest prints with set function for admin override ac
+    async def ac_print(self, interaction: discord.Interaction, current: str):
+        from cogs.cards_shop import suggest_prints_with_set  # you already have this
+        return suggest_prints_with_set(self.state, current)
 
     @app_commands.command(name="admin_add_card", description="(Admin) Add a card to a user's collection (rarity from pack)")
     @app_commands.guilds(GUILD)
@@ -309,6 +316,97 @@ class Admin(commands.Cog):
             ),
             ephemeral=True,
         )
+    
+    @app_commands.command(name="admin_fragment_override_set", description="(Admin) Temporarily override a card's fragment yield")
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        card="Choose the exact printing",
+        yield_per_copy="Shards granted per copy while active",
+        hours="Duration in hours (default 48 = 2 days)",
+        reason="Optional note"
+    )
+    @app_commands.autocomplete(card=ac_print)
+    async def admin_fragment_override_set(
+        self,
+        interaction: discord.Interaction,
+        card: str,
+        yield_per_copy: app_commands.Range[int,1,100000],
+        hours: app_commands.Range[int,1,24*365] = 48,
+        reason: str | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        c = find_card_by_print_key(self.state, card)
+        if not c:
+            return await interaction.followup.send("Printing not found.", ephemeral=True)
+        set_name = resolve_card_set(self.state, c)
+        if not set_name:
+            return await interaction.followup.send("Printing is missing set.", ephemeral=True)
+        name  = (c.get("name") or c.get("cardname") or "").strip()
+        rarity= (c.get("rarity") or c.get("cardrarity") or "").strip()
+        code  = (c.get("code") or c.get("cardcode")) or None
+        cid   = (c.get("id")   or c.get("cardid"))   or None
+
+        oid = db_shard_override_set(
+            self.state,
+            card_name=name, card_set=set_name, card_rarity=rarity,
+            card_code=code, card_id=cid,
+            yield_override=int(yield_per_copy),
+            duration_seconds=int(hours)*3600,
+            reason=reason or f"Set via /admin_fragment_override_set by {interaction.user.id}"
+        )
+        until = time.strftime("%Y-%m-%d %H:%M ET", time.localtime(int(time.time()+int(hours)*3600)))
+        await interaction.followup.send(
+            f"✅ Override **#{oid}**: {card_label(c)} → **{yield_per_copy}** shards/copy until **{until}**.",
+            ephemeral=True
+        )
+
+    @app_commands.command(name="admin_fragment_override_clear", description="(Admin) Remove overrides for a printing or name+set")
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(card="Exact printing (recommended) OR leave blank and use name+set",
+                           name="Card name (used if card left blank)",
+                           card_set="Set name (used if card left blank)")
+    @app_commands.autocomplete(card=ac_print)
+    async def admin_fragment_override_clear(
+        self,
+        interaction: discord.Interaction,
+        card: str | None = None,
+        name: str | None = None,
+        card_set: str | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if card:
+            c = find_card_by_print_key(self.state, card)
+            if not c:
+                return await interaction.followup.send("Printing not found.", ephemeral=True)
+            set_name = resolve_card_set(self.state, c) or ""
+            n = (c.get("name") or c.get("cardname") or "").strip()
+            code = (c.get("code") or c.get("cardcode")) or None
+            cid  = (c.get("id")   or c.get("cardid"))   or None
+            deleted = db_shard_override_clear(self.state, card_name=n, card_set=set_name, card_code=code, card_id=cid)
+        else:
+            if not (name and card_set):
+                return await interaction.followup.send("Provide either `card` OR (`name` and `card_set`).", ephemeral=True)
+            deleted = db_shard_override_clear(self.state, card_name=name, card_set=card_set)
+
+        await interaction.followup.send(f"🧹 Removed **{deleted}** override(s).", ephemeral=True)
+
+    @app_commands.command(name="admin_fragment_override_list", description="(Admin) List active fragment overrides")
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    async def admin_fragment_override_list(self, interaction: discord.Interaction):
+        rows = db_shard_override_list_active(self.state)
+        if not rows:
+            return await interaction.response.send_message("No active overrides.", ephemeral=True)
+        lines = []
+        for r in rows:
+            until = time.strftime("%Y-%m-%d %H:%M ET", time.localtime(int(r["ends_at"])))
+            tgt = f"{r['card_name']} [{r.get('card_set','')}]"
+            if r.get("card_code") or r.get("card_id"):
+                tgt += " (exact print)"
+            lines.append(f"• **{tgt}** → **{r['yield_override']}** shards/copy · until **{until}**")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from core.state import AppState
-from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set, db_init_user_stats
+from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set, db_init_user_stats, db_init_shard_overrides
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
@@ -52,7 +52,6 @@ async def on_ready():
     db_init(bot.state)
     db_init_trades(bot.state)
     await db_init_quests(bot.state)
-    #await db_seed_example_quests(bot.state)
     await db_seed_quests_from_json(bot.state, "data/quests.json", deactivate_missing=True)
     db_init_user_stats(bot.state)
     load_packs_from_csv(bot.state)
@@ -60,7 +59,7 @@ async def on_ready():
     load_starters_from_csv(bot.state)
     db_init_wallet(bot.state)
     await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
-    print("Wallet migration complete: mambucks=pack currency, shards per set ready")
+    await asyncio.to_thread(db_init_shard_overrides, bot.state)
 
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:
