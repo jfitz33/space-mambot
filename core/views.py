@@ -9,6 +9,7 @@ from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks,
                      db_collection_remove_exact_print, _blank_to_none, 
                      db_collection_debug_dump, db_shards_add, db_fragment_yield_for_card)
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
+from core.pricing import craft_cost_for_card
 from core.images import card_art_path_for_card
 from core.render import render_pack_panel
 from typing import List, Tuple, Optional, Literal
@@ -263,9 +264,8 @@ class ConfirmBuyCardView(discord.ui.View):
                 ephemeral=True
             )
 
-        rarity = (get_card_rarity(card) or "").lower()
-        cost_each = CRAFT_COST_BY_RARITY.get(rarity)
-        if cost_each is None:
+        cost_each, sale_row = craft_cost_for_card(self.state, card, set_name)
+        if cost_each <= 0:
             self._processing = False
             return await interaction.followup.send("❌ This printing cannot be crafted.", ephemeral=True)
 
@@ -288,9 +288,12 @@ class ConfirmBuyCardView(discord.ui.View):
             db_add_cards(self.state, self.requester.id, [card] * self.amount, set_name)
             after = db_shards_get(self.state, self.requester.id, set_id)
             pretty = shard_set_name(set_id)
+            sale_note = ""
+            if sale_row:
+                sale_note = f" *(on sale −{int(sale_row.get('discount_pct', 0))}%)*"
+
             await interaction.followup.send(
-                f"✅ Crafted **{self.amount}× {card_label(card)}** "
-                f"for **{total_cost}** {pretty}.\n"
+                f"✅ Crafted **{self.amount}× {card_label(card)}** for **{total_cost}** {pretty}{sale_note}.\n"
                 f"**Remaining {pretty}:** {after}",
                 ephemeral=True
             )

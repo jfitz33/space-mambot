@@ -25,6 +25,7 @@ from core.db import (
     db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
     db_shards_add, db_collection_remove_exact_print, db_fragment_yield_for_card
 )
+from core.pricing import craft_cost_for_card
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -268,7 +269,7 @@ class CardsShop(commands.Cog):
             return await interaction.response.send_message("This printing is missing a set and can’t be crafted.", ephemeral=True)
 
         rarity = get_card_rarity(c)
-        price_each = CRAFT_COST_BY_RARITY.get(rarity)
+        price_each, sale_row = craft_cost_for_card(self.state, c, set_present)
         if rarity == "starlight" or price_each is None:
             return await interaction.response.send_message("❌ This printing cannot be crafted.", ephemeral=True)
         total = price_each * amount

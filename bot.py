@@ -7,7 +7,10 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from core.state import AppState
-from core.db import db_init, db_init_trades, db_init_wallet, db_wallet_migrate_to_mambucks_and_shards_per_set, db_init_user_stats, db_init_shard_overrides
+from core.db import (db_init, db_init_trades, db_init_wallet, 
+                     db_wallet_migrate_to_mambucks_and_shards_per_set, 
+                     db_init_user_stats, db_init_shard_overrides,
+                     db_init_daily_sales)
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
@@ -44,7 +47,7 @@ setattr(bot.state, "live_views", set())
 COGS = ["cogs.system", "cogs.packs", "cogs.collection", 
         "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", 
         "cogs.cards_shop", "cogs.wheel", "cogs.quests", 
-        "cogs.stats", "cogs.boop"]
+        "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales"]
 
 @bot.event
 async def on_ready():
@@ -60,6 +63,7 @@ async def on_ready():
     db_init_wallet(bot.state)
     await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
     await asyncio.to_thread(db_init_shard_overrides, bot.state)
+    await asyncio.to_thread(db_init_daily_sales, bot.state)
 
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:

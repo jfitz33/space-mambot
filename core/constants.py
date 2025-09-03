@@ -1,5 +1,7 @@
 PACK_COST=10
 BOX_COST=200
+PACKS_IN_BOX=24
+SALE_DISCOUNT_PCT=10
 
 RARITY_ORDER = ["common", "rare", "super", "ultra", "secret", "starlight"]
 RARITY_ALIASES = {

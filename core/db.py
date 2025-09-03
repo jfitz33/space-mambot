@@ -1056,3 +1056,101 @@ def db_match_h2h(state, a_id: int, b_id: int) -> dict:
     a_wins = int(a_wins or 0)
     b_wins = int(b_wins or 0)
     return {"a_wins": a_wins, "b_wins": b_wins, "games": a_wins + b_wins}
+
+# --- Daily craft sales -------------------------------------------------------
+# schema
+def db_init_daily_sales(state):
+    import sqlite3, time
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_sales (
+            day_key       TEXT NOT NULL,           -- 'YYYYMMDD' in America/New_York
+            rarity        TEXT NOT NULL,           -- common/rare/super/ultra/secret
+            card_name     TEXT NOT NULL,
+            card_set      TEXT NOT NULL,
+            card_code     TEXT,
+            card_id       TEXT,
+            discount_pct  INTEGER NOT NULL,        -- e.g. 10
+            price_shards  INTEGER NOT NULL,        -- discounted per-copy shard price
+            created_ts    INTEGER NOT NULL,
+            PRIMARY KEY (day_key, rarity)
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS shop_banner (
+            guild_id   TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            updated_ts INTEGER NOT NULL
+        );
+        """)
+
+def db_sales_get_for_day(state, day_key: str) -> dict:
+    import sqlite3
+    rows = {}
+    with sqlite3.connect(state.db_path) as conn:
+        c = conn.execute("""
+            SELECT rarity, card_name, card_set, card_code, card_id, discount_pct, price_shards
+              FROM daily_sales
+             WHERE day_key = ?
+        """, (day_key,))
+        for r in c.fetchall():
+            rows[r[0]] = {
+                "rarity": r[0],
+                "card_name": r[1],
+                "card_set": r[2],
+                "card_code": r[3],
+                "card_id":   r[4],
+                "discount_pct": int(r[5]),
+                "price_shards": int(r[6]),
+            }
+    return rows
+
+def db_sales_replace_for_day(state, day_key: str, rows: list[dict]) -> None:
+    import sqlite3, time
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("DELETE FROM daily_sales WHERE day_key = ?", (day_key,))
+        conn.executemany("""
+            INSERT INTO daily_sales
+             (day_key, rarity, card_name, card_set, card_code, card_id, discount_pct, price_shards, created_ts)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, [
+            (
+                day_key,
+                r["rarity"],
+                r["card_name"],
+                r["card_set"],
+                r.get("card_code"),
+                r.get("card_id"),
+                int(r.get("discount_pct", 10)),
+                int(r["price_shards"]),
+                now,
+            )
+            for r in rows
+        ])
+
+def db_shop_banner_store(state, guild_id: int, channel_id: int, message_id: int):
+    import sqlite3, time
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        INSERT INTO shop_banner (guild_id, channel_id, message_id, updated_ts)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id) DO UPDATE SET
+            channel_id=excluded.channel_id,
+            message_id=excluded.message_id,
+            updated_ts=excluded.updated_ts
+        """, (str(guild_id), str(channel_id), str(message_id), now))
+
+def db_shop_banner_load(state, guild_id: int) -> dict | None:
+    import sqlite3
+    with sqlite3.connect(state.db_path) as conn:
+        c = conn.execute("""
+            SELECT channel_id, message_id
+              FROM shop_banner
+             WHERE guild_id = ?
+        """, (str(guild_id),))
+        r = c.fetchone()
+        if not r: return None
+        return {"channel_id": int(r[0]), "message_id": int(r[1])}
