@@ -1,10 +1,11 @@
+import os
 from typing import Optional
 from core.constants import PACKS_BY_SET
 
 # Configure shard display names (you can add emoji, short names, etc.)
 SHARD_SET_NAMES = {
     1: "Elemental Shards",
-    # 2: "Astral Shards",
+    2: "Astral Shards",
     # 3: "Techno Shards",
 }
 
@@ -29,3 +30,17 @@ def set_id_for_pack(pack_name: Optional[str]) -> Optional[int]:
         if p in names:
             return sid
     return None
+
+def get_shard_exchange_rate() -> tuple[int, int]:
+    """
+    Read SHARD_EXCHANGE_RATE from env as 'A:B' meaning A source -> B target.
+    Defaults to '1:2'.
+    """
+    raw = os.getenv("SHARD_EXCHANGE_RATE", "2:1")
+    try:
+        a, b = raw.split(":")
+        num = max(1, int(a))
+        den = max(1, int(b))
+    except Exception:
+        num, den = 1, 2
+    return num, den

@@ -17,6 +17,7 @@ FRAGMENTABLE_RARITIES = ["common", "rare", "super", "ultra", "secret"]
 # Which packs belong to which Set (uppercase pack names)
 PACKS_BY_SET = {
     1: {"FIRE", "WATER"},  # Set 1 → Elemental Shards
+    2: {"DARK", "LIGHT"}
     # 2: {"...","..."},    # Add future sets here
 }
 
