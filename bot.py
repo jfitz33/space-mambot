@@ -10,7 +10,7 @@ from core.state import AppState
 from core.db import (db_init, db_init_trades, db_init_wallet, 
                      db_wallet_migrate_to_mambucks_and_shards_per_set, 
                      db_init_user_stats, db_init_shard_overrides,
-                     db_init_daily_sales)
+                     db_init_daily_sales, db_init_wheel_tokens)
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
@@ -47,7 +47,8 @@ setattr(bot.state, "live_views", set())
 COGS = ["cogs.system", "cogs.packs", "cogs.collection", 
         "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", 
         "cogs.cards_shop", "cogs.wheel", "cogs.quests", 
-        "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales"]
+        "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales",
+        "cogs.wheel_tokens"]
 
 @bot.event
 async def on_ready():
@@ -61,6 +62,7 @@ async def on_ready():
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)
     db_init_wallet(bot.state)
+    db_init_wheel_tokens(bot.state)
     await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
     await asyncio.to_thread(db_init_shard_overrides, bot.state)
     await asyncio.to_thread(db_init_daily_sales, bot.state)
@@ -68,7 +70,7 @@ async def on_ready():
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:
         gids = [GUILD_ID] if GUILD_ID else [g.id for g in bot.guilds]
-        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True)
+        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=True)
         print("[rarity] cached emoji IDs:", getattr(bot.state, "rarity_emoji_ids", {}))
     except Exception as e:
         print("[rarity] setup skipped:", e)

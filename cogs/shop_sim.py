@@ -28,10 +28,12 @@ def _today_key_et() -> str:
 
 def _rar_badge(state: AppState, rarity: str) -> str:
     rid = getattr(state, "rarity_emoji_ids", {}) or {}
+    anim = getattr(state, "rarity_emoji_animated", {}) or {}
     key = (rarity or "").strip().lower()
     eid = rid.get(key)
     if eid:
-        return f"<:rar_{key}:{eid}>"
+        prefix = "a" if anim.get(key) else ""
+        return f"<{prefix}:rar_{key}:{eid}>"
     # fallback text
     short = {"common":"C","rare":"R","super":"SR","ultra":"UR","secret":"SEC","starlight":"SL"}.get(key, key[:1].upper())
     return f"[{short}]"
@@ -251,7 +253,7 @@ class ShopSim(commands.Cog):
         bot_member = guild.get_member(self.bot.user.id) if self.bot.user else None
         if not bot_member:
             return await interaction.followup.send("Could not resolve bot member.", ephemeral=True)
-
+        print(self.bot.state.rarity_emoji_ids)
         ensure_shop_index(self.state)
         channel = await ensure_shop_channel(guild, bot_member)
         await _clear_channel_all_messages(channel)

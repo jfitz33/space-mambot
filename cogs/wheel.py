@@ -11,14 +11,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont
-from core.db import db_wallet_get, db_wallet_try_spend_mambucks, db_add_cards
+from core.db import db_wallet_get, db_wallet_try_spend_mambucks, db_add_cards, db_wheel_tokens_get, db_wheel_tokens_try_spend
+from core.cards_shop import card_label
 
 # ---------------- Guild scope ----------------
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
+WHEEL_TOKEN_COST = 1  # cost per spin
+
 # ---------------- Tunables ----------------
-WHEEL_COST_MB = 100           # Mambucks per spin
 WHEEL_SIZE = 384
 SPIN_SECONDS = 5.0
 FPS = 18                      # 5s * 18fps ≈ 90 frames
@@ -30,10 +32,10 @@ MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 # Weighted rarity segments by duplication (equal slice renderer)
 # 20 total segments: 8C (40%), 5R (25%), 3SR (15%), 3UR (15%), 1SCR (5%)
 RARITY_SEGMENTS: List[Tuple[str, int]] = [
-    ("COMMON", 8),
-    ("RARE", 5),
-    ("SUPER RARE", 3),
-    ("ULTRA RARE", 3),
+    ("COMMON", 3),
+    ("RARE", 2),
+    ("SUPER RARE", 2),
+    ("ULTRA RARE", 1),
     ("SECRET RARE", 1),
 ]
 
@@ -181,44 +183,43 @@ def _normalize_rarity(r: str) -> str:
     if r in ("SCR", "SECRET", "SECRET RARE"): return "SECRET RARE"
     return "SECRET RARE"
 
-def _build_rarity_pools_from_state(state) -> dict[str, list[dict]]:
-    """Collect all cards by normalized rarity across packs/starters, regardless of original casing/alias."""
-    pools: dict[str, list[dict]] = {
+def _build_rarity_pools_from_state(state) -> dict[str, list[tuple[str, dict]]]:
+    """
+    Collect all printings by normalized rarity across all packs,
+    returning mapping rarity -> list of (set_name, printing_dict).
+    """
+    pools: dict[str, list[tuple[str, dict]]] = {
         "COMMON": [], "RARE": [], "SUPER RARE": [], "ULTRA RARE": [], "SECRET RARE": []
     }
 
-    def add_from(idx):
+    def add_from(idx: dict | None):
         if not isinstance(idx, dict):
             return
-        for p in idx.values():
-            br = p.get("by_rarity") if isinstance(p, dict) else None
+        for set_name, pack in idx.items():
+            br = pack.get("by_rarity") if isinstance(pack, dict) else None
             if not isinstance(br, dict):
                 continue
             for raw_key, lst in br.items():
                 norm = _normalize_rarity(raw_key)
-                if norm not in pools:
-                    pools[norm] = []
                 if isinstance(lst, list):
-                    pools[norm].extend(lst)
+                    for it in lst:
+                        pools.setdefault(norm, []).append((set_name, it))
 
     add_from(getattr(state, "packs_index", None))
-    # support either attribute name
     add_from(getattr(state, "starters_index", None) or getattr(state, "starters", None))
-
     return pools
 
-def _pick_random_card_by_rarity(state, rarity: str) -> dict | None:
+def _pick_random_card_by_rarity(state, rarity: str) -> Optional[tuple[str, dict]]:
     """
-    Try exact rarity first, then degrade to the next tier if empty.
-    E.g., SECRET→ULTRA→SUPER→RARE→COMMON.
+    Returns (set_name, printing) or None. Degrades rarity if bucket is empty.
     """
     want = _normalize_rarity(rarity)
     pools = _build_rarity_pools_from_state(state)
 
     degrade_order = {
         "SECRET RARE": ["SECRET RARE", "ULTRA RARE", "SUPER RARE", "RARE", "COMMON"],
-        "ULTRA RARE":  ["ULTRA RARE", "SUPER RARE", "RARE", "COMMON"],
-        "SUPER RARE":  ["SUPER RARE", "RARE", "COMMON"],
+        "ULTRA RARE":  ["ULTRA RARE",  "SUPER RARE", "RARE", "COMMON"],
+        "SUPER RARE":  ["SUPER RARE",  "RARE", "COMMON"],
         "RARE":        ["RARE", "COMMON"],
         "COMMON":      ["COMMON"],
     }
@@ -226,94 +227,98 @@ def _pick_random_card_by_rarity(state, rarity: str) -> dict | None:
     for bucket in degrade_order.get(want, ["COMMON"]):
         candidates = pools.get(bucket) or []
         if candidates:
-            return random.choice(candidates)
+            return random.choice(candidates)  # (set_name, printing)
     return None
 
-async def _award_card_to_user(state, user_id: int, card: dict, qty: int = 1) -> None:
-    if db_add_cards:
-        try:
-            # Example signature; adjust to your DB helper
-            db_add_cards(state, user_id, card)
-            return
-        except Exception as e:
-            print(f"[rewards] db_add_to_collection failed: {e}")
-
-    # If you use a different function, call it here:
-    # from core.db import my_insert_fn
-    # my_insert_fn(...)
-
-    # Fallback: no-op (so the command still runs); feel free to raise instead
-    print("[rewards] NOTE: No DB award function wired; prize not persisted.")
-
-async def _debit_wallet_or_error(state, user: discord.User, amount: int) -> Optional[str]:
-    """
-    Attempts to debit Mambucks from the user's wallet.
-    Return None on success, or an error message string on failure.
-    """
+async def _award_card_to_user(state, user_id: int, printing: dict, set_name: str, qty: int = 1) -> None:
+    """Insert the exact printing with the correct set into the user's collection."""
     try:
-        if db_wallet_get and db_wallet_try_spend_mambucks:
-            bal = int((db_wallet_get(state, user.id)).get("mambucks", 0))
-            if bal is None or bal < amount:
-                return f"You need {amount} Mambucks to spin. Current balance: {bal if bal is not None else 0}."
-            # do the debit
-            res = await db_wallet_try_spend_mambucks(state, user.id, amount) if asyncio.iscoroutinefunction(db_wallet_try_spend_mambucks) else db_wallet_try_spend_mambucks(state, user.id, amount)
-            if res is False:
-                return "Could not debit your wallet. Please try again."
-            return None
-        # If you expose wallet on state:
-        if hasattr(state, "wallet") and hasattr(state.wallet, "debit"):
-            bal = getattr(state.wallet, "get_balance", lambda *_: None)(user.id)
-            if bal is None or bal < amount:
-                return f"You need {amount} Mambucks to spin. Current balance: {bal if bal is not None else 0}."
-            ok = state.wallet.debit(user.id, amount, reason="Rewards Wheel spin")
-            if not ok:
-                return "Could not debit your wallet. Please try again."
-            return None
-        return "Wallet integration not wired. Please hook up _debit_wallet_or_error()."
+        # db_add_cards(state, user_id, [printing, printing, ...], set_name)
+        db_add_cards(state, user_id, [printing] * int(max(1, qty)), set_name)
     except Exception as e:
-        return f"Wallet error: {e}"
+        print(f"[rewards] db_add_to_collection failed: {e}")
 
 # ---------------- Views ----------------
-class ConfirmView(discord.ui.View):
-    """Fallback 2-button confirmation if your project doesn't provide one."""
-    def __init__(self, author_id: int, timeout: float = 30.0):
+class WheelTokenConfirmView(discord.ui.View):
+    """
+    Shows 'You have N tokens. Spend 1 to spin?' and, on Yes, spends 1 token and
+    calls the provided on_confirm(interaction) to start your existing wheel spin.
+    """
+    def __init__(self, state, requester: discord.Member, on_confirm, *, timeout: float = 90):
         super().__init__(timeout=timeout)
-        self.author_id = author_id
-        self.value: Optional[bool] = None
+        self.state = state
+        self.requester = requester
+        self.on_confirm = on_confirm
+        self._processing = False
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("Only the original user can respond.", ephemeral=True)
-            return False
-        return True
+    def _title(self) -> str:
+        bal = db_wheel_tokens_get(self.state, self.requester.id)
+        return f"You have **{bal}** wheel token(s). Spend **1** to spin?"
 
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
-    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = True
-        for c in self.children:
-            if isinstance(c, discord.ui.Button):
-                c.disabled = True
-        await interaction.response.edit_message(view=self)
+    async def send_or_update(self, interaction: discord.Interaction):
+        # Helper to send the panel with up-to-date balance
+        embed = discord.Embed(title="Spin the Wheel", description=self._title(), color=0x2b6cb0)
+        try:
+            await interaction.response.send_message(embed=embed, view=self, ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send(embed=embed, view=self, ephemeral=True)
+
+    @discord.ui.button(label="Yes, spin (cost: 1 token)", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This isn’t for you.", ephemeral=True)
+        if self._processing:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self._processing = True
+
+        # Try to spend a token
+        new_bal = db_wheel_tokens_try_spend(self.state, self.requester.id, 1)
+        if new_bal is None:
+            self._processing = False
+            # Refresh the panel to show correct balance
+            return await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="Spin the Wheel",
+                    description="❌ Not enough tokens.\n" + self._title(),
+                    color=0xe53e3e,
+                ),
+                view=self
+            )
+
+        # Remove the buttons, proceed to spin
         self.stop()
+        for ch in self.children: ch.disabled = True
+        try:
+            await interaction.response.edit_message(
+                embed=discord.Embed(title="Spinning...", description="Good luck! 🎡", color=0x2b6cb0),
+                view=None
+            )
+        except discord.InteractionResponded:
+            pass
 
-    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
-    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = False
-        for c in self.children:
-            if isinstance(c, discord.ui.Button):
-                c.disabled = True
-        await interaction.response.edit_message(view=self)
+        try:
+            await self.on_confirm(interaction)  # ← call your existing spin flow here
+        finally:
+            self._processing = False
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            return await interaction.response.send_message("This isn’t for you.", ephemeral=True)
         self.stop()
-
-# If you already have a project-wide confirm view, import and alias it here:
-# from core.views import YourConfirmView as ConfirmView
+        for ch in self.children: ch.disabled = True
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="Spin cancelled.", color=0x718096),
+            view=None
+        )
 
 class WheelView(discord.ui.View):
-    def __init__(self, author_id: int, options: List[str], private: bool, size: int, state):
+    def __init__(self, author_id: int, options: List[str], size: int, state):
         super().__init__(timeout=180.0)
         self.author_id = author_id
         self.options = options
-        self.private = private
         self.size = size
         self.state = state
         self.spinning = False  # gate re-entrancy
@@ -408,13 +413,11 @@ class WheelView(discord.ui.View):
         await asyncio.sleep(PAD_SECONDS + SPIN_SECONDS + (TAIL_SECONDS * 0.5))
 
         # Pick & award a random card of the winner rarity
-        prize = _pick_random_card_by_rarity(self.state, winner_rarity)
-        prize_line = ""
-        if prize:
-            await _award_card_to_user(self.state, interaction.user.id, prize, qty=1)
-            pname = prize.get("name") or prize.get("cardname") or "Unknown Card"
-            pset  = prize.get("set")  or prize.get("cardset")  or "Unknown Set"
-            prize_line = f"\n**Prize:** {pname} — *{pset}*"
+        picked = _pick_random_card_by_rarity(self.state, winner_rarity)
+        if picked:
+            set_name, printing = picked
+            await _award_card_to_user(self.state, interaction.user.id, printing, set_name, qty=1)
+            prize_line = f"\n**Prize:** {card_label(printing)}"
         else:
             prize_line = "\n*(No prize source found for that rarity — contact an admin.)*"
 
@@ -422,18 +425,11 @@ class WheelView(discord.ui.View):
         result_png = _render_static_wheel(self.options, winner_idx, size=self.size)
         result = discord.Embed(title="🎡 Wheel Result", description=f"**Winner:** {winner_rarity}{prize_line}")
         result.set_image(url="attachment://result.png")
-        new_view = WheelView(
-            author_id=self.author_id,
-            options=self.options,
-            private=self.private,
-            size=self.size,
-            state=self.state
-        )
+
+        # no further spin button offered here:
         await interaction.followup.send(
             embed=result,
             file=discord.File(result_png, filename="result.png"),
-            view=new_view,
-            ephemeral=self.private
         )
 
         # …then remove the spinning message to avoid any frame-1 flash
@@ -451,59 +447,77 @@ class RewardsWheel(commands.Cog):
         # Build weighted options once
         self.options = _parse_segments()
 
-    @app_commands.command(name="wheel", description=f"Spin the rewards wheel (costs {WHEEL_COST_MB} Mambucks).")
-    @app_commands.guilds(GUILD)
-    @app_commands.describe(private="Send privately (ephemeral).")
-    async def wheel(self, interaction: discord.Interaction, private: bool = False):
-        await interaction.response.defer(ephemeral=private)
+    async def _show_wheel_idle(self, interaction: discord.Interaction):
+        # Use the message that contained the confirm buttons
+        msg = interaction.message
 
-        # Ask for confirmation
-        prompt = discord.Embed(
-            title="🎰 Spend Mambucks?",
-            description=f"Are you sure you want to spend **{WHEEL_COST_MB} Mambucks** to spin the rewards wheel?"
-        )
-        view = ConfirmView(author_id=interaction.user.id)
-        await interaction.edit_original_response(embed=prompt, view=view)
-
-        # Wait for the user's choice (or timeout)
-        timeout = await view.wait()  # returns True if timed out
-        if timeout or view.value is None:
-            # Treat timeout as cancel
-            await interaction.edit_original_response(
-                embed=discord.Embed(description="User cancelled the rewards wheel spin (timed out)."),
-                view=None
-            )
-            return
-
-        if view.value is False:
-            await interaction.edit_original_response(
-                embed=discord.Embed(description="User cancelled the rewards wheel spin."),
-                view=None
-            )
-            return
-
-        # User said "Yes" — debit first
-        err = await _debit_wallet_or_error(self.bot.state, interaction.user, WHEEL_COST_MB)
-        if err:
-            await interaction.edit_original_response(
-                embed=discord.Embed(title="❌ Cannot spin", description=err),
-                view=None
-            )
-            return
-
-        # Replace with initial idle wheel + Spin button
+        # Render the static wheel (your existing helper)
         idle_png = _render_static_wheel(self.options, winner_idx=None, size=WHEEL_SIZE)
         file = discord.File(idle_png, filename="wheel.png")
-        embed = discord.Embed(title="🎡 Rewards Wheel", description="Press **Spin** to choose your prize.")
+
+        embed = discord.Embed(
+            title="🎡 Rewards Wheel",
+            description="Press **Spin** to choose your prize.",
+            color=0x2b6cb0,
+        )
         embed.set_image(url="attachment://wheel.png")
-        view2 = WheelView(
+
+        # Your existing interactive view that handles the actual spin & animation
+        view = WheelView(
             author_id=interaction.user.id,
             options=self.options,
-            private=private,
             size=WHEEL_SIZE,
-            state=self.bot.state
+            state=self.bot.state,
         )
-        await interaction.edit_original_response(embed=embed, attachments=[file], view=view2)
+
+        # Replace the confirm panel with the idle wheel + Spin button
+        try:
+            await msg.edit(content=None, embed=embed, attachments=[file], view=view)
+        except discord.InteractionResponded:
+            # If for some reason we can't edit that message, fall back to a followup
+            await interaction.followup.send(embed=embed, file=file, view=view)
+
+    @app_commands.command(name="wheel", description="Spin the rewards wheel (cost: 1 Wheel Token).")
+    @app_commands.guilds(GUILD)
+    async def wheel(self, interaction: discord.Interaction):
+        # Make the initial interaction visible, but we won't finish the flow here—
+        # the confirm view will handle the rest.
+        await interaction.response.defer()
+
+        # Show their current token balance up front
+        tokens = db_wheel_tokens_get(self.bot.state, interaction.user.id)
+        if tokens < WHEEL_TOKEN_COST:
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="❌ Not enough Wheel Tokens",
+                    description=f"You need **{WHEEL_TOKEN_COST}** token to spin.\nYou currently have **{tokens}**."
+                ),
+                view=None
+            )
+            return
+
+        # Build the confirmation prompt; the view will:
+        #   - spend 1 token
+        #   - then call our callback to display the wheel UI (idle + Spin button)
+        prompt = discord.Embed(
+            title="🎰 Spin the Rewards Wheel?",
+            description=(
+                f"Cost: **{WHEEL_TOKEN_COST}** Wheel Token\n"
+                f"You currently have **{tokens}**.\n\n"
+                "Proceed?"
+            ),
+            color=0x2b6cb0,
+        )
+
+        view = WheelTokenConfirmView(
+            self.bot.state,
+            interaction.user,
+            # When the user clicks "Yes", the view spends the token and then calls this:
+            on_confirm=lambda inter: self._show_wheel_idle(inter),
+        )
+
+        # show the confirm UI on the original deferred message
+        await interaction.edit_original_response(embed=prompt, view=view)
 
 
 async def setup(bot: commands.Bot):
