@@ -40,6 +40,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
+bot.state.banlist_path = str((BASE_DIR / "data" / "banlist.json").resolve())
 
 # Set to track live views to properly enforce timeouts
 setattr(bot.state, "live_views", set())
@@ -48,7 +49,7 @@ COGS = ["cogs.system", "cogs.packs", "cogs.collection",
         "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", 
         "cogs.cards_shop", "cogs.wheel", "cogs.quests", 
         "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales",
-        "cogs.wheel_tokens"]
+        "cogs.wheel_tokens", "cogs.tournaments"]
 
 @bot.event
 async def on_ready():
@@ -76,7 +77,7 @@ async def on_ready():
         print("[rarity] setup skipped:", e)
 
     # After import of cards, check for improper entries and purge incorrect ones
-    for attr in ("_shop_print_by_key", "_shop_sig_to_set"):
+    for attr in ("_shop_print_by_key", "_shop_sig_to_set", "_shop_card_name_by_id"):
         if hasattr(bot.state, attr):
             delattr(bot.state, attr)
     ensure_shop_index(bot.state)

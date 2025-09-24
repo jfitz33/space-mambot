@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional, Tuple
 import discord
 
+# Prefer GIF files for animated rarity emojis if present; fall back to PNG.
 RARITY_FILES: Dict[str, str] = {
     "common": ("common.gif", "common.png"),
     "rare":   ("rare.gif", "rare.png"),
@@ -75,7 +76,10 @@ async def ensure_rarity_emojis(
     """
     Cache rarity emoji IDs into bot.state.rarity_emoji_ids.
     Looks for emojis named: rar_common, rar_rare, rar_super, rar_ultra, rar_secret.
-    Optionally creates any missing ones from /images/rarity_logos/*.png.
+    Optionally creates any missing ones from /images/rarity_logos/*.gif or *.png.
+    Set ``refresh=True`` to delete any existing ``rar_*`` emojis in the scanned
+    guilds and recreate them from the local images. The cache is also cleared so
+    new IDs are stored.
     """
     if not hasattr(bot, "state") or bot.state is None:
         raise RuntimeError("bot.state is required for caching rarity emoji IDs")

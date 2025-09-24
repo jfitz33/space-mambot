@@ -1,0 +1,14 @@
+{
+  "default_limit": 3,
+  "forbidden": [
+    "Gokipole"
+  ],
+  "limited": [
+    "Gold Sarcophagus",
+    "Glow-Up Bloom",
+    "Goblin Zombie"
+  ],
+  "semi_limited": [
+    "Glife the Phantom Bird"
+  ]
+}

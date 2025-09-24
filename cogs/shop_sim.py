@@ -143,8 +143,12 @@ class ShopSim(commands.Cog):
 
     def _build_shop_embed(self, *, sales: dict | None = None) -> discord.Embed:
         """
-        Build the single shop banner embed. If 'sales' is provided (dict keyed by rarity),
-        render a 'On sale today for <discount>% off!' section with compact rows.
+        Build the single shop banner embed. If ``sales`` is provided (dict keyed by
+        rarity), render a "On sale today for <discount>% off!" section with compact
+        rows.
+
+        Discord's embed text uses a fixed font and emoji size; there isn't an option
+        to enlarge these without rendering them into an image first.
         """
         e = discord.Embed(
             title="🛍️ Welcome to the Mamshop",
