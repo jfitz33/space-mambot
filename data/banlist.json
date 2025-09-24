@@ -1,0 +1,16 @@
+{
+  "default_limit": 3,
+  "forbidden": [
+    "17330916"
+  ],
+  "limited": [
+    "53129443"
+  ],
+  "semi_limited": [
+    "84749824"
+  ],
+  "cards": {
+    "Glow-Up Bloom": 1,
+    "92964816": 1
+  }
+}

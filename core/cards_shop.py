@@ -264,3 +264,41 @@ def register_print_if_missing(state, card: dict) -> str:
             sig = _sig_for_resolution(norm["name"], norm["rarity"], norm["code"], norm["id"])
             state._shop_sig_to_set[sig] = norm["set"]
     return k
+
+
+def find_card_name_by_id(state, card_id: str | int | None) -> Optional[str]:
+    """
+    Return the first known card name that matches the given card ID.
+
+    Falls back to scanning the loaded shop index, caching results on ``state``
+    for subsequent lookups. Accepts either strings or integers.
+    """
+    ensure_shop_index(state)
+    cache = getattr(state, "_shop_card_name_by_id", None)
+    if cache is None:
+        cache = {}
+        for card in getattr(state, "_shop_print_by_key", {}).values():
+            raw_id = card.get("id") or card.get("cardid")
+            name = card.get("name") or card.get("cardname")
+            if not raw_id or not name:
+                continue
+            key = str(raw_id).strip()
+            if not key:
+                continue
+            lower_key = key.lower()
+            cache.setdefault(lower_key, name)
+            if key.isdigit():
+                canonical = str(int(key))
+                cache.setdefault(canonical, name)
+        state._shop_card_name_by_id = cache
+
+    lookup = str(card_id).strip() if card_id is not None else ""
+    if not lookup:
+        return None
+    lower_lookup = lookup.lower()
+    if lower_lookup in cache:
+        return cache[lower_lookup]
+    if lower_lookup.isdigit():
+        canonical = str(int(lower_lookup))
+        return cache.get(canonical)
+    return None

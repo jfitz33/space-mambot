@@ -28,10 +28,12 @@ def _today_key_et() -> str:
 
 def _rar_badge(state: AppState, rarity: str) -> str:
     rid = getattr(state, "rarity_emoji_ids", {}) or {}
+    anim = getattr(state, "rarity_emoji_animated", {}) or {}
     key = (rarity or "").strip().lower()
     eid = rid.get(key)
     if eid:
-        return f"<:rar_{key}:{eid}>"
+        prefix = "a" if anim.get(key) else ""
+        return f"<{prefix}:rar_{key}:{eid}>"
     # fallback text
     short = {"common":"C","rare":"R","super":"SR","ultra":"UR","secret":"SEC","starlight":"SL"}.get(key, key[:1].upper())
     return f"[{short}]"
@@ -141,8 +143,12 @@ class ShopSim(commands.Cog):
 
     def _build_shop_embed(self, *, sales: dict | None = None) -> discord.Embed:
         """
-        Build the single shop banner embed. If 'sales' is provided (dict keyed by rarity),
-        render a 'On sale today for <discount>% off!' section with compact rows.
+        Build the single shop banner embed. If ``sales`` is provided (dict keyed by
+        rarity), render a "On sale today for <discount>% off!" section with compact
+        rows.
+
+        Discord's embed text uses a fixed font and emoji size; there isn't an option
+        to enlarge these without rendering them into an image first.
         """
         e = discord.Embed(
             title="🛍️ Welcome to the Mamshop",
