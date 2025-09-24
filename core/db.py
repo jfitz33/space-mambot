@@ -1154,3 +1154,83 @@ def db_shop_banner_load(state, guild_id: int) -> dict | None:
         r = c.fetchone()
         if not r: return None
         return {"channel_id": int(r[0]), "message_id": int(r[1])}
+
+# --- Wheel tokens ------------------------------------------------------------
+
+def db_init_wheel_tokens(state):
+    """Create the wheel_tokens table if missing."""
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS wheel_tokens (
+            user_id        TEXT PRIMARY KEY,
+            tokens         INTEGER NOT NULL DEFAULT 0,
+            last_grant_day TEXT,                 -- 'YYYYMMDD' (America/New_York)
+            updated_ts     INTEGER NOT NULL
+        );
+        """)
+
+def db_wheel_tokens_get(state, user_id: int) -> int:
+    with sqlite3.connect(state.db_path) as conn:
+        c = conn.execute("SELECT tokens FROM wheel_tokens WHERE user_id=?", (str(user_id),))
+        r = c.fetchone()
+        return int(r[0]) if r else 0
+
+def db_wheel_tokens_add(state, user_id: int, delta: int) -> int:
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+            INSERT INTO wheel_tokens (user_id, tokens, updated_ts)
+            VALUES (?, 0, ?)
+            ON CONFLICT(user_id) DO NOTHING;
+        """, (str(user_id), now))
+        conn.execute("""
+            UPDATE wheel_tokens
+               SET tokens = MAX(0, tokens + ?),
+                   updated_ts = ?
+             WHERE user_id = ?;
+        """, (int(delta), now, str(user_id)))
+    return db_wheel_tokens_get(state, user_id)
+
+def db_wheel_tokens_try_spend(state, user_id: int, amount: int = 1) -> int | None:
+    """Atomically spend `amount`. Returns new balance or None if insufficient."""
+    assert amount > 0
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+            INSERT INTO wheel_tokens (user_id, tokens, updated_ts)
+            VALUES (?, 0, ?)
+            ON CONFLICT(user_id) DO NOTHING;
+        """, (str(user_id), now))
+        cur = conn.execute("""
+            UPDATE wheel_tokens
+               SET tokens = tokens - ?,
+                   updated_ts = ?
+             WHERE user_id = ?
+               AND tokens >= ?;
+        """, (int(amount), now, str(user_id), int(amount)))
+        if cur.rowcount == 0:
+            return None
+    return db_wheel_tokens_get(state, user_id)
+
+def db_wheel_tokens_grant_daily(state, user_id: int, day_key: str) -> tuple[int, bool]:
+    """
+    Idempotent daily grant. If last_grant_day != day_key, add 1 token and set it.
+    Returns (new_balance, granted_bool).
+    """
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+            INSERT INTO wheel_tokens (user_id, tokens, last_grant_day, updated_ts)
+            VALUES (?, 0, NULL, ?)
+            ON CONFLICT(user_id) DO NOTHING;
+        """, (str(user_id), now))
+        cur = conn.execute("""
+            UPDATE wheel_tokens
+               SET tokens = tokens + 1,
+                   last_grant_day = ?,
+                   updated_ts = ?
+             WHERE user_id = ?
+               AND (last_grant_day IS NULL OR last_grant_day <> ?);
+        """, (day_key, now, str(user_id), day_key))
+        granted = (cur.rowcount > 0)
+    return (db_wheel_tokens_get(state, user_id), granted)

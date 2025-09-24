@@ -257,7 +257,7 @@ class ShopSim(commands.Cog):
         bot_member = guild.get_member(self.bot.user.id) if self.bot.user else None
         if not bot_member:
             return await interaction.followup.send("Could not resolve bot member.", ephemeral=True)
-
+        print(self.bot.state.rarity_emoji_ids)
         ensure_shop_index(self.state)
         channel = await ensure_shop_channel(guild, bot_member)
         await _clear_channel_all_messages(channel)

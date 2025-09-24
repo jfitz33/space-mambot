@@ -6,7 +6,7 @@ from typing import Dict, Iterable, Optional, Tuple
 import discord
 
 # Prefer GIF files for animated rarity emojis if present; fall back to PNG.
-RARITY_FILES: Dict[str, Tuple[str, ...]] = {
+RARITY_FILES: Dict[str, str] = {
     "common": ("common.gif", "common.png"),
     "rare":   ("rare.gif", "rare.png"),
     "super":  ("super.gif", "super.png"),
@@ -166,7 +166,6 @@ async def ensure_rarity_emojis(
                     if not path:
                         if verbose:
                             print(f"[rarity] file missing for {r}: {filenames} (skipping)")
-                        continue
                     try:
                         data = path.read_bytes()
                         if len(data) >= 256 * 1024:
