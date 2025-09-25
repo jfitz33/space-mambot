@@ -2,6 +2,10 @@
 import csv, glob, hashlib
 from typing import Dict, Optional, Iterable, Tuple
 
+import requests
+
+YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
+
 # Canonicalize rarities (keep starlight distinct)
 _CANON_RARITY_MAP = {
     "c": "common", "common": "common",
@@ -302,3 +306,75 @@ def find_card_name_by_id(state, card_id: str | int | None) -> Optional[str]:
         canonical = str(int(lower_lookup))
         return cache.get(canonical)
     return None
+
+def fetch_card_names_by_id(card_ids: Iterable[str | int]) -> Dict[str, str]:
+    """Return a mapping of normalized card IDs to names via the YGOPRODeck API."""
+
+    numeric_ids: list[int] = []
+    for raw in card_ids:
+        text = str(raw).strip()
+        if not text or not text.isdigit():
+            continue
+        try:
+            numeric_ids.append(int(text))
+        except ValueError:
+            continue
+
+    if not numeric_ids:
+        return {}
+
+    result: Dict[str, str] = {}
+    BATCH_SIZE = 50
+
+    for start in range(0, len(numeric_ids), BATCH_SIZE):
+        chunk = numeric_ids[start : start + BATCH_SIZE]
+        try:
+            response = requests.get(
+                YGOPRO_API_URL,
+                params={"id": ",".join(map(str, chunk))},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json() or {}
+        except requests.RequestException:
+            continue
+
+        for entry in payload.get("data", []) or []:
+            cid = entry.get("id")
+            name = entry.get("name")
+            if cid is None or not name:
+                continue
+            try:
+                canonical = str(int(cid))
+            except (TypeError, ValueError):
+                continue
+            clean_name = str(name).strip()
+            if not clean_name:
+                continue
+            result[canonical] = clean_name
+
+    return result
+
+
+def cache_card_name_by_id(state, card_id: str | int | None, card_name: str | None) -> None:
+    """Persist a resolved card name in the state's ID cache."""
+
+    if card_id is None or not card_name:
+        return
+
+    ensure_shop_index(state)
+    cache = getattr(state, "_shop_card_name_by_id", None)
+    if cache is None:
+        cache = {}
+        state._shop_card_name_by_id = cache
+
+    key = str(card_id).strip()
+    if not key:
+        return
+
+    cache.setdefault(key, card_name)
+    lower = key.lower()
+    cache.setdefault(lower, card_name)
+    if key.isdigit():
+        canonical = str(int(key))
+        cache.setdefault(canonical, card_name)
