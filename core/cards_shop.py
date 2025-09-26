@@ -307,23 +307,29 @@ def find_card_name_by_id(state, card_id: str | int | None) -> Optional[str]:
         return cache.get(canonical)
     return None
 
-def fetch_card_names_by_id(card_ids: Iterable[str | int]) -> Dict[str, str]:
-    """Return a mapping of normalized card IDs to names via the YGOPRODeck API."""
 
-    numeric_ids: list[int] = []
+def fetch_card_details_by_id(card_ids: Iterable[str | int]) -> Dict[str, Dict[str, str]]:
+    """Return {card_id: {"name": str, "type": str}} for the supplied IDs."""
+
+    numeric_ids: list[str] = []
+    seen: set[str] = set()
     for raw in card_ids:
         text = str(raw).strip()
         if not text or not text.isdigit():
             continue
         try:
-            numeric_ids.append(int(text))
+            canonical = str(int(text))
         except ValueError:
             continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        numeric_ids.append(canonical)
 
     if not numeric_ids:
         return {}
 
-    result: Dict[str, str] = {}
+    result: Dict[str, Dict[str, str]] = {}
     BATCH_SIZE = 50
 
     for start in range(0, len(numeric_ids), BATCH_SIZE):
@@ -331,7 +337,7 @@ def fetch_card_names_by_id(card_ids: Iterable[str | int]) -> Dict[str, str]:
         try:
             response = requests.get(
                 YGOPRO_API_URL,
-                params={"id": ",".join(map(str, chunk))},
+                params={"id": ",".join(chunk)},
                 timeout=20,
             )
             response.raise_for_status()
@@ -341,19 +347,24 @@ def fetch_card_names_by_id(card_ids: Iterable[str | int]) -> Dict[str, str]:
 
         for entry in payload.get("data", []) or []:
             cid = entry.get("id")
-            name = entry.get("name")
-            if cid is None or not name:
+            if cid is None:
                 continue
             try:
                 canonical = str(int(cid))
             except (TypeError, ValueError):
                 continue
-            clean_name = str(name).strip()
-            if not clean_name:
-                continue
-            result[canonical] = clean_name
+            name = str(entry.get("name") or "").strip()
+            card_type = str(entry.get("type") or "").strip()
+            result[canonical] = {"name": name, "type": card_type}
 
     return result
+
+
+def fetch_card_names_by_id(card_ids: Iterable[str | int]) -> Dict[str, str]:
+    """Return a mapping of normalized card IDs to names via the YGOPRODeck API."""
+
+    details = fetch_card_details_by_id(card_ids)
+    return {cid: data.get("name", "") for cid, data in details.items() if data.get("name")}
 
 
 def cache_card_name_by_id(state, card_id: str | int | None, card_name: str | None) -> None:

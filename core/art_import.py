@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import requests
+from core.cards_shop import ensure_shop_index
 
 API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
-HIGH_RARITIES = {"super", "ultra", "secret"}  # normalized
 
 # ------------------------ small utils ----------------------------------------
 
@@ -20,15 +20,6 @@ def _slugify(name: str, max_len: int = 100) -> str:
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
-def _norm_rarity(r: str) -> str:
-    r = (r or "").strip().lower()
-    aliases = {
-        "sr": "super", "super rare": "super",
-        "ur": "ultra", "ultra rare": "ultra",
-        "secr": "secret", "secret rare": "secret",
-    }
-    return aliases.get(r, r)
-
 def _has_existing_art(base: Path, slug: str) -> bool:
     """Return True if any file for this slug already exists (prefer .jpg)."""
     for ext in ("jpg", "jpeg", "png", "webp"):
@@ -36,53 +27,35 @@ def _has_existing_art(base: Path, slug: str) -> bool:
             return True
     return False
 
-# ------------------------ scan state (packs + starters) ----------------------
+# ------------------------ scan state (cardpool) ----------------------
 
-def collect_high_rarity_from_state(state) -> Tuple[Dict[int, str], List[str]]:
-    """
-    Return (ids_map, names_without_id):
-      ids_map: {card_id:int -> card_name:str} for super/ultra/secret
-      names_without_id: list[str] of unique names missing an id
-    """
+def collect_cardpool_from_state(state) -> Tuple[Dict[int, str], List[str]]:
+    """Return ({id: name}, [names_without_numeric_id]) for the full card pool."""
+
+    ensure_shop_index(state)
     ids_map: Dict[int, str] = {}
     names_no_id: set[str] = set()
+    for card in getattr(state, "_shop_print_by_key", {}).values():
+        name = (card.get("name") or card.get("cardname") or "").strip()
+        if not name:
+            continue
 
-    # packs_index: {pack: {"by_rarity": {rarity: [ {name, rarity, card_id? ...}, ... ]}}}
-    packs = getattr(state, "packs_index", {}) or {}
-    for _, pack in packs.items():
-        by_r = (pack or {}).get("by_rarity") or {}
-        for rarity, cards in by_r.items():
-            if _norm_rarity(rarity) not in HIGH_RARITIES:
-                continue
-            for c in (cards or []):
-                name = (c.get("name") or c.get("cardname") or "").strip()
-                if not name:
-                    continue
-                raw_id = c.get("card_id") or c.get("cardid") or c.get("id")
-                sid = str(raw_id).strip() if raw_id is not None else ""
-                if sid.isdigit():
-                    ids_map.setdefault(int(sid), name)
-                else:
-                    names_no_id.add(name)
+        raw_id = (
+            card.get("id")
+            or card.get("cardid")
+            or card.get("card_id")
+            or card.get("passcode")
+        )
+        sid = str(raw_id).strip() if raw_id is not None else ""
+        if sid.isdigit():
+            ids_map.setdefault(int(sid), name)
+        else:
+            names_no_id.add(name)
+    # ensure we don't redundantly try to resolve names already covered via ID
+    resolved_names = set(ids_map.values())
+    names_without_id = [n for n in names_no_id if n not in resolved_names]
 
-    # starters_index: {deck: [ {name, qty, rarity, set, card_id? ...}, ... ]}
-    starters = getattr(state, "starters_index", {}) or {}
-    for _, rows in starters.items():
-        for c in (rows or []):
-            if _norm_rarity(c.get("rarity") or "") not in HIGH_RARITIES:
-                continue
-            name = (c.get("name") or c.get("cardname") or "").strip()
-            if not name:
-                continue
-            raw_id = c.get("card_id") or c.get("cardid") or c.get("id")
-            sid = str(raw_id).strip() if raw_id is not None else ""
-            if sid.isdigit():
-                ids_map.setdefault(int(sid), name)
-            else:
-                names_no_id.add(name)
-
-    names_wo_id = [n for n in names_no_id if n not in set(ids_map.values())]
-    return ids_map, names_wo_id
+    return ids_map, names_without_id
 
 # ------------------------ YGOPRODeck lookups ---------------------------------
 
@@ -149,7 +122,7 @@ def _download_file(url: str, dest: Path, *, overwrite: bool = True) -> bool:
 
 # ------------------------ Main entrypoint ------------------------------------
 
-def download_high_rarity_art_from_state(
+def download_cardpool_art_from_state(
     state,
     out_dir: str | os.PathLike | None = None,
     *,
@@ -157,8 +130,8 @@ def download_high_rarity_art_from_state(
     polite_delay_sec: float = 0.1,   # between name lookups
 ) -> List[Path]:
     """
-    From state.{packs_index, starters_index}:
-      - collect super/ultra/secret cards
+    From the loaded shop/starter indexes:
+      - collect every card available in the card pool
       - fetch normal image URLs (ID first; optional exact-name fallback)
       - write to images/card_images/<card_name>.jpg
         (🆕 if the file already exists, skip download — NO -<id> suffixing)
@@ -167,9 +140,9 @@ def download_high_rarity_art_from_state(
     out_base = Path(out_dir) if out_dir else (Path(__file__).resolve().parents[1] / "images" / "card_images")
     _ensure_dir(out_base)
 
-    ids_map, names_wo_id = collect_high_rarity_from_state(state)
+    ids_map, names_wo_id = collect_cardpool_from_state(state)
     if not ids_map and not names_wo_id:
-        print("[art] No high-rarity cards found in state (packs/starters).")
+        print("[art] No cards found in state cardpool.")
         return []
 
     urls_by_id = get_full_image_urls_for_ids(ids_map.keys())
@@ -223,5 +196,8 @@ def download_high_rarity_art_from_state(
             written.append(dest)
             seen_slugs.add(slug)
 
-    print(f"[art] Downloaded {len(written)} images → {out_base} (skipped existing)")
+    total_candidates = len(ids_map) + len(names_wo_id)
+    print(
+        f"[art] Downloaded {len(written)} images (of {total_candidates} candidates) → {out_base}"
+    )
     return written

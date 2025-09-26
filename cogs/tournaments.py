@@ -6,13 +6,15 @@ import binascii
 import os
 import struct
 from collections import Counter
+from dataclasses import dataclass
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from core.banlist import load_banlist
-from core.cards_shop import fetch_card_names_by_id, find_card_name_by_id
+from core.cards_shop import fetch_card_details_by_id, find_card_name_by_id
+from core.deck_render import DeckCardEntry, render_deck_section_image
 from core.db import db_get_collection
 from core.state import AppState
 
@@ -34,24 +36,45 @@ def _normalize_card_id(value: str | int | None) -> str | None:
     return text.lower()
 
 
-def _parse_ydk(text: str) -> tuple[Counter[str], list[str]]:
+def _parse_ydk(
+    text: str,
+) -> tuple[Counter[str], list[str], dict[str, list[str]]]:
     counts: Counter[str] = Counter()
     invalid: list[str] = []
+    sections: dict[str, list[str]] = {"main": [], "extra": [], "side": []}
+
+    current_section = "main"
+
+    markers = {
+        "#main": "main",
+        "#extra": "extra",
+        "#side": "side",
+        "!side": "side",
+    }
+
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if line.startswith("#"):
+
+        lower_line = line.lower()
+        if lower_line in markers:
+            current_section = markers[lower_line]
             continue
-        if line.startswith("!"):
-            # Section markers such as !side
+
+        if line.startswith("#") or line.startswith("!"):
+            # Ignore any other metadata markers
             continue
+
         cid = _normalize_card_id(line)
         if not cid:
             invalid.append(line)
             continue
+
         counts[cid] += 1
-    return counts, invalid
+        sections.setdefault(current_section, []).append(cid)
+
+    return counts, invalid, sections
 
 
 def _ydke_to_ydk_text(ydke: str) -> str | None:
@@ -121,26 +144,136 @@ def _chunk_issue_messages(header: str, lines: list[str], *, limit: int = 2000) -
     return chunks
 
 
+@dataclass(slots=True)
+class CardMetadata:
+    name: str | None = None
+    card_type: str | None = None
+    from_state: bool = False
+    from_api: bool = False
+
+
+def _categorize_card_type(card_type: str | None) -> str:
+    if not card_type:
+        return "monster"
+    lowered = card_type.lower()
+    if "spell" in lowered:
+        return "spell"
+    if "trap" in lowered:
+        return "trap"
+    return "monster"
+
+
+_CARD_CATEGORY_ORDER = {"monster": 0, "spell": 1, "trap": 2}
+
+
 class Tournaments(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state: AppState = bot.state
 
-    async def _fetch_missing_card_names(self, card_ids: list[str]) -> dict[str, str]:
-        if not card_ids:
-            return {}
+    async def _fetch_card_details(self, card_ids: list[str]) -> dict[str, dict[str, str]]:
+        numeric_ids = []
+        seen = set()
+        for cid in card_ids:
+            if not cid or not cid.isdigit():
+                continue
+            if cid in seen:
+                continue
+            seen.add(cid)
+            numeric_ids.append(cid)
 
-        numeric_ids = [cid for cid in card_ids if cid.isdigit()]
         if not numeric_ids:
             return {}
 
         loop = asyncio.get_running_loop()
 
-        def _do_fetch() -> dict[str, str]:
-            return fetch_card_names_by_id(numeric_ids)
+        def _do_fetch() -> dict[str, dict[str, str]]:
+            return fetch_card_details_by_id(numeric_ids)
 
-        fetched = await loop.run_in_executor(None, _do_fetch)
-        return {cid: name for cid, name in fetched.items() if name}
+        try:
+            return await loop.run_in_executor(None, _do_fetch)
+        except Exception:
+            return {}
+
+    async def _resolve_card_metadata(
+        self,
+        card_ids: list[str],
+        owned_name_by_id: dict[str, str],
+    ) -> tuple[dict[str, CardMetadata], set[str]]:
+        metadata: dict[str, CardMetadata] = {}
+
+        for cid in card_ids:
+            meta = CardMetadata()
+            local_name = find_card_name_by_id(self.state, cid)
+            if not local_name:
+                local_name = owned_name_by_id.get(cid)
+            if local_name:
+                meta.name = local_name
+                meta.from_state = True
+            metadata[cid] = meta
+
+        fetched = await self._fetch_card_details(card_ids)
+
+        for cid, details in fetched.items():
+            meta = metadata.setdefault(cid, CardMetadata())
+            name = (details.get("name") or "").strip()
+            if name and not meta.name:
+                meta.name = name
+            card_type = (details.get("type") or "").strip()
+            if card_type:
+                meta.card_type = card_type
+            meta.from_api = True
+
+        invalid_card_ids = {
+            cid for cid, meta in metadata.items() if meta.from_api and not meta.from_state
+        }
+
+        return metadata, invalid_card_ids
+
+    def _build_section_entries(
+        self,
+        card_ids: list[str],
+        metadata: dict[str, CardMetadata],
+    ) -> list[DeckCardEntry]:
+        decorated: list[tuple[int, str, int, DeckCardEntry]] = []
+        for index, card_id in enumerate(card_ids):
+            meta = metadata.get(card_id, CardMetadata())
+            name = meta.name or card_id
+            category = _categorize_card_type(meta.card_type)
+            order = _CARD_CATEGORY_ORDER.get(category, len(_CARD_CATEGORY_ORDER))
+            decorated.append(
+                (
+                    order,
+                    name.lower(),
+                    index,
+                    DeckCardEntry(card_id=card_id, name=name, card_type=meta.card_type),
+                )
+            )
+
+        decorated.sort()
+        return [entry for *_rest, entry in decorated]
+
+    async def _send_deck_images(
+        self,
+        channel: discord.abc.Messageable,
+        deck_sections: dict[str, list[str]],
+        metadata: dict[str, CardMetadata],
+    ) -> None:
+        section_specs = (
+            ("Main Deck", deck_sections.get("main", []), 10),
+            ("Side Deck", deck_sections.get("side", []), 15),
+            ("Extra Deck", deck_sections.get("extra", []), 15),
+        )
+
+        for title, ids, max_columns in section_specs:
+            entries = self._build_section_entries(ids, metadata)
+            image_buffer, filename = render_deck_section_image(
+                title,
+                entries,
+                max_columns=max_columns,
+            )
+            file = discord.File(image_buffer, filename=filename)
+            await channel.send(f"{title} ({len(entries)} cards)", file=file)
 
     @app_commands.command(name="deck_check", description="Verify a YDK deck against your collection and the banlist")
     @app_commands.guilds(GUILD)
@@ -207,7 +340,7 @@ class Tournaments(commands.Cog):
             else:
                 text = content
 
-        card_counts, invalid_lines = _parse_ydk(text)
+        card_counts, invalid_lines, deck_sections = _parse_ydk(text)
         if not card_counts:
             message = "I couldn't find any card IDs in that submission."
             if invalid_lines:
@@ -218,7 +351,11 @@ class Tournaments(commands.Cog):
 
         async with dm_channel.typing():
             await self._send_deck_results(
-                dm_channel, interaction.user.id, card_counts, invalid_lines
+                dm_channel,
+                interaction.user.id,
+                card_counts,
+                invalid_lines,
+                deck_sections,
             )
 
     async def _send_deck_results(
@@ -227,6 +364,7 @@ class Tournaments(commands.Cog):
         user_id: int,
         card_counts: Counter[str],
         invalid_lines: list[str],
+        deck_sections: dict[str, list[str]],
     ) -> None:
         collection_rows = db_get_collection(self.state, user_id) or []
         owned_by_id: dict[str, int] = {}
@@ -255,28 +393,16 @@ class Tournaments(commands.Cog):
 
         issues: list[str] = []
 
-        known_names: dict[str, str] = {}
-        missing_ids: list[str] = []
-        for card_id in card_counts:
-            card_name = find_card_name_by_id(self.state, card_id)
-            if not card_name:
-                card_name = owned_name_by_id.get(card_id)
-            if card_name:
-                known_names[card_id] = card_name
-            else:
-                missing_ids.append(card_id)
-
-        invalid_card_ids: set[str] = set()
-        if missing_ids:
-            fetched_names = await self._fetch_missing_card_names(missing_ids)
-            for cid, name in fetched_names.items():
-                if name:
-                    known_names[cid] = name
-                    invalid_card_ids.add(cid)
+        metadata, invalid_card_ids = await self._resolve_card_metadata(
+            list(card_counts.keys()),
+            owned_name_by_id,
+        )
 
         for card_id, required_qty in card_counts.items():
-            card_name = known_names.get(card_id)
-            if not card_name:
+            meta = metadata.get(card_id, CardMetadata())
+            card_name = meta.name
+
+            if not card_name and not meta.from_api:
                 display = _format_card_label(card_id, card_name)
                 issues.append(f"{display} is not in the legal cardpool.")
                 continue
@@ -291,10 +417,9 @@ class Tournaments(commands.Cog):
                 continue
 
             owned_qty = owned_by_id.get(card_id) or 0
-            owned_qty = max(
-                owned_qty,
-                owned_by_name.get(card_name.strip().lower(), 0),
-            )
+            name_key = (card_name or "").strip().lower()
+            if name_key:
+                owned_qty = max(owned_qty, owned_by_name.get(name_key, 0))
 
             if owned_qty < required_qty:
                 issues.append(
@@ -323,6 +448,8 @@ class Tournaments(commands.Cog):
             return
 
         await channel.send("Your deck is perfectly legal.")
+
+        await self._send_deck_images(channel, deck_sections, metadata)
 
 
 async def setup(bot: commands.Bot):

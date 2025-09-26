@@ -15,7 +15,7 @@ from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index
 from core.images import ensure_rarity_emojis
-from core.art_import import download_high_rarity_art_from_state
+from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_example_quests, db_seed_quests_from_json
 
 load_dotenv()
@@ -85,7 +85,7 @@ async def on_ready():
     # If Art Import env var set to 1, download card images (super and higher)
     async def prefetch_art():
         try:
-            await asyncio.to_thread(download_high_rarity_art_from_state, bot.state)
+            await asyncio.to_thread(download_cardpool_art_from_state, bot.state)
         except Exception as e:
             print("[art] prefetch failed (continuing without art):", e)
     
