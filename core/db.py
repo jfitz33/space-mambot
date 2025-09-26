@@ -1060,22 +1060,50 @@ def db_match_h2h(state, a_id: int, b_id: int) -> dict:
 # --- Daily craft sales -------------------------------------------------------
 # schema
 def db_init_daily_sales(state):
-    import sqlite3, time
+    import sqlite3
     with sqlite3.connect(state.db_path) as conn, conn:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS daily_sales (
-            day_key       TEXT NOT NULL,           -- 'YYYYMMDD' in America/New_York
-            rarity        TEXT NOT NULL,           -- common/rare/super/ultra/secret
-            card_name     TEXT NOT NULL,
-            card_set      TEXT NOT NULL,
-            card_code     TEXT,
-            card_id       TEXT,
-            discount_pct  INTEGER NOT NULL,        -- e.g. 10
-            price_shards  INTEGER NOT NULL,        -- discounted per-copy shard price
-            created_ts    INTEGER NOT NULL,
-            PRIMARY KEY (day_key, rarity)
-        );
-        """)
+        # Ensure daily_sales table exists with the updated schema that supports
+        # multiple slots per rarity. Earlier versions used (day_key, rarity) as
+        # the primary key which prevents storing multiple rows for the same
+        # rarity. When migrating, backfill slot_index=0 for legacy rows.
+        info = list(conn.execute("PRAGMA table_info(daily_sales)").fetchall())
+        needs_migration = False
+
+        if info and not any(row[1] == "slot_index" for row in info):
+            conn.execute("ALTER TABLE daily_sales RENAME TO daily_sales_old")
+            info = []
+            needs_migration = True
+
+        if not info:
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_sales (
+                day_key       TEXT NOT NULL,           -- 'YYYYMMDD' in America/New_York
+                rarity        TEXT NOT NULL,           -- common/rare/super/ultra/secret
+                slot_index    INTEGER NOT NULL,        -- 0-based index per rarity
+                card_name     TEXT NOT NULL,
+                card_set      TEXT NOT NULL,
+                card_code     TEXT,
+                card_id       TEXT,
+                discount_pct  INTEGER NOT NULL,        -- e.g. 10
+                price_shards  INTEGER NOT NULL,        -- discounted per-copy shard price
+                created_ts    INTEGER NOT NULL,
+                PRIMARY KEY (day_key, rarity, slot_index)
+            );
+            """)
+
+        if needs_migration:
+            conn.execute("""
+                INSERT INTO daily_sales (
+                    day_key, rarity, slot_index, card_name, card_set, card_code,
+                    card_id, discount_pct, price_shards, created_ts
+                )
+                SELECT
+                    day_key, rarity, 0 AS slot_index, card_name, card_set, card_code,
+                    card_id, discount_pct, price_shards, created_ts
+                  FROM daily_sales_old
+            """)
+            conn.execute("DROP TABLE daily_sales_old")
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS shop_banner (
             guild_id   TEXT PRIMARY KEY,
@@ -1087,48 +1115,62 @@ def db_init_daily_sales(state):
 
 def db_sales_get_for_day(state, day_key: str) -> dict:
     import sqlite3
-    rows = {}
+    from collections import defaultdict
+
+    rows = defaultdict(list)
     with sqlite3.connect(state.db_path) as conn:
         c = conn.execute("""
-            SELECT rarity, card_name, card_set, card_code, card_id, discount_pct, price_shards
+            SELECT rarity, card_name, card_set, card_code, card_id,
+                   discount_pct, price_shards, slot_index
               FROM daily_sales
              WHERE day_key = ?
+            ORDER BY created_ts ASC, slot_index ASC, rowid ASC
         """, (day_key,))
         for r in c.fetchall():
-            rows[r[0]] = {
-                "rarity": r[0],
+            rarity = (r[0] or "").strip().lower()
+            rows[rarity].append({
+                "rarity": rarity,
                 "card_name": r[1],
                 "card_set": r[2],
                 "card_code": r[3],
                 "card_id":   r[4],
                 "discount_pct": int(r[5]),
                 "price_shards": int(r[6]),
-            }
-    return rows
+                "slot_index": int(r[7]),
+            })
+    return {k: v for k, v in rows.items()}
 
 def db_sales_replace_for_day(state, day_key: str, rows: list[dict]) -> None:
     import sqlite3, time
     now = int(time.time())
     with sqlite3.connect(state.db_path) as conn, conn:
         conn.execute("DELETE FROM daily_sales WHERE day_key = ?", (day_key,))
+        rarity_counts: Dict[str, int] = {}
+        payload = []
+        for r in rows:
+            rarity = (r.get("rarity") or "").strip().lower()
+            next_idx = rarity_counts.get(rarity, 0)
+            slot = int(r.get("slot_index", next_idx))
+            rarity_counts[rarity] = max(next_idx, slot + 1)
+            payload.append(
+                (
+                    day_key,
+                    rarity,
+                    slot,
+                    r["card_name"],
+                    r["card_set"],
+                    r.get("card_code"),
+                    r.get("card_id"),
+                    int(r.get("discount_pct", 10)),
+                    int(r["price_shards"]),
+                    now,
+                )
+            )
         conn.executemany("""
             INSERT INTO daily_sales
-             (day_key, rarity, card_name, card_set, card_code, card_id, discount_pct, price_shards, created_ts)
-            VALUES (?,?,?,?,?,?,?,?,?)
-        """, [
-            (
-                day_key,
-                r["rarity"],
-                r["card_name"],
-                r["card_set"],
-                r.get("card_code"),
-                r.get("card_id"),
-                int(r.get("discount_pct", 10)),
-                int(r["price_shards"]),
-                now,
-            )
-            for r in rows
-        ])
+             (day_key, rarity, slot_index, card_name, card_set, card_code, card_id, discount_pct, price_shards, created_ts)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, payload)
 
 def db_shop_banner_store(state, guild_id: int, channel_id: int, message_id: int):
     import sqlite3, time

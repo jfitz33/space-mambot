@@ -19,12 +19,12 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 import core.db as db
 
 # Craft costs + rarity helper
-from core.constants import CRAFT_COST_BY_RARITY, SALE_DISCOUNT_PCT
+from core.constants import CRAFT_COST_BY_RARITY, SALE_DISCOUNT_PCT, SALE_LAYOUT
 from core.cards_shop import get_card_rarity  # normalizes rarity across your data
 
 ET = ZoneInfo("America/New_York")
 DISCOUNT_PCT = SALE_DISCOUNT_PCT
-TARGET_RARITIES = ["common", "rare", "super", "ultra", "secret"]
+TARGET_RARITIES = [rarity for (rarity, _count) in SALE_LAYOUT]
 
 
 def _today_key_et() -> str:
@@ -40,7 +40,7 @@ def _seconds_until_next_et_midnight() -> float:
 
 class Sales(commands.Cog):
     """
-    Rolls one sale card per rarity each ET day and refreshes the ShopSim banner.
+    Rolls the daily sale lineup (multiple slots per rarity) and refreshes the ShopSim banner.
     Uses your db_sales_* helpers exactly as provided.
     """
     def __init__(self, bot: commands.Bot):
@@ -62,7 +62,8 @@ class Sales(commands.Cog):
                 print("[sales] No sales for today; rolling at startup.")
                 await self._roll_and_store_for_day(day_key)
             else:
-                print(f"[sales] Found {len(today_rows)} sale rows for {day_key}.")
+                total_rows = sum(len(v) for v in today_rows.values())
+                print(f"[sales] Found {total_rows} sale rows for {day_key}.")
             await self._refresh_banner()
         except Exception as e:
             print("[sales] initial check failed:", e)
@@ -94,14 +95,14 @@ class Sales(commands.Cog):
 
     async def _roll_and_store_for_day(self, day_key: str):
         """
-        Build a fresh set of sales rows (one per rarity), then store with db_sales_replace_for_day.
+        Build a fresh set of sales rows following SALE_LAYOUT, then store with db_sales_replace_for_day.
         """
         rows = self._pick_sales_rows()
         db.db_sales_replace_for_day(self.state, day_key, rows)
 
     def _pick_sales_rows(self) -> List[Dict[str, Any]]:
         """
-        Choose one random craftable printing per rarity from state.packs_index.
+        Choose random craftable printings for each slot defined in SALE_LAYOUT.
         """
         pi = getattr(self.state, "packs_index", None) or {}
         out: List[Dict[str, Any]] = []
@@ -125,32 +126,34 @@ class Sales(commands.Cog):
                                 "base_cost": int(base_cost),
                             })
 
-        for rarity in TARGET_RARITIES:
+        for rarity, count in SALE_LAYOUT:
             candidates = buckets.get(rarity) or []
-            if not candidates:
-                # nothing in this rarity; skip
+            if not candidates or count <= 0:
                 continue
-            choice = random.choice(candidates)
-            card = choice["card"]
-            set_name = choice["pack"]
-            base_cost = choice["base_cost"]
 
-            price_shards = math.ceil(base_cost * (100 - DISCOUNT_PCT) / 100.0)
+            picks = random.sample(candidates, k=min(count, len(candidates)))
 
-            # Canonicalize fields (accept both csv/short keys)
-            name = (card.get("name") or card.get("cardname") or "").strip()
-            code = (card.get("code") or card.get("cardcode")) or None
-            cid  = (card.get("id")   or card.get("cardid"))   or None
+            for choice in picks:
+                card = choice["card"]
+                set_name = choice["pack"]
+                base_cost = choice["base_cost"]
 
-            out.append({
-                "rarity": rarity,
-                "card_name": name,
-                "card_set": set_name,
-                "card_code": code,
-                "card_id": cid,
-                "discount_pct": DISCOUNT_PCT,
-                "price_shards": int(price_shards),
-            })
+                price_shards = math.ceil(base_cost * (100 - DISCOUNT_PCT) / 100.0)
+
+                # Canonicalize fields (accept both csv/short keys)
+                name = (card.get("name") or card.get("cardname") or "").strip()
+                code = (card.get("code") or card.get("cardcode")) or None
+                cid  = (card.get("id")   or card.get("cardid"))   or None
+
+                out.append({
+                    "rarity": rarity,
+                    "card_name": name,
+                    "card_set": set_name,
+                    "card_code": code,
+                    "card_id": cid,
+                    "discount_pct": DISCOUNT_PCT,
+                    "price_shards": int(price_shards),
+                })
 
         return out
 
@@ -203,20 +206,37 @@ class Sales(commands.Cog):
         day_key = _today_key_et()
         try:
             rows_by_rarity = db.db_sales_get_for_day(self.state, day_key) or {}
-            if not rows_by_rarity:
+            total_rows = sum(len(v) for v in rows_by_rarity.values())
+            if not total_rows:
                 await interaction.followup.send(f"No sales for {day_key}.", ephemeral=True)
                 return
             # Render quick summary
             lines: List[str] = [f"Sales for {day_key} (ET):"]
-            for rarity in TARGET_RARITIES:
-                r = rows_by_rarity.get(rarity)
-                if not r:
+            for rarity, _count in SALE_LAYOUT:
+                rows = rows_by_rarity.get(rarity) or []
+                if not rows:
                     continue
-                nm = r.get("card_name", "?")
-                st = r.get("card_set", "?")
-                pct = int(r.get("discount_pct", DISCOUNT_PCT))
-                price = r.get("price_shards")
-                lines.append(f"• [{rarity}] {nm} — set:{st} (−{pct}%) → {price} shards")
+                for idx, row in enumerate(rows, start=1):
+                    suffix = f" #{idx}" if len(rows) > 1 else ""
+                    nm = row.get("card_name", "?")
+                    st = row.get("card_set", "?")
+                    pct = int(row.get("discount_pct", DISCOUNT_PCT))
+                    price = row.get("price_shards")
+                    lines.append(
+                        f"• [{rarity}{suffix}] {nm} — set:{st} (−{pct}%) → {price} shards"
+                    )
+            # Include any legacy rarities that might still be stored
+            for rarity, rows in rows_by_rarity.items():
+                if rarity in TARGET_RARITIES:
+                    continue
+                for row in rows:
+                    nm = row.get("card_name", "?")
+                    st = row.get("card_set", "?")
+                    pct = int(row.get("discount_pct", DISCOUNT_PCT))
+                    price = row.get("price_shards")
+                    lines.append(
+                        f"• [{rarity}] {nm} — set:{st} (−{pct}%) → {price} shards"
+                    )
             await interaction.followup.send("\n".join(lines), ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Error: {e}", ephemeral=True)

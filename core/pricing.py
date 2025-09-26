@@ -25,9 +25,9 @@ def craft_cost_for_card(state, card: dict, set_name: str, *, on_day: Optional[st
 
     # check daily sale match
     dk = on_day or day_key_et()
-    sales = db_sales_get_for_day(state, dk)
-    sale = sales.get(rarity)
-    if not sale:
+    sales = db_sales_get_for_day(state, dk) or {}
+    sale_rows = sales.get(rarity) or []
+    if not sale_rows:
         return (base, None)
 
     # match this exact printing: name + set (+code/id if present)
@@ -35,10 +35,23 @@ def craft_cost_for_card(state, card: dict, set_name: str, *, on_day: Optional[st
     code = _norm(card.get("code") or card.get("cardcode"))
     cid  = _norm(card.get("id")   or card.get("cardid"))
 
-    if name.lower() != _norm(sale["card_name"]).lower():  # name mismatch
-        return (base, None)
-    if set_name.lower() != _norm(sale["card_set"]).lower():
-        return (base, None)
+    for sale in sale_rows:
+        if name.lower() != _norm(sale["card_name"]).lower():
+            continue
+        if set_name.lower() != _norm(sale["card_set"]).lower():
+            continue
+        # If sale row has code/id, require exact match; if sale row leaves them blank, ignore those fields.
+        scode = _norm(sale.get("card_code"))
+        scid  = _norm(sale.get("card_id"))
+        if scode and scode != code:
+            continue
+        if scid and scid != cid:
+            continue
+
+        return (int(sale["price_shards"]), sale)
+
+        # Apply the stored price (already rounded)
+    return (base, None)
 
     # If sale row has code/id, require exact match; if sale row leaves them blank, ignore those fields.
     scode = _norm(sale.get("card_code"))

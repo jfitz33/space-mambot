@@ -14,6 +14,7 @@ from core.constants import (
     PACKS_IN_BOX,
     CRAFT_COST_BY_RARITY,
     RARITY_ORDER,
+    SALE_LAYOUT
 )
 from core.currency import SHARD_SET_NAMES
 from core.db import db_sales_get_for_day, db_shop_banner_load, db_shop_banner_store
@@ -143,9 +144,9 @@ class ShopSim(commands.Cog):
 
     def _build_shop_embed(self, *, sales: dict | None = None) -> discord.Embed:
         """
-        Build the single shop banner embed. If ``sales`` is provided (dict keyed by
-        rarity), render a "On sale today for <discount>% off!" section with compact
-        rows.
+        Build the single shop banner embed. If ``sales`` is provided (mapping rarity
+        → list of sale rows), render a "On sale today for <discount>% off!" section
+        with compact rows.
 
         Discord's embed text uses a fixed font and emoji size; there isn't an option
         to enlarge these without rendering them into an image first.
@@ -176,7 +177,12 @@ class ShopSim(commands.Cog):
         # Sales section (compact format)
         if sales:
             # Determine a friendly header
-            discounts = {int(v.get("discount_pct", 0)) for v in sales.values() if v}
+            discounts = {
+                int(row.get("discount_pct", 0))
+                for entries in sales.values()
+                for row in entries or []
+                if row
+            }
             if discounts:
                 sale_title = (
                     f"🔥 On sale today for **{discounts.pop()}%** off!"
@@ -187,16 +193,27 @@ class ShopSim(commands.Cog):
                 sale_title = "🔥 On sale today!"
 
             lines = []
-            order = ["secret", "ultra", "super", "rare", "common"]
-            for rarity in order:
-                row = sales.get(rarity)
-                if not row:
+            
+            targeted = {rarity for rarity, _ in SALE_LAYOUT}
+            for rarity, count in SALE_LAYOUT:
+                rows = sales.get(rarity) or []
+                if not rows:
                     continue
-                badge = _rar_badge(self.state, rarity)
-                name = row.get("card_name", "?")
-                price = int(row.get("price_shards", 0))
-                # Requested format: Rarity badge <card_name> -> <discounted_shard_price>
-                lines.append(f"{badge} {name} -> **{price} shards**")
+                for row in rows[:count]:
+                    badge = _rar_badge(self.state, rarity)
+                    name = row.get("card_name", "?")
+                    price = int(row.get("price_shards", 0))
+                    lines.append(f"{badge} {name} -> **{price} shards**")
+                
+            # Include any leftover rarities (legacy data) at the end
+            for rarity, rows in sales.items():
+                if rarity in targeted:
+                    continue
+                for row in rows or []:
+                    badge = _rar_badge(self.state, rarity)
+                    name = row.get("card_name", "?")
+                    price = int(row.get("price_shards", 0))
+                    lines.append(f"{badge} {name} -> **{price} shards**")
 
             if lines:
                 e.add_field(name=sale_title, value="\n".join(lines), inline=False)

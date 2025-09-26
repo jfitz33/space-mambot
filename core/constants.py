@@ -3,6 +3,13 @@ BOX_COST=200
 PACKS_IN_BOX=24
 SALE_DISCOUNT_PCT=10
 
+# Daily sale layout: (rarity, number of entries)
+SALE_LAYOUT = [
+    ("super", 3),
+    ("ultra", 1),
+    ("secret", 1),
+]
+
 RARITY_ORDER = ["common", "rare", "super", "ultra", "secret", "starlight"]
 RARITY_ALIASES = {
     "c": "common", "comm": "common",
