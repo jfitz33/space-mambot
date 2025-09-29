@@ -117,8 +117,8 @@ class Packs(commands.Cog):
         return out
 
     @staticmethod
-    def _read_existing_keys(path: Path) -> set[tuple[str, str]]:
-        keys: set[tuple[str, str]] = set()
+    def _read_existing_keys(path: Path) -> set[tuple[str, str, str]]:
+        keys: set[tuple[str, str, str]] = set()
         if not path.exists():
             return keys
         try:
@@ -127,7 +127,8 @@ class Packs(commands.Cog):
                 for row in reader:
                     card_id = (row.get("cardid") or "").strip()
                     print_id = (row.get("print_id") or "").strip()
-                    keys.add((card_id, print_id))
+                    card_set = (row.get("cardset") or "").strip()
+                    keys.add((card_id, print_id, card_set))
         except Exception:
             # If existing file can't be read, ignore duplicate tracking
             return set()
@@ -221,6 +222,8 @@ class Packs(commands.Cog):
         to_write: List[Dict[str, str]] = []
         missing: List[int] = []
         skipped_duplicates = 0
+        duplicate_details: List[str] = []
+        normalized_cardset = cardset.strip()
         rarity_value = cardrarity.value if isinstance(cardrarity, app_commands.Choice) else str(cardrarity)
 
         for cid in card_ids:
@@ -239,9 +242,12 @@ class Packs(commands.Cog):
             if card_images:
                 print_id = str(card_images[0].get("id") or "").strip()
 
-            key = (card_id, print_id)
+            key = (card_id, print_id, normalized_cardset)
             if key in existing:
                 skipped_duplicates += 1
+                duplicate_details.append(
+                    f"{name} (ID {card_id or 'N/A'}; print {print_id or 'N/A'}; set {normalized_cardset or 'N/A'})"
+                )
                 continue
             existing.add(key)
 
@@ -250,7 +256,7 @@ class Packs(commands.Cog):
                 "cardq": "1",
                 "cardrarity": rarity_value,
                 "card_edition": "1st Edition",
-                "cardset": cardset,
+                "cardset": normalized_cardset,
                 "cardcode": card_code,
                 "cardid": card_id,
                 "print_id": print_id,
@@ -263,6 +269,11 @@ class Packs(commands.Cog):
                 summary += f" {len(missing)} card(s) could not be resolved via the API."
             if skipped_duplicates:
                 summary += f" {skipped_duplicates} duplicate card(s) skipped."
+                if duplicate_details:
+                    detail_str = ", ".join(duplicate_details[:10])
+                    if len(duplicate_details) > 10:
+                        detail_str += ", ..."
+                    summary += f" Duplicates: {detail_str}."
             await interaction.followup.send(summary, ephemeral=True)
             return
 
@@ -283,6 +294,11 @@ class Packs(commands.Cog):
         ]
         if skipped_duplicates:
             message_lines.append(f"Skipped {skipped_duplicates} duplicate card(s).")
+            if duplicate_details:
+                detail_str = ", ".join(duplicate_details[:10])
+                if len(duplicate_details) > 10:
+                    detail_str += ", ..."
+                message_lines.append(f"Duplicates: {detail_str}.")
         if missing:
             missing_str = ", ".join(map(str, missing[:10]))
             if len(missing) > 10:
