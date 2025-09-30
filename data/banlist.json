@@ -1,14 +1,26 @@
 {
   "default_limit": 3,
   "forbidden": [
-    "Gokipole"
   ],
   "limited": [
-    "Gold Sarcophagus",
-    "Glow-Up Bloom",
-    "Goblin Zombie"
+    "Sangan",
+    "Batteryman Industrial Strength",
+    "Black Rose Dragon",
+    "Stardust Charge Warrior",
+    "Dark Hole",
+    "Mirror Force",
+    "Torrential Tribute",
+    "Call of the Haunted",
+    "Compulsory Evacuation Device"
   ],
   "semi_limited": [
-    "Glife the Phantom Bird"
+    "Batteryman 9-Volt",
+    "Fishbord Launcher",
+    "Vendread Core",
+    "Foolish Burial",
+    "Gold Sarcophagus",
+    "One for One",
+    "Salvage",
+    "Bottomless Trap Hole"
   ]
 }

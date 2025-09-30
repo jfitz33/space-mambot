@@ -8,6 +8,7 @@ Botanical Girl,1,Common,1st Edition,Blazing Genesis,CSOC-EN027,84824601,84824601
 Copy Plant,1,Common,1st Edition,Blazing Genesis,AP05-EN015,66457407,66457407
 D.D. Crazy Beast,1,Common,1st Edition,Blazing Genesis,DR1-EN074,48148828,48148828
 D.D. Warrior,1,Common,1st Edition,Blazing Genesis,LCYW-EN218,37043180,37043180
+D.D. Warrior,1,Common,1st Edition,Storm of the Abyss,LCYW-EN218,37043180,37043180
 Dark Cat with White Tail,1,Common,1st Edition,Blazing Genesis,DR1-EN138,8634636,8634636
 Evocator Chevalier,1,Common,1st Edition,Blazing Genesis,BP02-EN085,96872283,96872283
 Exiled Force,1,Common,1st Edition,Blazing Genesis,BP01-EN059,74131780,74131780
@@ -32,6 +33,7 @@ Flamvell Guard,1,Common,1st Edition,Blazing Genesis,DT01-EN018,21615956,21615956
 Tune Warrior,1,Common,1st Edition,Blazing Genesis,5DS3-EN003,74093656,74093656
 Battle Waltz,1,Common,1st Edition,Blazing Genesis,DP10-EN023,15629801,15629801
 Creature Swap,1,Common,1st Edition,Blazing Genesis,BP03-EN144,31036355,31036355
+Creature Swap,1,Common,1st Edition,Storm of the Abyss,BP03-EN144,31036355,31036355
 Dark Core,1,Common,1st Edition,Blazing Genesis,DR1-EN090,70231910,70231910
 Darkworld Shackles,1,Common,1st Edition,Blazing Genesis,BP01-EN083,83584898,83584898
 Gaia Power,1,Common,1st Edition,Blazing Genesis,DB1-EN059,56594520,56594520
@@ -40,6 +42,7 @@ Reasoning,1,Common,1st Edition,Blazing Genesis,RA01-EN052,58577036,58577036
 Rising Air Current,1,Common,1st Edition,Blazing Genesis,DB1-EN062,45778932,45778932
 Salamandra Fusion,1,Common,1st Edition,Blazing Genesis,MZMI-EN007,9102835,9102835
 Shield Crush,1,Common,1st Edition,Blazing Genesis,BP01-EN080,30683373,30683373
+Shield Crush,1,Common,1st Edition,Storm of the Abyss,BP01-EN080,30683373,30683373
 A Major Upset,1,Common,1st Edition,Blazing Genesis,ANPR-EN080,32207100,32207100
 Battle of the Elements,1,Common,1st Edition,Blazing Genesis,ANPR-EN075,60530944,60530944
 Battleguard Rage,1,Common,1st Edition,Blazing Genesis,MP15-EN110,42233477,42233477
@@ -50,7 +53,7 @@ Magic Jammer,1,Common,1st Edition,Blazing Genesis,DB2-EN074,77414722,77414722
 Metalmorph,1,Common,1st Edition,Blazing Genesis,BP02-EN173,68540058,68540058
 Proof of Powerlessness,1,Common,1st Edition,Blazing Genesis,RGBT-EN076,11373345,11373345
 Puzzle Reborn,1,Common,1st Edition,Blazing Genesis,YS13-EN031,30585393,30585393
-Recall,1,Common,1st Edition,Blazing Genesis,MP18-EN088,96404912,96404912
+Recall,1,Common,1st Edition,Storm of the Abyss,MP18-EN088,96404912,96404912
 Seven Tools of the Bandit,1,Common,1st Edition,Blazing Genesis,DB2-EN075,3819470,3819470
 Smile Potion,1,Common,1st Edition,Blazing Genesis,MP23-EN057,16720314,16720314
 Super Rush Recklessly,1,Common,1st Edition,Blazing Genesis,BP03-EN219,32854013,32854013
@@ -75,7 +78,7 @@ Lock Cat,1,Rare,1st Edition,Blazing Genesis,DREV-EN033,52346240,52346240
 Mystic Tomato,1,Rare,1st Edition,Blazing Genesis,DB1-EN057,83011277,83011277
 Pyramid Turtle,1,Rare,1st Edition,Blazing Genesis,CP02-EN004,77044671,77044671
 Scapeghost,1,Rare,1st Edition,Blazing Genesis,MP17-EN084,67284107,67284107
-Sublimation Knight,1,Rare,1st Edition,Blazing Genesis,TOCH-EN013,54485355,54485355
+Sublimation Knight,1,Ultra Rare,1st Edition,Blazing Genesis,TOCH-EN013,54485355,54485355
 Sylvan Bladefender,1,Rare,1st Edition,Blazing Genesis,MP14-EN186,11682713,11682713
 T.G. Rush Rhino,1,Rare,1st Edition,Blazing Genesis,BATT-EN020,36687247,36687247
 The Fabled Ganashia,1,Rare,1st Edition,Blazing Genesis,DT04-EN019,18282103,18282103
@@ -87,7 +90,7 @@ Gunkan Suship Shari,1,Rare,1st Edition,Blazing Genesis,MP22-EN127,24639891,24639
 Zombino,1,Rare,1st Edition,Blazing Genesis,MP18-EN169,14575467,14575467
 Autonomous Action Unit,1,Rare,1st Edition,Blazing Genesis,BP02-EN140,71453557,71453557
 Nobleman of Extermination,1,Rare,1st Edition,Blazing Genesis,DB1-EN089,17449108,17449108
-Scapegoat,1,Rare,1st Edition,Blazing Genesis,STAS-EN013,73915051,73915051
+Scapegoat,1,Rare,1st Edition,Storm of the Abyss,STAS-EN013,73915051,73915051
 Smashing Ground,1,Rare,1st Edition,Blazing Genesis,YS15-END12,97169186,97169186
 Super Solar Nutrient,1,Rare,1st Edition,Blazing Genesis,AP03-EN024,28529976,28529976
 United We Stand,1,Rare,1st Edition,Blazing Genesis,BP01-EN043,56747793,56747793
@@ -95,7 +98,8 @@ Chivalry,1,Rare,1st Edition,Blazing Genesis,DREV-EN079,56532632,56532632
 Liberty at Last!,1,Rare,1st Edition,Blazing Genesis,STAS-EN035,72022087,72022087
 Prideful Roar,1,Rare,1st Edition,Blazing Genesis,BP02-EN199,66518841,66518841
 Raigeki Break,1,Rare,1st Edition,Blazing Genesis,DR1-EN044,4178474,4178474
-Sakuretsu Armor,1,Rare,1st Edition,Blazing Genesis,CP01-EN004,56120475,56120475
+Raigeki Break,1,Rare,1st Edition,Storm of the Abyss,DR1-EN044,4178474,4178474
+Sakuretsu Armor,1,Common,1st Edition,Blazing Genesis,CP01-EN004,56120475,56120475
 Black Brutdrago,1,Rare,1st Edition,Blazing Genesis,SOVR-EN043,96029574,96029574
 "Tengu, the Winged Mayakashi",1,Rare,1st Edition,Blazing Genesis,HISU-EN034,4103668,4103668
 Thunder Unicorn,1,Rare,1st Edition,Blazing Genesis,DREV-EN040,77506119,77506119
@@ -123,21 +127,21 @@ The Fabled Catsith,1,Super Rare,1st Edition,Blazing Genesis,DT04-EN017,56399890,
 World Carrotweight Champion,1,Super Rare,1st Edition,Blazing Genesis,MP17-EN050,44928016,44928016
 Arms Regeneration,1,Super Rare,1st Edition,Blazing Genesis,BLMR-EN032,32549749,32549749
 My Body as a Shield,1,Super Rare,1st Edition,Blazing Genesis,CP01-EN015,69279219,69279219
-Oil,1,Super Rare,1st Edition,Blazing Genesis,BLTR-EN026,74055055,74055055
+Oil,1,Ultra Rare,1st Edition,Blazing Genesis,BLTR-EN026,74055055,74055055
 One for One,1,Super Rare,1st Edition,Blazing Genesis,AMDE-EN040,2295440,2295440
 Power Pickaxe,1,Super Rare,1st Edition,Blazing Genesis,ABPF-EN053,90246973,90246973
 The Warrior Returning Alive,1,Super Rare,1st Edition,Blazing Genesis,STAS-EN015,95281259,95281259
 Unexpected Dai,1,Super Rare,1st Edition,Blazing Genesis,CROS-EN065,911883,911883
 Ballista Squad,1,Super Rare,1st Edition,Blazing Genesis,MP19-EN132,80584548,80584548
 Call of the Haunted,1,Super Rare,1st Edition,Blazing Genesis,YS15-END20,97077563,97077563
-Compulsory Evacuation Device,1,Super Rare,1st Edition,Blazing Genesis,RA01-EN069,94192409,94192409
+Compulsory Evacuation Device,1,Super Rare,1st Edition,Storm of the Abyss,RA01-EN069,94192409,94192409
 Mirror Force,1,Super Rare,1st Edition,Blazing Genesis,YS15-END16,44095762,44095762
 "Celestial Wolf Lord, Blue Sirius",1,Super Rare,1st Edition,Blazing Genesis,MP14-EN183,32995007,32995007
 Red Dragon Archfiend,1,Super Rare,1st Edition,Blazing Genesis,MP24-EN025,70902743,70902743
 Underworld Fighter Balmung,1,Super Rare,1st Edition,Blazing Genesis,AP06-EN009,52639377,52639377
 "Yoko, the Graceful Mayakashi",1,Super Rare,1st Edition,Blazing Genesis,HISU-EN035,3486020,3486020
 Armored White Bear,1,Ultra Rare,1st Edition,Blazing Genesis,BLAR-EN016,17170970,17170970
-Cyclos the Circular Sprite,1,Ultra Rare,1st Edition,Blazing Genesis,MP25-EN349,21036656,21036656
+Cyclos the Circular Sprite,1,Super Rare,1st Edition,Blazing Genesis,MP25-EN349,21036656,21036656
 Sylvan Komushroomo,1,Ultra Rare,1st Edition,Blazing Genesis,MP14-EN197,99641328,99641328
 The Fabled Abanc,1,Ultra Rare,1st Edition,Blazing Genesis,MP22-EN010,83039608,83039608
 "Therion ""Bull"" Ain",1,Ultra Rare,1st Edition,Blazing Genesis,MP23-EN059,84332527,84332527
@@ -221,11 +225,11 @@ Fishborg Archer,1,Rare,1st Edition,Storm of the Abyss,MP14-EN122,62023839,620238
 Flying Kamakiri #1,1,Rare,1st Edition,Storm of the Abyss,DB1-EN054,84834865,84834865
 Hibernation Dragon,1,Rare,1st Edition,Storm of the Abyss,BLC1-EN113,69109764,69109764
 Hieratic Dragon of Asar,1,Rare,1st Edition,Storm of the Abyss,GAOV-EN024,30794966,30794966
-Hieratic Dragon of Sutekh,1,Rare,1st Edition,Storm of the Abyss,GAOV-EN025,66789970,66789970
+Hieratic Dragon of Sutekh,1,Super Rare,1st Edition,Storm of the Abyss,GAOV-EN025,66789970,66789970
 Mahunder,1,Rare,1st Edition,Storm of the Abyss,REDU-EN096,21524779,21524779
 Mermaid Shark,1,Rare,1st Edition,Storm of the Abyss,PRIO-EN005,87047161,87047161
 Mother Grizzly,1,Rare,1st Edition,Storm of the Abyss,CP04-EN013,57839750,57839750
-Nimble Sunfish,1,Rare,1st Edition,Storm of the Abyss,TSHD-EN084,2843014,2843014
+Nimble Sunfish,1,Common,1st Edition,Storm of the Abyss,TSHD-EN084,2843014,2843014
 Oshaleon,1,Rare,1st Edition,Storm of the Abyss,SOVR-EN036,71519605,71519605
 Piwraithe the Ghost Pirate,1,Rare,1st Edition,Storm of the Abyss,ETCO-EN000,83682209,83682209
 Reptilianne Vaskii,1,Rare,1st Edition,Storm of the Abyss,ABPF-EN018,16886617,16886617
@@ -253,7 +257,7 @@ First-Aid Squad,1,Rare,1st Edition,Storm of the Abyss,MP16-EN161,33622465,336224
 Inverse Universe,1,Rare,1st Edition,Storm of the Abyss,ABPF-EN080,79161790,79161790
 Jar of Greed,1,Rare,1st Edition,Storm of the Abyss,DB1-EN242,83968380,83968380
 Threatening Roar,1,Rare,1st Edition,Storm of the Abyss,BP02-EN184,36361633,36361633
-Widespread Ruin,1,Rare,1st Edition,Storm of the Abyss,CP03-EN011,77754944,77754944
+Widespread Ruin,1,Common,1st Edition,Storm of the Abyss,CP03-EN011,77754944,77754944
 Avenging Knight Parshath,1,Rare,1st Edition,Storm of the Abyss,LC5D-EN230,69514125,69514125
 Black Mamba,1,Super Rare,1st Edition,Storm of the Abyss,BLMR-EN019,86469231,86469231
 Brohunder,1,Super Rare,1st Edition,Storm of the Abyss,DUSA-EN012,27217742,27217742
@@ -261,7 +265,7 @@ Carboneddon,1,Super Rare,1st Edition,Storm of the Abyss,DRLG-EN022,15981690,1598
 Cyber Dragon,1,Super Rare,1st Edition,Storm of the Abyss,YS15-ENY04,70095154,70095154
 D.D. Warrior Lady,1,Super Rare,1st Edition,Storm of the Abyss,BP02-EN021,7572887,7572887
 Dark Alligator,1,Ultra Rare,1st Edition,Storm of the Abyss,GFP2-EN033,34479658,34479658
-Diana the Light Spirit,1,Super Rare,1st Edition,Storm of the Abyss,MP19-EN174,17257342,17257342
+Diana the Light Spirit,1,Common,1st Edition,Storm of the Abyss,MP19-EN174,17257342,17257342
 Fishborg Harpooner,1,Super Rare,1st Edition,Storm of the Abyss,MP25-EN350,57420265,57420265
 Fishborg Launcher,1,Super Rare,1st Edition,Storm of the Abyss,ABYR-EN096,66853752,66853752
 "Flogos, the Ogdoadic Boundless",1,Super Rare,1st Edition,Storm of the Abyss,ANGU-EN003,9400127,9400127
@@ -272,16 +276,18 @@ Wattcobra,1,Super Rare,1st Edition,Storm of the Abyss,PHSW-EN028,88205593,882055
 Wattdragonfly,1,Ultra Rare,1st Edition,Storm of the Abyss,STBL-EN028,97885363,97885363
 Zaborg the Thunder Monarch,1,Ultra Rare,1st Edition,Storm of the Abyss,AST-023,51945556,51945556
 Guardragon Justicia,1,Super Rare,1st Edition,Storm of the Abyss,MP20-EN008,11012154,11012154
-Dark Hole,1,Super Rare,1st Edition,Storm of the Abyss,YS15-ENY12,53129443,53129443
+Dark Hole,1,Super Rare,1st Edition,Blazing Genesis,YS15-ENY12,53129443,53129443
 Dragon Shrine,1,Super Rare,1st Edition,Storm of the Abyss,DPRP-EN029,41620959,41620959
 Enemy Controller,1,Super Rare,1st Edition,Storm of the Abyss,RA02-EN051,98045062,98045062
 Forbidden Chalice,1,Super Rare,1st Edition,Storm of the Abyss,BP02-EN155,25789292,25789292
-Moray of Avarice,1,Super Rare,1st Edition,Storm of the Abyss,POTE-EN084,73244186,73244186
+Moray of Avarice,1,Ultra Rare,1st Edition,Storm of the Abyss,POTE-EN084,73244186,73244186
 Recycling Batteries,1,Super Rare,1st Edition,Storm of the Abyss,AP02-EN021,99995595,99995595
 Soul Exchange,1,Super Rare,1st Edition,Storm of the Abyss,KC01-EN042,68005187,68005187
-Tri-Wight,1,Super Rare,1st Edition,Storm of the Abyss,OP15-EN018,96383838,96383838
+Soul Exchange,1,Super Rare,1st Edition,Blazing Genesis,KC01-EN042,68005187,68005187
+Tri-Wight,1,Rare,1st Edition,Storm of the Abyss,OP15-EN018,96383838,96383838
 Fish Depth Charge,1,Super Rare,1st Edition,Storm of the Abyss,DL14-EN018,58873391,58873391
 Needle Ceiling,1,Super Rare,1st Edition,Storm of the Abyss,STAX-EN026,38411870,38411870
+Needle Ceiling,1,Super Rare,1st Edition,Blazing Genesis,STAX-EN026,38411870,38411870
 Offering to the Snake Deity,1,Super Rare,1st Edition,Storm of the Abyss,ANGU-EN060,93217231,93217231
 Phoenix Wing Wind Blast,1,Super Rare,1st Edition,Storm of the Abyss,CP06-EN004,63356631,63356631
 The Huge Revolution is Over,1,Super Rare,1st Edition,Storm of the Abyss,SR03-EN038,99188141,99188141
@@ -290,13 +296,13 @@ Ascension Sky Dragon,1,Super Rare,1st Edition,Storm of the Abyss,LEHD-ENB34,3791
 "Brionac, the Magical Ice Dragon",1,Super Rare,1st Edition,Storm of the Abyss,BLTR-EN004,65892310,65892310
 Navy Dragon Mech,1,Super Rare,1st Edition,Storm of the Abyss,DIFO-EN082,80040886,80040886
 Batteryman 9-Volt,1,Secret Rare,1st Edition,Storm of the Abyss,DUEA-EN038,60549248,60549248
-Batteryman Fuel Cell,1,Ultra Rare,1st Edition,Storm of the Abyss,TSHD-EN035,74730899,74730899
+Batteryman Fuel Cell,1,Super Rare,1st Edition,Storm of the Abyss,TSHD-EN035,74730899,74730899
 Dragard,1,Ultra Rare,1st Edition,Storm of the Abyss,SHSP-EN092,65737274,65737274
 Guardragon Garmides,1,Ultra Rare,1st Edition,Storm of the Abyss,MP20-EN009,43411769,43411769
 Lamia,1,Ultra Rare,1st Edition,Storm of the Abyss,BLMR-EN021,84900597,84900597
 Mobius the Frost Monarch,1,Ultra Rare,1st Edition,Storm of the Abyss,STAS-EN029,4929256,4929256
 Reptilianne Coatl,1,Super Rare,1st Edition,Storm of the Abyss,BODE-EN020,89594399,89594399
-Right-Hand Shark,1,Ultra Rare,1st Edition,Storm of the Abyss,BROL-EN048,11845050,11845050
+Right-Hand Shark,1,Super Rare,1st Edition,Storm of the Abyss,BROL-EN048,11845050,11845050
 Book of Moon,1,Ultra Rare,1st Edition,Storm of the Abyss,STAX-EN025,14087893,14087893
 Mystical Space Typhoon,1,Super Rare,1st Edition,Storm of the Abyss,YS15-END13,5318639,5318639
 Salvage,1,Ultra Rare,1st Edition,Storm of the Abyss,DR2-EN097,96947648,96947648
@@ -311,3 +317,6 @@ Wattuna,1,Super Rare,1st Edition,Storm of the Abyss,AGOV-EN015,10113611,10113611
 Lightstorm Dragon,1,Secret Rare,1st Edition,Storm of the Abyss,SUDA-EN043,10515412,10515412
 Batteryman Industrial Strength,1,Ultra Rare,1st Edition,Storm of the Abyss,LODT-EN031,19441018,19441018
 Thunder Nyan Nyan,1,Common,1st Edition,Storm of the Abyss,DB2-EN169,70797118,70797118
+Lesser Fiend,1,Common,1st Edition,Blazing Genesis,DB2-EN126,16475472,16475472
+Gold Sarcophagus,1,Super Rare,1st Edition,Blazing Genesis,RA02-EN052,75500286,75500286
+Gold Sarcophagus,1,Super Rare,1st Edition,Storm of the Abyss,RA02-EN052,75500286,75500286

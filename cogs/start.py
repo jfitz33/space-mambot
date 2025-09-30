@@ -21,8 +21,8 @@ STARTER_ROLE_NAME = "starter"
 
 # Map starter deck name → which pack to auto-open. If empty, we fall back to using the deck name as pack name.
 STARTER_TO_PACK = {
-    "start_Water": "Water",
-    "start_Fire": "Fire"
+    "Cult of the Mambo": "Storm of the Abyss",
+    "Hellfire Heretics": "Blazing Genesis",
 }
 
 async def _resolve_member(interaction: discord.Interaction) -> discord.Member | None:
@@ -84,7 +84,19 @@ class StarterDeckSelectView(View):
             await interaction.response.send_message("That starter deck appears to be empty.", ephemeral=True)
             return
 
-        if deck_name.lower().__contains__("water"):
+        # Acknowledge component interaction to avoid it expiring
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        # Immediately disable the dropdown so the user cannot make additional selections
+        # while we process their starter choice.
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.followup.edit_message(message_id=interaction.message.id, view=self)
+        except Exception:
+            pass
+
+        if deck_name.lower().__contains__("mambo"):
             await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
         elif deck_name.lower().__contains__("fire"):
             await interaction.channel.send(f"Thats Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
@@ -171,19 +183,8 @@ class StarterDeckSelectView(View):
                 "Please grant me **Manage Roles** and ensure my top role is above `starter`.",
                 ephemeral=True
             )
-
-        # 6) Disable dropdown and update the original ephemeral message
-        for child in self.children:
-            child.disabled = True
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(view=self)
-        else:
-            try:
-                await interaction.followup.edit_message(message_id=interaction.message.id, view=self)
-            except Exception:
-                pass
         
-        # 7) Delete the original message upon completion
+        # 6) Delete the original message upon completion
         try:
             await interaction.delete_original_response()
         except Exception:
