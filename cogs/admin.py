@@ -3,7 +3,6 @@ from discord.ext import commands
 from discord import app_commands
 from typing import List, Literal, Optional
 
-from core.packs import resolve_card_in_pack
 from core.db import (
     db_admin_add_card, db_admin_remove_card, db_collection_clear,
     db_wallet_set, db_wallet_add, db_wallet_get,
@@ -21,32 +20,6 @@ STARTER_ROLE_NAME = "starter"
 
 # NEW: currency selector for admin wallet ops
 Currency = Literal["mambucks", "shards"]
-
-def _ac_pack_names(state, prefix: str) -> List[str]:
-    prefix = (prefix or "").lower()
-    names = sorted((state.packs_index or {}).keys())
-    return [n for n in names if prefix in n.lower()][:25] if prefix else names[:25]
-
-def _ac_card_names_for_set(state, card_set: str, prefix: str) -> List[str]:
-    prefix = (prefix or "").lower()
-    candidates = set()
-    if card_set and state.packs_index and card_set in state.packs_index:
-        for items in state.packs_index[card_set]["by_rarity"].values():
-            for it in items:
-                candidates.add(it["name"])
-    else:
-        for p in (state.packs_index or {}).values():
-            for items in p["by_rarity"].values():
-                for it in items:
-                    candidates.add(it["name"])
-    names = sorted(candidates)
-    return [n for n in names if prefix in n.lower()][:25] if prefix else names[:25]
-
-def _read_option(interaction: discord.Interaction, name: str) -> str:
-    data = getattr(interaction, "data", {}) or {}
-    opts = {opt.get("name"): opt.get("value") for opt in data.get("options", []) if isinstance(opt, dict)}
-    return (opts.get(name) or "").strip()
-    
 
 # NEW: autocomplete for shard_set (int choices based on PACKS_BY_SET keys)
 def _available_set_choices() -> List[app_commands.Choice[int]]:
@@ -66,14 +39,6 @@ class Admin(commands.Cog):
         self.bot = bot
         self.state = bot.state
 
-    async def ac_card_set(self, interaction: discord.Interaction, current: str):
-        return [app_commands.Choice(name=n, value=n) for n in _ac_pack_names(self.bot.state, current)]
-
-    async def ac_card_name(self, interaction: discord.Interaction, current: str):
-        selected_set = _read_option(interaction, "card_set") or _read_option(interaction, "cardset")
-        names = _ac_card_names_for_set(self.bot.state, selected_set, current)
-        return [app_commands.Choice(name=n, value=n) for n in names]
-
     async def ac_shard_set(self, interaction: discord.Interaction, current: str):
         # We can optionally filter by `current` if user types a digit; otherwise show all
         choices = _available_set_choices()
@@ -86,6 +51,40 @@ class Admin(commands.Cog):
     async def ac_print(self, interaction: discord.Interaction, current: str):
         from cogs.cards_shop import suggest_prints_with_set  # you already have this
         return suggest_prints_with_set(self.state, current)
+    
+    def _resolve_print_key(self, print_key: str) -> Optional[dict]:
+        """Return a copy of the card metadata for the supplied print key."""
+        if not print_key:
+            return None
+        card = find_card_by_print_key(self.state, print_key)
+        if not card:
+            return None
+        resolved = dict(card)
+        set_name = resolve_card_set(self.state, resolved)
+        if set_name:
+            resolved["set"] = set_name
+            resolved.setdefault("cardset", set_name)
+        return resolved
+
+    @staticmethod
+    def _card_name(card: dict) -> str:
+        return (card.get("name") or card.get("cardname") or "").strip()
+
+    @staticmethod
+    def _card_rarity(card: dict) -> str:
+        return (card.get("rarity") or card.get("cardrarity") or "").strip()
+
+    @staticmethod
+    def _card_set(card: dict) -> str:
+        return (card.get("set") or card.get("cardset") or "").strip()
+
+    @staticmethod
+    def _card_code(card: dict) -> str:
+        return (card.get("code") or card.get("cardcode") or "").strip()
+
+    @staticmethod
+    def _card_id(card: dict) -> str:
+        return (card.get("id") or card.get("cardid") or "").strip()
 
     @app_commands.command(name="admin_add_card", description="(Admin) Add a card to a user's collection (rarity from pack)")
     @app_commands.guilds(GUILD)
@@ -93,31 +92,46 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         user="User to modify",
-        card_set="Set/pack name",
-        card_name="Card name",
+        card_name="Card to add (choose the exact printing)",
         qty="Quantity to add (default 1)",
-        card_code="Card code (optional; narrows if duplicates)",
-        card_id="Card id (optional; narrows if duplicates)",
     )
-    @app_commands.autocomplete(card_set=ac_card_set, card_name=ac_card_name)
+    @app_commands.autocomplete(card_name=ac_print)
     async def admin_add_card(self, interaction: discord.Interaction,
-                             user: discord.User, card_set: str, card_name: str,
-                             qty: app_commands.Range[int,1,999]=1,
-                             card_code: str="", card_id: str=""):
-        try:
-            item = resolve_card_in_pack(self.bot.state, card_set, card_name, card_code, card_id)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ {e}", ephemeral=True); return
-        rarity = item.get("rarity","")
-        new_total = db_admin_add_card(self.bot.state, user.id,
-                                      name=card_name, rarity=rarity, card_set=card_set,
-                                      card_code=item.get("card_code",""), card_id=item.get("card_id",""),
-                                      qty=qty)
+                             user: discord.User, card_name: str,
+                             qty: app_commands.Range[int,1,999]=1):
+        card = self._resolve_print_key(card_name)
+        if not card:
+            await interaction.response.send_message("❌ Card not found for that selection.", ephemeral=True)
+            return
+
+        name = self._card_name(card)
+        rarity = self._card_rarity(card)
+        card_set = self._card_set(card)
+        if not card_set:
+            await interaction.response.send_message("❌ Unable to determine the card's set.", ephemeral=True)
+            return
+        card_code = self._card_code(card)
+        card_id = self._card_id(card)
+
+        new_total = db_admin_add_card(
+            self.bot.state,
+            user.id,
+            name=name,
+            rarity=rarity,
+            card_set=card_set,
+            card_code=card_code,
+            card_id=card_id,
+            qty=qty,
+        )
+        display_card = dict(card)
+        display_card.setdefault("set", card_set)
+        label = card_label(display_card)
+
         await interaction.response.send_message(
-            f"✅ Added **x{qty}** of **{card_name}** *(rarity: {rarity}, set: {card_set})* "
+            f"✅ Added **x{qty}** of **{label}** "
             f"to {user.mention}. New total: **{new_total}**.", ephemeral=True)
         await interaction.channel.send(
-            f"📦 **{interaction.user.display_name}** added x{qty} **{card_name}** to **{user.display_name}**'s collection."
+            f"📦 **{interaction.user.display_name}** added x{qty} **{label}** to **{user.display_name}**'s collection."
         )
 
     @app_commands.command(name="admin_remove_card", description="(Admin) Remove a card row (rarity from pack)")
@@ -126,38 +140,53 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         user="User to modify",
-        card_set="Set/pack name",
-        card_name="Card name",
+        card_name="Card to remove (choose the exact printing)",
         qty="Quantity to remove (default 1)",
-        card_code="Card code (optional; narrows if duplicates)",
-        card_id="Card id (optional; narrows if duplicates)",
     )
-    @app_commands.autocomplete(card_set=ac_card_set, card_name=ac_card_name)
+    @app_commands.autocomplete(card_name=ac_print)
     async def admin_remove_card(self, interaction: discord.Interaction,
-                                user: discord.User, card_set: str, card_name: str,
-                                qty: app_commands.Range[int,1,999]=1,
-                                card_code: str="", card_id: str=""):
-        try:
-            item = resolve_card_in_pack(self.bot.state, card_set, card_name, card_code, card_id)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ {e}", ephemeral=True); return
-        rarity = item.get("rarity","")
-        removed, remaining = db_admin_remove_card(self.bot.state, user.id,
-                                                  name=card_name, rarity=rarity, card_set=card_set,
-                                                  card_code=item.get("card_code",""), card_id=item.get("card_id",""),
-                                                  qty=qty)
+                                user: discord.User, card_name: str,
+                                qty: app_commands.Range[int,1,999]=1):
+        card = self._resolve_print_key(card_name)
+        if not card:
+            await interaction.response.send_message("❌ Card not found for that selection.", ephemeral=True)
+            return
+
+        name = self._card_name(card)
+        rarity = self._card_rarity(card)
+        card_set = self._card_set(card)
+        if not card_set:
+            await interaction.response.send_message("❌ Unable to determine the card's set.", ephemeral=True)
+            return
+        card_code = self._card_code(card)
+        card_id = self._card_id(card)
+
+        removed, remaining = db_admin_remove_card(
+            self.bot.state,
+            user.id,
+            name=name,
+            rarity=rarity,
+            card_set=card_set,
+            card_code=card_code,
+            card_id=card_id,
+            qty=qty,
+        )
+        display_card = dict(card)
+        display_card.setdefault("set", card_set)
+        label = card_label(display_card)
+
         if removed == 0:
             await interaction.response.send_message("ℹ️ No matching row for that card.", ephemeral=True); return
         if remaining > 0:
             await interaction.response.send_message(
-                f"✅ Removed **x{removed}** of **{card_name}** *(rarity: {rarity}, set: {card_set})* "
+                f"✅ Removed **x{removed}** of **{label}** "
                 f"from {user.mention}. Remaining: **{remaining}**.", ephemeral=True)
         else:
             await interaction.response.send_message(
-                f"✅ Removed **x{removed}**; that row is now gone from {user.mention}'s collection.",
+                f"🗑 **{interaction.user.display_name}** removed x{removed} **{label}** from **{user.display_name}**'s collection.",
                 ephemeral=True)
         await interaction.channel.send(
-            f"🗑 **{interaction.user.display_name}** removed x{removed} **{card_name}** from **{user.display_name}**'s collection."
+            f"🗑 **{interaction.user.display_name}** removed x{removed} **{label}** from **{user.display_name}**'s collection."
         )
 
     @app_commands.command(
