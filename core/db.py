@@ -22,6 +22,30 @@ def db_init(state: AppState):
             PRIMARY KEY (user_id, card_name, card_rarity, card_set, card_code, card_id)
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_wishlist (
+            user_id     TEXT NOT NULL,
+            card_name   TEXT NOT NULL,
+            desired_qty INTEGER NOT NULL DEFAULT 0,
+            card_rarity TEXT NOT NULL,
+            card_set    TEXT NOT NULL,
+            card_code   TEXT,
+            card_id     TEXT,
+            PRIMARY KEY (user_id, card_name, card_rarity, card_set, card_code, card_id)
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_binder (
+            user_id     TEXT NOT NULL,
+            card_name   TEXT NOT NULL,
+            qty         INTEGER NOT NULL DEFAULT 0,
+            card_rarity TEXT NOT NULL,
+            card_set    TEXT NOT NULL,
+            card_code   TEXT,
+            card_id     TEXT,
+            PRIMARY KEY (user_id, card_name, card_rarity, card_set, card_code, card_id)
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
 
@@ -96,6 +120,7 @@ def db_collection_clear(state, user_id: int) -> int:
     """Delete all collection rows for a user. Returns number of rows deleted."""
     with sqlite3.connect(state.db_path) as conn, conn:
         conn.execute("DELETE FROM user_collection WHERE user_id = ?", (str(user_id),))
+        conn.execute("DELETE FROM user_binder WHERE user_id = ?", (str(user_id),))
         # sqlite3 total_changes counts all changes in this transaction (here, just the DELETE)
         return conn.total_changes
 
@@ -124,6 +149,8 @@ def db_admin_add_card(state: AppState, user_id: int, *, name: str, rarity: str, 
 
 def db_admin_remove_card(state: AppState, user_id: int, *, name: str, rarity: str, card_set: str, card_code: str, card_id: str, qty: int) -> Tuple[int,int]:
     rarity = (rarity or "").strip().lower()
+    code_norm = blank_to_none(card_code)
+    id_norm = blank_to_none(card_id)
     with sqlite3.connect(state.db_path) as conn, conn:
         cur = conn.execute("""
         SELECT card_qty FROM user_collection
@@ -140,14 +167,18 @@ def db_admin_remove_card(state: AppState, user_id: int, *, name: str, rarity: st
             WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
               AND COALESCE(card_code,'')=COALESCE(?,'') AND COALESCE(card_id,'')=COALESCE(?,'');
             """, (new_qty, str(user_id), name, rarity, card_set, card_code or "", card_id or ""))
-            return (current - new_qty, new_qty)
+            removed = current - new_qty
         else:
             conn.execute("""
             DELETE FROM user_collection
             WHERE user_id=? AND card_name=? AND card_rarity=? AND card_set=?
               AND COALESCE(card_code,'')=COALESCE(?,'') AND COALESCE(card_id,'')=COALESCE(?,'');
             """, (str(user_id), name, rarity, card_set, card_code or "", card_id or ""))
-            return (current, 0)
+            removed = current
+            new_qty = 0
+        if removed > 0:
+            _binder_reduce_with_conn(conn, user_id, name, rarity, card_set, code_norm, id_norm, removed)
+        return (removed, new_qty)
 
 # --- Helper functions for selling to shop ---
 
@@ -202,6 +233,344 @@ def db_collection_total_by_name_and_rarity(state, user_id: int, card_name: str, 
         )
         (total,) = cur.fetchone()
         return int(total or 0)
+
+def _normalize_card_identity(card: dict | None, *, name: str | None = None,
+                              rarity: str | None = None, card_set: str | None = None,
+                              card_code: str | None = None, card_id: str | None = None) -> tuple[str, str, str, str, str]:
+    """Return trimmed string fields for card identity."""
+    src = card or {}
+    nm = (name if name is not None else src.get("name") or src.get("card_name") or src.get("cardname") or "").strip()
+    rt = (rarity if rarity is not None else src.get("rarity") or src.get("card_rarity") or src.get("cardrarity") or "").strip()
+    st = (card_set if card_set is not None else src.get("card_set") or src.get("set") or src.get("cardset") or "").strip()
+    cd = blank_to_none(card_code if card_code is not None else src.get("card_code") or src.get("code") or src.get("cardcode"))
+    cid = blank_to_none(card_id if card_id is not None else src.get("card_id") or src.get("id") or src.get("cardid"))
+    return (nm, rt, st, cd or "", cid or "")
+
+
+def db_wishlist_add(state, user_id: int, card: dict, qty: int) -> int:
+    qty = max(1, int(qty or 1))
+    name, rarity, cset, code, cid = _normalize_card_identity(card)
+    user_id_s = str(user_id)
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO user_wishlist (user_id, card_name, desired_qty, card_rarity, card_set, card_code, card_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, card_name, card_rarity, card_set, card_code, card_id)
+            DO UPDATE SET desired_qty = desired_qty + excluded.desired_qty;
+            """,
+            (user_id_s, name, qty, rarity, cset, code or None, cid or None),
+        )
+        row = conn.execute(
+            """
+            SELECT desired_qty FROM user_wishlist
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        ).fetchone()
+        return int(row[0]) if row else qty
+
+
+def db_wishlist_remove(state, user_id: int, card: dict, qty: int | None = None) -> tuple[int, int]:
+    amount = 1 if qty is None else max(1, int(qty))
+    name, rarity, cset, code, cid = _normalize_card_identity(card)
+    user_id_s = str(user_id)
+    with sqlite3.connect(state.db_path) as conn, conn:
+        row = conn.execute(
+            """
+            SELECT desired_qty FROM user_wishlist
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        ).fetchone()
+        if not row:
+            return (0, 0)
+        current = int(row[0] or 0)
+        take = min(current, amount)
+        remaining = current - take
+        if remaining > 0:
+            conn.execute(
+                """
+                UPDATE user_wishlist SET desired_qty=?
+                 WHERE user_id=?
+                   AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+                   AND (card_code IS ? OR card_code=?)
+                   AND (card_id IS ? OR card_id=?);
+                """,
+                (remaining, user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+            )
+        else:
+            conn.execute(
+                """
+                DELETE FROM user_wishlist
+                 WHERE user_id=?
+                   AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+                   AND (card_code IS ? OR card_code=?)
+                   AND (card_id IS ? OR card_id=?);
+                """,
+                (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+            )
+        return (take, max(0, remaining))
+
+
+def db_wishlist_list(state, user_id: int) -> List[dict]:
+    out: List[dict] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT card_name, desired_qty, card_rarity, card_set, card_code, card_id
+              FROM user_wishlist
+             WHERE user_id = ?
+             ORDER BY card_set COLLATE NOCASE ASC, card_name COLLATE NOCASE ASC;
+            """,
+            (str(user_id),),
+        )
+        for name, qty, rarity, cset, code, cid in cur.fetchall():
+            out.append({
+                "card_name": name,
+                "qty": int(qty or 0),
+                "card_rarity": rarity,
+                "card_set": cset,
+                "card_code": code,
+                "card_id": cid,
+            })
+    return out
+
+
+def db_wishlist_clear(state, user_id: int) -> int:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute("DELETE FROM user_wishlist WHERE user_id=?", (str(user_id),))
+        return cur.rowcount or 0
+
+
+def db_wishlist_holders(state, card: dict) -> List[dict]:
+    """Return users and desired quantities for a specific card on wishlists."""
+    name, rarity, cset, code, cid = _normalize_card_identity(card)
+    out: List[dict] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT user_id, desired_qty
+              FROM user_wishlist
+             WHERE LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id   IS ? OR card_id=?);
+            """,
+            (name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        )
+        for user_id, qty in cur.fetchall():
+            try:
+                qty_int = int(qty or 0)
+            except Exception:
+                qty_int = 0
+            if qty_int <= 0:
+                continue
+            out.append({"user_id": str(user_id), "qty": qty_int})
+    return out
+
+
+def db_binder_add(state, user_id: int, card: dict, qty: int) -> int:
+    qty = max(1, int(qty or 1))
+    name, rarity, cset, code, cid = _normalize_card_identity(card)
+    user_id_s = str(user_id)
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO user_binder (user_id, card_name, qty, card_rarity, card_set, card_code, card_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, card_name, card_rarity, card_set, card_code, card_id)
+            DO UPDATE SET qty = qty + excluded.qty;
+            """,
+            (user_id_s, name, qty, rarity, cset, code or None, cid or None),
+        )
+        row = conn.execute(
+            """
+            SELECT qty FROM user_binder
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        ).fetchone()
+        return int(row[0]) if row else qty
+
+
+def _binder_reduce_with_conn(conn: sqlite3.Connection, user_id: int, name: str, rarity: str,
+                             card_set: str, code: str | None, cid: str | None, amount: int) -> int:
+    if amount <= 0:
+        return 0
+    user_id_s = str(user_id)
+    code_norm = blank_to_none(code)
+    cid_norm = blank_to_none(cid)
+    row = conn.execute(
+        """
+        SELECT qty FROM user_binder
+         WHERE user_id=?
+           AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+           AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+           AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+           AND (card_code IS ? OR card_code=?)
+           AND (card_id IS ? OR card_id=?);
+        """,
+        (user_id_s, name, rarity, card_set, code_norm, code_norm, cid_norm, cid_norm),
+    ).fetchone()
+    if not row:
+        return 0
+    current = int(row[0] or 0)
+    if current <= 0:
+        conn.execute(
+            """
+            DELETE FROM user_binder
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (user_id_s, name, rarity, card_set, code_norm, code_norm, cid_norm, cid_norm),
+        )
+        return 0
+    take = min(current, int(amount))
+    remaining = current - take
+    if remaining > 0:
+        conn.execute(
+            """
+            UPDATE user_binder SET qty=?
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (remaining, user_id_s, name, rarity, card_set, code_norm, code_norm, cid_norm, cid_norm),
+        )
+    else:
+        conn.execute(
+            """
+            DELETE FROM user_binder
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (user_id_s, name, rarity, card_set, code_norm, code_norm, cid_norm, cid_norm),
+        )
+    return take
+
+
+def db_binder_reduce_for_card(state, user_id: int, name: str, rarity: str, card_set: str,
+                              card_code: str | None, card_id: str | None, amount: int,
+                              *, connection: sqlite3.Connection | None = None) -> int:
+    if amount <= 0:
+        return 0
+    if connection is not None:
+        return _binder_reduce_with_conn(connection, user_id, name, rarity, card_set, card_code, card_id, amount)
+    with sqlite3.connect(state.db_path) as conn, conn:
+        return _binder_reduce_with_conn(conn, user_id, name, rarity, card_set, card_code, card_id, amount)
+
+
+def db_binder_remove(state, user_id: int, card: dict, qty: int | None = None) -> tuple[int, int]:
+    amount = 1 if qty is None else max(1, int(qty))
+    name, rarity, cset, code, cid = _normalize_card_identity(card)
+    with sqlite3.connect(state.db_path) as conn, conn:
+        taken = _binder_reduce_with_conn(conn, user_id, name, rarity, cset, code or None, cid or None, amount)
+        if taken <= 0:
+            return (0, 0)
+        row = conn.execute(
+            """
+            SELECT qty FROM user_binder
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (str(user_id), name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        ).fetchone()
+        remaining = int(row[0]) if row else 0
+        return (taken, remaining)
+
+
+def db_binder_list(state, user_id: int) -> List[dict]:
+    out: List[dict] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT card_name, qty, card_rarity, card_set, card_code, card_id
+              FROM user_binder
+             WHERE user_id = ?
+             ORDER BY card_set COLLATE NOCASE ASC, card_name COLLATE NOCASE ASC;
+            """,
+            (str(user_id),),
+        )
+        for name, qty, rarity, cset, code, cid in cur.fetchall():
+            out.append({
+                "card_name": name,
+                "qty": int(qty or 0),
+                "card_rarity": rarity,
+                "card_set": cset,
+                "card_code": code,
+                "card_id": cid,
+            })
+    return out
+
+
+def db_binder_clear(state, user_id: int) -> int:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute("DELETE FROM user_binder WHERE user_id=?", (str(user_id),))
+        return cur.rowcount or 0
+
+
+def db_binder_holders(state, card: dict) -> List[dict]:
+    """Return users and binder quantities for a specific card."""
+    name, rarity, cset, code, cid = _normalize_card_identity(card)
+    out: List[dict] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT user_id, qty
+              FROM user_binder
+             WHERE LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id   IS ? OR card_id=?);
+            """,
+            (name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        )
+        for user_id, qty in cur.fetchall():
+            try:
+                qty_int = int(qty or 0)
+            except Exception:
+                qty_int = 0
+            if qty_int <= 0:
+                continue
+            out.append({"user_id": str(user_id), "qty": qty_int})
+    return out
 
 def _blank_to_none(s):
     return None if s is None or str(s).strip() == "" else str(s).strip()
@@ -306,6 +675,7 @@ def db_collection_remove_exact_print(
             conn.execute("DELETE FROM user_collection WHERE rowid = ?;", (rowid,))
         else:
             conn.execute("UPDATE user_collection SET card_qty = card_qty - ? WHERE rowid = ?;", (take, rowid))
+        _binder_reduce_with_conn(conn, user_id, name, rarity, cset, db_code, db_id, take)
         return take
     
 # --- Trades: table + migration ---
@@ -512,6 +882,7 @@ def db_apply_trade_atomic(state, t: dict) -> tuple[bool, str]:
                       int(it["qty"])))
                 if conn.total_changes <= 0:
                     raise RuntimeError(f"proposer missing {it['name']} x{it['qty']}")
+                _binder_reduce_with_conn(conn, int(A), it["name"], it["rarity"], it["card_set"], it.get("card_code"), it.get("card_id"), int(it["qty"]))
 
                 # add to B (upsert)
                 row = conn.execute("""
@@ -553,6 +924,7 @@ def db_apply_trade_atomic(state, t: dict) -> tuple[bool, str]:
                       int(it["qty"])))
                 if conn.total_changes <= 0:
                     raise RuntimeError(f"receiver missing {it['name']} x{it['qty']}")
+                _binder_reduce_with_conn(conn, int(B), it["name"], it["rarity"], it["card_set"], it.get("card_code"), it.get("card_id"), int(it["qty"]))
 
                 row = conn.execute("""
                     SELECT card_qty FROM user_collection
