@@ -2,7 +2,6 @@ from __future__ import annotations
 from collections import Counter
 
 import discord, asyncio
-from io import BytesIO
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv, normalize_rarity
 from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks, 
@@ -10,8 +9,7 @@ from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks,
                      db_collection_debug_dump, db_shards_add, db_fragment_yield_for_card)
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.pricing import craft_cost_for_card
-from core.images import card_art_path_for_card
-from core.render import render_pack_panel
+from core.images import compose_pack_strip_image, rarity_badge
 from typing import List, Tuple, Optional, Literal
 
 PACK_COST = 10
@@ -90,25 +88,48 @@ def _pick_highest_rarity_card(cards: list[dict[str, Any]]) -> dict[str, Any] | N
             best, best_rank = c, rank
     return best
 
-def _pack_embed_for_cards(emoji_ctx, pack_name: str, cards: list[dict], idx: int, total: int) -> tuple[discord.Embed, discord.File | None]:
+def _pack_embed_for_cards(
+    emoji_ctx,
+    pack_name: str,
+    cards: list[dict],
+    idx: int,
+    total: int,
+) -> tuple[list[discord.Embed], list[discord.File]]:
+    """Return message content, embeds, and files for a pack pull.
+
+    The embed lists the cards with rarity badges and attaches a composite image
+    of the pack's card art beneath the text when possible.
+    """
     title = f"{pack_name} — Pack {idx}/{total}" if total > 1 else f"{pack_name} — Pack"
-    e = discord.Embed(title=title, color=0x2b6cb0)
+    summary_embed = discord.Embed(title=title, color=0x2b6cb0)
 
-    # pick the highest-rarity card's local art (if present)
-    top = _pick_highest_rarity_card(cards) or {}
-    art_path = card_art_path_for_card(top)
+    lines: list[str] = []
+    files: list[discord.File] = []
 
-    # build the composite panel (left: list, right: top art)
-    png_bytes, fname = render_pack_panel(
+    for card in cards or []:
+        name = (card.get("name") or card.get("cardname") or "Unknown").strip() or "Unknown"
+        rarity = card.get("rarity") or card.get("cardrarity") or ""
+        badge = rarity_badge(emoji_ctx, rarity)
+        line = f"{badge} {name}".strip()
+        lines.append(line)
+    
+    summary_embed.description = "\n".join(lines) if lines else "_No cards pulled._"
+
+    embeds = [summary_embed]
+
+    strip_file, missing_art = compose_pack_strip_image(
+        pack_name,
         cards,
-        card_image_path=art_path,     # None is fine; panel renders without art
-        filename=f"pack_{idx}.png",
-        scale=2.0,                    # keep the crisp 2x render
+        pack_index=idx if total > 1 else None,
     )
+    if strip_file:
+        files.append(strip_file)
+        summary_embed.set_image(url=f"attachment://{strip_file.filename}")
 
-    file = discord.File(fp=BytesIO(png_bytes), filename=fname)
-    e.set_image(url=f"attachment://{fname}")
-    return e, file
+    if missing_art:
+        summary_embed.set_footer(text="Some cards lacked art and will not appear below.")
+    
+    return None, embeds, files
 
 class PacksDropdown(discord.ui.Select):
     def __init__(self, parent_view: "PacksSelectView"):
@@ -768,11 +789,13 @@ class PacksSelectView(discord.ui.View):
         try:
             dm = await requester.create_dm()
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
-                if f:
-                    await dm.send(embed=embed, file=f)
-                else:
-                    await dm.send(embed=embed)
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
                 # be polite to rate limits if many packs
                 if amount > 5:
                     await asyncio.sleep(0.2)
@@ -804,11 +827,13 @@ class PacksSelectView(discord.ui.View):
             # Fallback: post results in the channel (one embed per pack)
             await interaction.channel.send(summary)
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
-                if f:
-                    await interaction.channel.send(embed=embed, file=f)
-                else:
-                    await interaction.channel.send(embed=embed)
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
                 if amount > 5:
                     await asyncio.sleep(0.2)
 
@@ -836,11 +861,13 @@ class PacksSelectView(discord.ui.View):
         try:
             dm = await requester.create_dm()
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
-                if f:
-                    await dm.send(embed=embed, file=f)
-                else:
-                    await dm.send(embed=embed)
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
                 await asyncio.sleep(0.25)  # gentle on rate limits
             dm_sent = True
         except Exception:
@@ -867,11 +894,13 @@ class PacksSelectView(discord.ui.View):
         # fallback to channel if DMs closed
         if not dm_sent:
             for i, cards in enumerate(per_pack, start=1):
-                embed, f = _pack_embed_for_cards(interaction.client, pack_name, cards, i, PACKS_IN_BOX)
-                if f:
-                    await interaction.channel.send(embed=embed, file=f)
-                else:
-                    await interaction.channel.send(embed=embed)
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, amount)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
                 await asyncio.sleep(0.25)
 
 class CollectionPaginator(View):

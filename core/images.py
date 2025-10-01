@@ -1,9 +1,13 @@
 # core/images.py
 from __future__ import annotations
 import re
+from io import BytesIO
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple, Any, Sequence
+from urllib.parse import quote
 import discord
+from PIL import Image, ImageDraw, ImageFont
+import textwrap
 
 # Prefer GIF files for animated rarity emojis if present; fall back to PNG.
 RARITY_FILES: Dict[str, str] = {
@@ -21,6 +25,13 @@ FALLBACK_BADGES: Dict[str, str] = {
     "ultra":  "🟢",
     "secret": "⚪",
 }
+
+PACK_CARD_WIDTH = 180
+PACK_CARD_HEIGHT = 262
+PACK_CARD_GAP = 12
+PACK_BACKGROUND = (15, 23, 42, 255)
+PACK_PLACEHOLDER_BG = (30, 41, 59, 255)
+PACK_PLACEHOLDER_TEXT = (148, 163, 184, 255)
 
 def _slugify(name: str, max_len: int = 100) -> str:
     base = re.sub(r"[^A-Za-z0-9]+", "_", (name or "").strip()).strip("_")
@@ -251,6 +262,124 @@ def card_art_path_for_card(card: dict[str, Any]) -> Optional[Path]:
     name = (card.get("name") or card.get("cardname") or "").strip()
     raw_id = card.get("card_id") or card.get("cardid") or card.get("id")
     return find_card_art_path(name, raw_id)
+
+def _pack_placeholder_image(name: str) -> Image.Image:
+    label = textwrap.fill(name or "No Art", width=16)
+    canvas = Image.new("RGBA", (PACK_CARD_WIDTH, PACK_CARD_HEIGHT), PACK_PLACEHOLDER_BG)
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    bbox = draw.multiline_textbbox((0, 0), label, font=font, align="center")
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    x = (PACK_CARD_WIDTH - text_width) / 2
+    y = (PACK_CARD_HEIGHT - text_height) / 2
+    draw.multiline_text(
+        (x, y),
+        label,
+        fill=PACK_PLACEHOLDER_TEXT,
+        font=font,
+        align="center",
+    )
+    return canvas
+
+
+def _pack_card_slot_image(card: dict[str, Any]) -> tuple[Image.Image, bool]:
+    """Return a card image resized for the pack strip and whether art was missing."""
+
+    art_path = card_art_path_for_card(card)
+    name = (card.get("name") or card.get("cardname") or "Unknown").strip() or "Unknown"
+
+    if art_path is None:
+        return _pack_placeholder_image(name), True
+
+    try:
+        with Image.open(art_path) as raw:
+            src = raw.convert("RGBA")
+            width, height = src.size
+            if width <= 0 or height <= 0:
+                raise ValueError("invalid image dimensions")
+            scale = min(PACK_CARD_WIDTH / width, PACK_CARD_HEIGHT / height)
+            resized = src.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.LANCZOS,
+            )
+    except Exception:
+        return _pack_placeholder_image(name), True
+
+    slot = Image.new("RGBA", (PACK_CARD_WIDTH, PACK_CARD_HEIGHT), (0, 0, 0, 0))
+    offset_x = (PACK_CARD_WIDTH - resized.width) // 2
+    offset_y = (PACK_CARD_HEIGHT - resized.height) // 2
+    slot.paste(resized, (offset_x, offset_y), resized)
+    return slot, False
+
+
+def compose_pack_strip_image(
+    pack_name: str,
+    cards: Sequence[dict[str, Any]],
+    *,
+    pack_index: int | None = None,
+) -> tuple[discord.File | None, bool]:
+    """Create a horizontal strip image for the provided pack pulls.
+
+    Returns a tuple of (discord.File | None, missing_art_flag).
+    """
+
+    if not cards:
+        return None, False
+
+    slots: list[Image.Image] = []
+    missing_any = False
+    for card in cards:
+        slot, missing = _pack_card_slot_image(card)
+        slots.append(slot)
+        missing_any = missing_any or missing
+
+    if not slots:
+        return None, missing_any
+
+    width = PACK_CARD_GAP + len(slots) * (PACK_CARD_WIDTH + PACK_CARD_GAP)
+    height = PACK_CARD_GAP * 2 + PACK_CARD_HEIGHT
+    canvas = Image.new("RGBA", (width, height), PACK_BACKGROUND)
+
+    for idx, slot in enumerate(slots):
+        x = PACK_CARD_GAP + idx * (PACK_CARD_WIDTH + PACK_CARD_GAP)
+        canvas.paste(slot, (x, PACK_CARD_GAP), slot)
+
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    suffix = f"_pack_{pack_index}" if pack_index is not None else ""
+    filename = f"{_slugify(pack_name + suffix) or 'pack'}_strip.png"
+    discord_file = discord.File(buffer, filename=filename)
+    return discord_file, missing_any
+
+_CARD_IMAGE_REPO_BASE = "https://raw.githubusercontent.com/jfitz33/space-mambot/main/images/card_images"
+
+def card_art_url_for_card(card: dict[str, Any]) -> Optional[str]:
+    """
+    Build the canonical GitHub raw URL for a card's art.
+
+    Falls back to slugifying the card name and appending `.jpg` if we can't
+    resolve a local file with a specific suffix.
+    """
+
+    path = card_art_path_for_card(card)
+    if path is not None:
+        filename = path.name
+    else:
+        name = (card.get("name") or card.get("cardname") or "").strip()
+        if not name:
+            return None
+        slug_name = _slugify(name)
+        if not slug_name:
+            return None
+        candidate = _card_images_dir() / f"{slug_name}.jpg"
+        if not candidate.exists():
+            return None
+        filename = candidate.name
+
+    return f"{_CARD_IMAGE_REPO_BASE}/{quote(filename)}"
 
 def test_card_thumbnail_file() -> Tuple[Optional[discord.File], Optional[str]]:
     """
