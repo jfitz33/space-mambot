@@ -11,6 +11,8 @@ from discord.ext import commands
 
 from core.constants import BOX_COST, PACK_COST
 from core.views import PacksSelectView
+from core.db import db_add_cards
+from core.packs import open_pack_with_guaranteed_top_from_csv
 
 # API and pack csv details
 YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -38,6 +40,20 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 MAX_PACKS = 10
 MIN_PACKS = 1
 PACKS_IN_BOX = 24
+
+async def ac_pack_name_choices(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    state = interaction.client.state
+    names = sorted((state.packs_index or {}).keys())
+    cur = (current or "").lower()
+    out: List[app_commands.Choice[str]] = []
+    for name in names:
+        if cur and cur not in name.lower():
+            continue
+        trimmed = name[:100]
+        out.append(app_commands.Choice(name=trimmed, value=trimmed))
+        if len(out) >= 25:
+            break
+    return out
 
 class Packs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -163,6 +179,72 @@ class Packs(commands.Cog):
             "Pick a pack set for your **box**:", view=view, ephemeral=True
         )
     
+    @app_commands.command(
+        name="quick_box",
+        description="Admin: instantly open a sealed box without rendering pack messages.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        pack_name="Pack set to open",
+        amount="How many boxes to open (1-10)",
+    )
+    @app_commands.autocomplete(pack_name=ac_pack_name_choices)
+    async def quick_box(
+        self,
+        interaction: discord.Interaction,
+        pack_name: str,
+        amount: app_commands.Range[int, 1, 10] = 1,
+    ):
+        state = self.bot.state
+        if not (state.packs_index or {}):
+            await interaction.response.send_message(
+                "No packs found. Load CSVs and /reload_data.",
+                ephemeral=True,
+            )
+            return
+
+        if pack_name not in state.packs_index:
+            await interaction.response.send_message(
+                "That pack set could not be found.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            per_pack: list[list[dict]] = []
+            for _ in range(amount):
+                for i in range(1, PACKS_IN_BOX + 1):
+                    top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
+                    per_pack.append(
+                        open_pack_with_guaranteed_top_from_csv(
+                            state, pack_name, top_rarity=top
+                        )
+                    )
+
+            flat = [card for pack in per_pack for card in pack]
+            db_add_cards(state, interaction.user.id, flat, pack_name)
+
+            quests_cog = interaction.client.get_cog("Quests")
+            if quests_cog:
+                await quests_cog.tick_pack_open(
+                    user_id=interaction.user.id,
+                    amount=PACKS_IN_BOX * amount,
+                )
+        except Exception:
+            await interaction.followup.send(
+                "⚠️ Something went wrong opening those quick boxes.",
+                ephemeral=True,
+            )
+            raise
+
+        suffix = "box" if amount == 1 else "boxes"
+        await interaction.followup.send(
+            f"Opened {amount} quick {suffix} of {pack_name}, check your collection to see the results",
+            ephemeral=True,
+        )
+
     @app_commands.command(
         name="cardpool_import",
         description="Import cards from a YDK file into a pack CSV",

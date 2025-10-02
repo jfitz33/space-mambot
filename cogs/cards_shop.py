@@ -488,7 +488,7 @@ class CardsShop(commands.Cog):
 
             keep_shown = min(int(row["qty"]), keep_floor)
             preview_lines.append(
-                f"• x{qty_to_frag} {shorten(row['name'], 64)} — {qty_to_frag * yield_each} {pretty}{boost} (keep {keep_shown})"
+                f"• x{qty_to_frag} {shorten(row['name'], 64)} (keep {keep_shown})"
             )
 
             enriched_rows.append({**row, "yield_each": int(yield_each)})
