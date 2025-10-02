@@ -1315,6 +1315,10 @@ def db_fragment_yield_for_card(state, card: dict, set_name: str) -> tuple[int, O
     Returns (yield_each, override_row_or_None).
     """
     from core.constants import SHARD_YIELD_BY_RARITY  # your canonical map
+    from core.cards_shop import is_starter_set
+
+    if is_starter_set(set_name):
+        return (0, None)
     rarity = (card.get("rarity") or card.get("cardrarity") or "").strip().lower()
     if rarity == "starlight":
         return (0, None)  # not fragmentable

@@ -11,6 +11,8 @@ from core.cards_shop import (
     card_label,
     get_card_rarity,
     register_print_if_missing,
+    is_starter_card,
+    is_starter_set,
 )
 from core.constants import (
     CRAFT_COST_BY_RARITY, SHARD_YIELD_BY_RARITY, set_id_for_pack, 
@@ -48,6 +50,8 @@ def suggest_prints_with_set(state, query: str, limit: int = 25):
         hay = f"{name} {set_} {rarity} {code} {cid}".lower()
         if q_tokens and not all(t in hay for t in q_tokens):
             continue
+        if is_starter_set(set_):
+            continue
         sig = _sig_for_resolution(name, rarity, code, cid)
 
         # scoring: prefer has_set, then has_code, then has_id
@@ -61,6 +65,8 @@ def suggest_prints_with_set(state, query: str, limit: int = 25):
     for _, k, card in best_by_sig.values():
         set_present = (card.get("set") or card.get("cardset") or "").strip()
         if not set_present:
+            continue
+        if is_starter_set(set_present):
             continue
         out.append(app_commands.Choice(name=card_label(card), value=k))
         if len(out) >= limit:
@@ -102,6 +108,8 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
         hay = f"{name} {set_} {rty} {code} {cid}".lower()
         if tokens and not all(t in hay for t in tokens):
             continue
+        if is_starter_set(set_):
+            continue
 
         # Build/lookup a proper print key for this owned row
         print_key = register_print_if_missing(state, {
@@ -117,6 +125,8 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
 
         card = find_card_by_print_key(state, print_key)
         if not card:
+            continue
+        if is_starter_card(card):
             continue
 
         label = card_label(card)
@@ -357,6 +367,8 @@ class CardsShop(commands.Cog):
         set_present = (c.get("set") or c.get("cardset") or "").strip()
         if not set_present:
             return await interaction.response.send_message("This printing is missing a set and can’t be crafted.", ephemeral=True)
+        if is_starter_set(set_present):
+            return await interaction.response.send_message("❌ Starter deck cards cannot be crafted.", ephemeral=True)
 
         rarity = get_card_rarity(c)
         price_each, sale_row = craft_cost_for_card(self.state, c, set_present)
@@ -398,6 +410,8 @@ class CardsShop(commands.Cog):
         set_present = (c.get("set") or c.get("cardset") or "").strip()
         if not set_present:
             return await interaction.response.send_message("This printing is missing a set and can’t be fragmented.", ephemeral=True)
+        if is_starter_set(set_present):
+            return await interaction.response.send_message("❌ Starter deck cards cannot be fragmented.", ephemeral=True)
 
         rarity = get_card_rarity(c)
         #price_each = SHARD_YIELD_BY_RARITY.get(rarity)

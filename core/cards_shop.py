@@ -4,6 +4,10 @@ from typing import Dict, Optional, Iterable, Tuple
 
 import requests
 
+from core.constants import STARTER_DECK_SET_NAMES
+
+_STARTER_SET_LOOKUP = {name.strip().lower() for name in STARTER_DECK_SET_NAMES}
+
 YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
 
 # Canonicalize rarities (keep starlight distinct)
@@ -238,6 +242,15 @@ def resolve_card_set(state, card: dict) -> Optional[str]:
 
 def get_card_rarity(card: dict) -> str:
     return canonicalize_rarity(card.get("rarity") or card.get("cardrarity") or "")
+
+def card_set_name(card: dict) -> str:
+    return (card.get("set") or card.get("cardset") or "").strip()
+
+def is_starter_set(set_name: str) -> bool:
+    return (set_name or "").strip().lower() in _STARTER_SET_LOOKUP
+
+def is_starter_card(card: dict) -> bool:
+    return is_starter_set(card_set_name(card))
 
 def card_label(card: dict) -> str:
     """Human-friendly label for UI."""

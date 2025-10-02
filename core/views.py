@@ -251,7 +251,14 @@ class ConfirmBuyCardView(discord.ui.View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
-        from core.cards_shop import find_card_by_print_key, card_label, get_card_rarity, resolve_card_set
+        from core.cards_shop import (
+            find_card_by_print_key,
+            card_label,
+            get_card_rarity,
+            resolve_card_set,
+            is_starter_card,
+            is_starter_set,
+        )
         from core.db import db_add_cards, db_shards_get, db_shards_add
         from core.constants import CRAFT_COST_BY_RARITY, set_id_for_pack
         from core.currency import shard_set_name
@@ -276,6 +283,10 @@ class ConfirmBuyCardView(discord.ui.View):
         if not card:
             self._processing = False
             return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+        
+        if is_starter_card(card):
+            self._processing = False
+            return await interaction.followup.send("❌ Starter deck cards cannot be crafted.", ephemeral=True)
 
         set_name = resolve_card_set(self.state, card)
         if not set_name:
@@ -284,6 +295,10 @@ class ConfirmBuyCardView(discord.ui.View):
                 "⚠️ This printing is missing a card set in the data, so it can’t be crafted.",
                 ephemeral=True
             )
+        
+        if is_starter_set(set_name):
+            self._processing = False
+            return await interaction.followup.send("❌ Starter deck cards cannot be crafted.", ephemeral=True)
 
         cost_each, sale_row = craft_cost_for_card(self.state, card, set_name)
         if cost_each <= 0:
@@ -359,7 +374,14 @@ class ConfirmSellCardView(discord.ui.View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
-        from core.cards_shop import find_card_by_print_key, card_label, get_card_rarity, resolve_card_set
+        from core.cards_shop import (
+            find_card_by_print_key,
+            card_label,
+            get_card_rarity,
+            resolve_card_set,
+            is_starter_card,
+            is_starter_set,
+        )
         from core.db import db_collection_remove_exact_print, db_shards_add, db_shards_get
         from core.constants import SHARD_YIELD_BY_RARITY, set_id_for_pack
         from core.currency import shard_set_name
@@ -384,6 +406,10 @@ class ConfirmSellCardView(discord.ui.View):
         if not card:
             self._processing = False
             return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+        
+        if is_starter_card(card):
+            self._processing = False
+            return await interaction.followup.send("❌ Starter deck cards cannot be fragmented.", ephemeral=True)
 
         set_name = resolve_card_set(self.state, card)
         if not set_name:
@@ -392,6 +418,10 @@ class ConfirmSellCardView(discord.ui.View):
                 "⚠️ This printing is missing a card set in the data, so it can’t be fragmented.",
                 ephemeral=True
             )
+        
+        if is_starter_set(set_name):
+            self._processing = False
+            return await interaction.followup.send("❌ Starter deck cards cannot be fragmented.", ephemeral=True)
 
         rarity = (get_card_rarity(card) or "").lower()
         yield_each, ov = db_fragment_yield_for_card(self.state, card, set_name)

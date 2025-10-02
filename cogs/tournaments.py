@@ -3,14 +3,20 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import logging
 import os
+import re
 import struct
+from pprint import pformat
+from urllib.parse import urlencode, urlparse
 from collections import Counter
 from dataclasses import dataclass
+from html import unescape
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+import requests
 
 from core.banlist import load_banlist
 from core.cards_shop import fetch_card_details_by_id, find_card_name_by_id
@@ -170,6 +176,296 @@ class Tournaments(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state: AppState = bot.state
+        self.logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _summarize_error(detail: str, *, max_length: int = 400) -> str:
+        cleaned = detail.strip()
+        if not cleaned:
+            return "No additional details provided."
+
+        lowered = cleaned.lower()
+        summary = cleaned
+
+        if "<html" in lowered or "<!doctype" in lowered:
+            title_match = re.search(r"<title>(.*?)</title>", cleaned, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                summary = unescape(re.sub(r"\s+", " ", title_match.group(1)).strip())
+            else:
+                without_tags = re.sub(r"<[^>]+>", " ", cleaned)
+                summary = re.sub(r"\s+", " ", without_tags).strip()
+        else:
+            summary = re.sub(r"\s+", " ", cleaned)
+
+        if len(summary) > max_length:
+            summary = summary[: max_length - 1] + "…"
+
+        return summary
+
+    def _get_challonge_credentials(self) -> tuple[str, str]:
+        username = os.getenv("CHALLONGE_USERNAME")
+        api_key = os.getenv("CHALLONGE_API_KEY")
+        if not username or not api_key:
+            raise RuntimeError(
+                "Challonge credentials are not configured. Please set both "
+                "CHALLONGE_USERNAME and CHALLONGE_API_KEY environment variables."
+            )
+        return username, api_key
+
+    async def _challonge_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+    ) -> dict:
+        username, api_key = self._get_challonge_credentials()
+        base_url = os.getenv("CHALLONGE_API_BASE", "https://api.challonge.com/v1")
+        url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+        parsed_url = urlparse(url)
+        headers = {
+            "Accept": "application/json",
+            "Host": parsed_url.netloc,
+        }
+
+        def _do_request() -> dict:
+            request_headers = dict(headers)
+            encoded_body: bytes
+            if data is not None:
+                encoded_body = urlencode(data).encode("utf-8")
+                request_headers["Content-Length"] = str(len(encoded_body))
+                request_headers.setdefault(
+                    "Content-Type", "application/x-www-form-urlencoded"
+                )
+            else:
+                encoded_body = b""
+                request_headers["Content-Length"] = "0"
+
+            request = requests.Request(
+                method,
+                url,
+                headers=request_headers,
+                data=encoded_body,
+                auth=(username, api_key),
+            )
+            prepared = request.prepare()
+
+            if self.logger.isEnabledFor(logging.DEBUG):
+                prepared_headers = dict(prepared.headers)
+                body_payload = prepared.body
+                if isinstance(body_payload, bytes):
+                    body_text = body_payload.decode("utf-8", "replace")
+                else:
+                    body_text = str(body_payload) if body_payload is not None else ""
+                self.logger.debug(
+                    "Challonge request prepared:\nURL: %s\nMethod: %s\nHeaders: %s\nBody: %s",
+                    prepared.url,
+                    prepared.method,
+                    pformat(prepared_headers),
+                    body_text,
+                )
+
+            with requests.Session() as session:
+                response = session.send(prepared, timeout=30)
+            response.raise_for_status()
+            if not response.content:
+                return {}
+            try:
+                return response.json()
+            except ValueError:
+                return {"raw": response.text}
+
+        try:
+            return await asyncio.to_thread(_do_request)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            detail = exc.response.text if exc.response is not None else str(exc)
+            summary = self._summarize_error(detail)
+
+            if exc.response is not None:
+                self.logger.debug(
+                    "Challonge API HTTPError (%s %s): status=%s, payload_length=%d",
+                    method,
+                    url,
+                    status,
+                    len(exc.response.text or ""),
+                )
+
+            raise RuntimeError(
+                f"Challonge API request failed with status {status}: {summary}"
+            ) from exc
+        except requests.RequestException as exc:
+            summary = self._summarize_error(str(exc))
+            raise RuntimeError(f"Challonge request failed: {summary}") from exc
+
+    async def _create_challonge_tournament(
+        self,
+        *,
+        name: str,
+        tournament_type: str,
+        url_slug: str | None = None,
+    ) -> dict:
+        payload = {
+            "tournament[name]": name,
+            "tournament[tournament_type]": tournament_type,
+        }
+        if url_slug:
+            payload["tournament[url]"] = url_slug
+        response = await self._challonge_request("POST", "/tournaments.json", data=payload)
+        return response.get("tournament", response)
+
+    async def _create_challonge_participant(
+        self,
+        tournament_id: str,
+        *,
+        name: str,
+        discord_id: int | None = None,
+    ) -> dict:
+        payload = {
+            "participant[name]": name,
+        }
+        if discord_id is not None:
+            payload["participant[misc]"] = str(discord_id)
+        response = await self._challonge_request(
+            "POST",
+            f"/tournaments/{tournament_id}/participants.json",
+            data=payload,
+        )
+        return response.get("participant", response)
+
+    @app_commands.command(
+        name="challonge_create",
+        description="Create a Challonge tournament in the configured organization.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        name="Name that will be shown on Challonge",
+        format="Tournament format",
+        url_slug="Optional URL slug. Only letters, numbers, and underscores.",
+    )
+    @app_commands.choices(
+        format=[
+            app_commands.Choice(name="Single Elimination", value="single elimination"),
+            app_commands.Choice(name="Double Elimination", value="double elimination"),
+            app_commands.Choice(name="Swiss", value="swiss"),
+        ]
+    )
+    async def challonge_create(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        format: app_commands.Choice[str],
+        url_slug: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            tournament = await self._create_challonge_tournament(
+                name=name,
+                tournament_type=format.value,
+                url_slug=url_slug,
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(f"Failed to create tournament: {exc}", ephemeral=True)
+            return
+
+        url = tournament.get("full_challonge_url") or tournament.get("url")
+        identifier = tournament.get("id") or url_slug or tournament.get("slug")
+        parts = [f"Created Challonge tournament **{tournament.get('name', name)}**."]
+        if identifier:
+            parts.append(f"Identifier: `{identifier}`")
+        if url:
+            parts.append(f"URL: {url}")
+        await interaction.followup.send("\n".join(parts), ephemeral=True)
+
+    @app_commands.command(
+        name="challonge_add_participant",
+        description="Register a Discord member into a Challonge tournament.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        tournament_id="The Challonge tournament identifier (slug or ID).",
+        member="Discord member to register.",
+    )
+    async def challonge_add_participant(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        member: discord.Member,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            participant = await self._create_challonge_participant(
+                tournament_id,
+                name=member.display_name,
+                discord_id=member.id,
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(f"Failed to add participant: {exc}", ephemeral=True)
+            return
+
+        display_name = participant.get("name") or member.display_name
+        await interaction.followup.send(
+            f"Added **{display_name}** to Challonge tournament `{tournament_id}`.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="challonge_add_role",
+        description="Register every non-bot member of a Discord role to a Challonge tournament.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        tournament_id="The Challonge tournament identifier (slug or ID).",
+        role="Role whose members should be registered.",
+    )
+    async def challonge_add_role(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        role: discord.Role,
+    ) -> None:
+        members = [member for member in role.members if not member.bot]
+        if not members:
+            await interaction.response.send_message(
+                "That role has no eligible members to register.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        successes: list[str] = []
+        failures: list[str] = []
+
+        for member in members:
+            try:
+                participant = await self._create_challonge_participant(
+                    tournament_id,
+                    name=member.display_name,
+                    discord_id=member.id,
+                )
+            except RuntimeError as exc:
+                failures.append(f"{member.display_name}: {exc}")
+                continue
+
+            successes.append(participant.get("name") or member.display_name)
+
+        message_lines = [
+            f"Registered {len(successes)} member(s) from {role.mention} to `{tournament_id}`.",
+        ]
+        if failures:
+            message_lines.append("Some members could not be registered:")
+            for failure in failures[:10]:
+                message_lines.append(f"- {failure}")
+            if len(failures) > 10:
+                message_lines.append(
+                    f"...and {len(failures) - 10} more failure(s). Check the logs for details."
+                )
+
+        await interaction.followup.send("\n".join(message_lines), ephemeral=True)
 
     async def _fetch_card_details(self, card_ids: list[str]) -> dict[str, dict[str, str]]:
         numeric_ids = []

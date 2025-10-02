@@ -1,6 +1,7 @@
 # bot.py
 import os, asyncio
 import discord
+import logging
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
@@ -17,6 +18,13 @@ from core.cards_shop import ensure_shop_index
 from core.images import ensure_rarity_emojis
 from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_example_quests, db_seed_quests_from_json
+
+
+logging.basicConfig(
+    level=logging.INFO,  # keep most modules at INFO
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logging.getLogger("cogs.tournaments").setLevel(logging.DEBUG)
 
 load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")

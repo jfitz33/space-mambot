@@ -21,6 +21,12 @@ RARITY_ALIASES = {
 }
 FRAGMENTABLE_RARITIES = ["common", "rare", "super", "ultra", "secret"]
 
+# Starter deck card sets are excluded from crafting/fragmenting.
+STARTER_DECK_SET_NAMES = {
+    "Cult of the Mambo",
+    "Hellfire Heretics",
+}
+
 # Which packs belong to which Set (uppercase pack names)
 PACKS_BY_SET = {
     1: {"FIRE", "WATER"},  # Set 1 → Elemental Shards
