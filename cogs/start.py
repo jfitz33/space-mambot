@@ -6,7 +6,12 @@ from discord import app_commands
 
 from core.state import AppState
 from core.starters import load_starters_from_csv, grant_starter_to_user
-from core.packs import open_pack_from_csv, persist_pulls_to_db, RARITY_ORDER  # reuse your pack code  :contentReference[oaicite:4]{index=4}
+from core.packs import (
+    open_pack_from_csv,
+    open_pack_with_guaranteed_top_from_csv,
+    persist_pulls_to_db,
+    RARITY_ORDER,
+)
 from core.views import _pack_embed_for_cards  
 from core.db import db_wallet_add, db_add_cards
 from core.images import ensure_rarity_emojis
@@ -103,16 +108,21 @@ class StarterDeckSelectView(View):
         else:
             await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
 
-        # 2) Open 3 packs
+        # 2) Open starter packs with guaranteed rarity progression
         pack_name = STARTER_TO_PACK.get(deck_name, deck_name)
 
         # How many packs to open as part of /start
-        START_PACKS = 3
+        START_PACKS = 12
+        guaranteed_tops = ["super"] * 8 + ["ultra"] * 3 + ["secret"]
 
         # (A) Open packs in memory
         per_pack: list[list[dict]] = []
-        for _ in range(START_PACKS):
-            per_pack.append(open_pack_from_csv(self.state, pack_name, 1))  # pack_name = the pack you want for /start
+        for top_rarity in guaranteed_tops:
+            try:
+                cards = open_pack_with_guaranteed_top_from_csv(self.state, pack_name, top_rarity)
+            except ValueError:
+                cards = open_pack_from_csv(self.state, pack_name, 1)
+            per_pack.append(cards)  # pack_name = the pack you want for /start
 
         # (B) Persist pulled cards to the player's collection
         flat = [c for cards in per_pack for c in cards]
@@ -166,14 +176,6 @@ class StarterDeckSelectView(View):
         delta_mb = 100 - cur_mb
         if delta_mb != 0:
             credit_mambucks(self.state, self.member.id, delta_mb)
-
-        # --- Set shards to exactly 300 for each known set ---
-        set_ids = sorted(PACKS_BY_SET.keys()) or [1]  # default to Set 1 if mapping empty
-        for sid in set_ids:
-            cur_sh = get_shards(self.state, self.member.id, sid)
-            delta_sh = 300 - cur_sh
-            if delta_sh != 0:
-                add_shards(self.state, self.member.id, sid, delta_sh)
 
         # 5) Assign the 'starter' role only after success
         try:

@@ -37,7 +37,7 @@ CSV_FIELDS = [
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
-MAX_PACKS = 10
+MAX_PACKS = 100
 MIN_PACKS = 1
 PACKS_IN_BOX = 24
 
@@ -161,7 +161,7 @@ class Packs(commands.Cog):
 
     @app_commands.command(name="pack", description="Open packs via dropdown")
     @app_commands.guilds(GUILD)
-    @app_commands.describe(amount="How many packs (1-10)")
+    @app_commands.describe(amount="How many packs (1-100)")
     async def pack(self, interaction: discord.Interaction, amount: app_commands.Range[int,MIN_PACKS,MAX_PACKS]=1):
         if not self.bot.state.packs_index:
             await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
