@@ -2,6 +2,7 @@ import os, csv, random
 from collections import defaultdict
 from core.state import AppState
 from core.db import db_add_cards
+from core.constants import PACKS_IN_BOX
 from typing import List, Dict
 
 RARITY_MAP = {
@@ -61,6 +62,16 @@ def open_pack_with_guaranteed_top_from_csv(state, pack_name: str, top_rarity: st
     pulls.append(random.choice(by_rarity[top_rarity]))
 
     return pulls
+
+def open_box_from_csv(state, pack_name: str) -> list[list[dict]]:
+    """Open a full box (PACKS_IN_BOX packs) for the given pack name."""
+    per_pack: list[list[dict]] = []
+    for i in range(1, PACKS_IN_BOX + 1):
+        top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
+        per_pack.append(
+            open_pack_with_guaranteed_top_from_csv(state, pack_name, top_rarity=top)
+        )
+    return per_pack
 
 def normalize_rarity(s: str) -> str:
     return RARITY_MAP.get((s or "").strip().lower(), "rare")

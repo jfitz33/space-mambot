@@ -1,6 +1,8 @@
 PACK_COST=10
 BOX_COST=200
 PACKS_IN_BOX=24
+NEMESES_BUNDLE_COST=350
+NEMESES_BUNDLE_NAME="Nemeses Bundle"
 SALE_DISCOUNT_PCT=10
 
 # Daily sale layout: (rarity, number of entries)

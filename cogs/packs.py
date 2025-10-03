@@ -9,10 +9,15 @@ import requests
 from discord import app_commands
 from discord.ext import commands
 
-from core.constants import BOX_COST, PACK_COST
+from core.constants import (
+    BOX_COST,
+    PACK_COST,
+    PACKS_IN_BOX,
+    NEMESES_BUNDLE_NAME,
+)
 from core.views import PacksSelectView
 from core.db import db_add_cards
-from core.packs import open_pack_with_guaranteed_top_from_csv
+from core.packs import open_box_from_csv
 
 # API and pack csv details
 YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -39,11 +44,14 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 MAX_PACKS = 100
 MIN_PACKS = 1
-PACKS_IN_BOX = 24
 
 async def ac_pack_name_choices(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     state = interaction.client.state
     names = sorted((state.packs_index or {}).keys())
+    bundle_name = NEMESES_BUNDLE_NAME
+    lowered = bundle_name.lower()
+    if bundle_name and all(name.lower() != lowered for name in names):
+        names.insert(0, bundle_name)
     cur = (current or "").lower()
     out: List[app_commands.Choice[str]] = []
     for name in names:
@@ -168,7 +176,7 @@ class Packs(commands.Cog):
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)
         await interaction.response.send_message("Pick a pack from the dropdown:", view=view, ephemeral=True)
 
-    @app_commands.command(name="box", description=f"Open a sealed box (24 packs; costs **{BOX_COST}** mambucks).")
+    @app_commands.command(name="box", description=f"Open a sealed box or box bundle.")
     @app_commands.guilds(GUILD)
     async def box(self, interaction: discord.Interaction):
         import inspect
@@ -204,34 +212,53 @@ class Packs(commands.Cog):
             )
             return
 
-        if pack_name not in state.packs_index:
+        normalized_input = (pack_name or "").strip()
+        is_bundle = normalized_input.lower() == NEMESES_BUNDLE_NAME.lower()
+        if not is_bundle and pack_name not in state.packs_index:
             await interaction.response.send_message(
                 "That pack set could not be found.", ephemeral=True
+            )
+            return
+
+        if is_bundle and not state.packs_index:
+            await interaction.response.send_message(
+                "No packs available for the Nemeses Bundle.",
+                ephemeral=True,
             )
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            per_pack: list[list[dict]] = []
-            for _ in range(amount):
-                for i in range(1, PACKS_IN_BOX + 1):
-                    top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
-                    per_pack.append(
-                        open_pack_with_guaranteed_top_from_csv(
-                            state, pack_name, top_rarity=top
-                        )
-                    )
-
-            flat = [card for pack in per_pack for card in pack]
-            db_add_cards(state, interaction.user.id, flat, pack_name)
-
             quests_cog = interaction.client.get_cog("Quests")
-            if quests_cog:
-                await quests_cog.tick_pack_open(
-                    user_id=interaction.user.id,
-                    amount=PACKS_IN_BOX * amount,
-                )
+            if is_bundle:
+                pack_names = sorted(state.packs_index.keys())
+                total_packs_opened = 0
+                for _ in range(amount):
+                    for bundle_pack in pack_names:
+                        per_pack = open_box_from_csv(state, bundle_pack)
+                        total_packs_opened += len(per_pack)
+                        flat = [card for pack in per_pack for card in pack]
+                        db_add_cards(state, interaction.user.id, flat, bundle_pack)
+
+                if quests_cog:
+                    await quests_cog.tick_pack_open(
+                        user_id=interaction.user.id,
+                        amount=total_packs_opened,
+                    )
+            else:
+                per_pack: list[list[dict]] = []
+                for _ in range(amount):
+                    per_pack.extend(open_box_from_csv(state, pack_name))
+
+                flat = [card for pack in per_pack for card in pack]
+                db_add_cards(state, interaction.user.id, flat, pack_name)
+
+                if quests_cog:
+                    await quests_cog.tick_pack_open(
+                        user_id=interaction.user.id,
+                        amount=PACKS_IN_BOX * amount,
+                    )
         except Exception:
             await interaction.followup.send(
                 "⚠️ Something went wrong opening those quick boxes.",
@@ -239,11 +266,20 @@ class Packs(commands.Cog):
             )
             raise
 
-        suffix = "box" if amount == 1 else "boxes"
-        await interaction.followup.send(
-            f"Opened {amount} quick {suffix} of {pack_name}, check your collection to see the results",
-            ephemeral=True,
-        )
+        if is_bundle:
+            bundle_suffix = "bundle" if amount == 1 else "bundles"
+            pack_list = ", ".join(sorted(state.packs_index.keys()))
+            await interaction.followup.send(
+                f"Opened {amount} quick Nemeses {bundle_suffix}."
+                f" Each bundle includes one box of: {pack_list}.",
+                ephemeral=True,
+            )
+        else:
+            suffix = "box" if amount == 1 else "boxes"
+            await interaction.followup.send(
+                f"Opened {amount} quick {suffix} of {pack_name}, check your collection to see the results",
+                ephemeral=True,
+            )
 
     @app_commands.command(
         name="cardpool_import",

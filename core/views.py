@@ -3,19 +3,24 @@ from collections import Counter
 
 import discord, asyncio
 from discord.ui import View, Select, button, Button
-from core.packs import RARITY_ORDER, open_pack_from_csv, open_pack_with_guaranteed_top_from_csv, normalize_rarity
-from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks, 
-                     db_collection_remove_exact_print, _blank_to_none, 
+from core.packs import RARITY_ORDER, open_pack_from_csv, open_box_from_csv, normalize_rarity
+from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks,
+                     db_collection_remove_exact_print, _blank_to_none,
                      db_collection_debug_dump, db_shards_add, db_fragment_yield_for_card)
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.pricing import craft_cost_for_card
 from core.images import compose_pack_strip_image, rarity_badge
+from core.constants import (
+    PACK_COST,
+    PACKS_IN_BOX,
+    BOX_COST,
+    NEMESES_BUNDLE_COST,
+    NEMESES_BUNDLE_NAME,
+)
 from typing import List, Tuple, Optional, Literal
 
-PACK_COST = 10
-PACKS_IN_BOX = 24
-BOX_COST = 200
 ORDER = {r: i for i, r in enumerate(RARITY_ORDER)}
+BUNDLE_OPTION_VALUE = "__nemeses_bundle__"
 
 def _rank(r: str) -> int:
     try: return RARITY_ORDER.index((r or "").lower())
@@ -55,10 +60,19 @@ def format_collection_lines(rows):
         lines.append(f"**{name}** — x{qty}{tail}")
     return lines
 
-def _build_pack_options(state) -> List[discord.SelectOption]:
+def _build_pack_options(state, *, include_bundle: bool = False) -> List[discord.SelectOption]:
     opts: List[discord.SelectOption] = []
+    packs_index = state.packs_index or {}
+    if include_bundle and packs_index:
+        opts.append(
+            discord.SelectOption(
+                label=NEMESES_BUNDLE_NAME,
+                value=BUNDLE_OPTION_VALUE,
+                description="One box each of Blazing Genesis and Storm of the Abyss",
+            )
+        )
     # assume state.packs_index = { pack_key: {"display_name": "...", "desc": "...", ...}, ... }
-    for key, meta in state.packs_index.items():
+    for key, meta in packs_index.items():
         label = (meta.get("display_name") or key)[:100]
         desc = (meta.get("desc") or meta.get("description") or "")[:100] or None
         opts.append(discord.SelectOption(label=label, value=key, description=desc))
@@ -134,7 +148,7 @@ def _pack_embed_for_cards(
 class PacksDropdown(discord.ui.Select):
     def __init__(self, parent_view: "PacksSelectView"):
         self.parent_view = parent_view
-        options = _build_pack_options(parent_view.state)
+        options = _build_pack_options(parent_view.state, include_bundle=parent_view.include_bundle)
         super().__init__(
             placeholder="Choose a pack…",
             min_values=1,
@@ -152,7 +166,18 @@ class PacksDropdown(discord.ui.Select):
         await self.parent_view._handle_pack_choice(interaction, value)
 
 class ConfirmSpendView(discord.ui.View):
-    def __init__(self, state, requester, pack_name, amount, on_confirm, total_cost: int | None = None, *, timeout: float = 90):
+    def __init__(
+        self,
+        state,
+        requester,
+        pack_name,
+        amount,
+        on_confirm,
+        total_cost: int | None = None,
+        *,
+        timeout: float = 90,
+        display_description: str | None = None,
+    ):
         super().__init__(timeout=timeout)
         self.state = state
         self.requester = requester
@@ -160,6 +185,7 @@ class ConfirmSpendView(discord.ui.View):
         self.amount = amount
         self.on_confirm = on_confirm
         self.total_cost = total_cost
+        self.display_description = display_description
         self._processing = False
 
     async def remove_ui(self, interaction: discord.Interaction, content: str | None = None):
@@ -202,8 +228,9 @@ class ConfirmSpendView(discord.ui.View):
         after_spend = db_wallet_try_spend_mambucks(self.state, self.requester.id, total_cost)
         if after_spend is None:
             self._processing = False
+            desc = self.display_description or f"**{self.amount}** pack(s) of **{self.pack_name}**"
             return await interaction.followup.send(
-                f"❌ Not enough **Mambucks** to open **{self.amount}** pack(s) of **{self.pack_name}**.\n"
+                f"❌ Not enough **Mambucks** to open {desc}.\n"
                 f"Cost: **{total_cost}**.",
                 ephemeral=True
             )
@@ -767,9 +794,50 @@ class PacksSelectView(discord.ui.View):
         self.requester = requester
         self.amount = amount
         self.mode = mode
+        self.include_bundle = mode == "box"
         self.add_item(PacksDropdown(self))
 
     async def _handle_pack_choice(self, interaction: discord.Interaction, pack_name: str):
+        if pack_name == BUNDLE_OPTION_VALUE:
+            if not self.include_bundle:
+                await interaction.response.send_message(
+                    "The Nemeses Bundle is only available when opening boxes.",
+                    ephemeral=True,
+                )
+                return
+
+            bundle_pack_names = sorted((self.state.packs_index or {}).keys())
+            if not bundle_pack_names:
+                await interaction.response.send_message(
+                    "No packs are available for the Nemeses Bundle.",
+                    ephemeral=True,
+                )
+                return
+
+            preview_names = ", ".join(bundle_pack_names[:10])
+            if len(bundle_pack_names) > 10:
+                preview_names += ", …"
+
+            confirm_view = ConfirmSpendView(
+                state=self.state,
+                requester=self.requester,
+                pack_name=NEMESES_BUNDLE_NAME,
+                amount=1,
+                on_confirm=self._open_nemeses_bundle,
+                total_cost=NEMESES_BUNDLE_COST,
+                display_description="**the Nemeses Bundle**",
+            )
+
+            message = (
+                f"Open the **{NEMESES_BUNDLE_NAME}** for **{NEMESES_BUNDLE_COST}** Mambucks?\n"
+                f"This grants one box ({PACKS_IN_BOX} packs) of each available pack ({len(bundle_pack_names)} total)."
+            )
+            if preview_names:
+                message += f"\nIncludes: {preview_names}"
+
+            await interaction.response.edit_message(content=message, view=confirm_view)
+            return
+
         if self.mode == "box":
             confirm_view = ConfirmSpendView(
                 state=self.state,
@@ -876,11 +944,7 @@ class PacksSelectView(discord.ui.View):
         amount: int | None = None,   # not used; ConfirmSpendView passes PACKS_IN_BOX in .amount
     ):
         # ConfirmSpendView has already charged Mambucks and will refund on exceptions.
-        per_pack: list[list[dict]] = []
-        # 24 packs with your guaranteed top-rarity distribution
-        for i in range(1, PACKS_IN_BOX + 1):
-            top = "super" if i <= 18 else ("ultra" if i <= 23 else "secret")
-            per_pack.append(open_pack_with_guaranteed_top_from_csv(state, pack_name, top_rarity=top))
+        per_pack = open_box_from_csv(state, pack_name)
 
         # persist the cards
         flat = [c for pack in per_pack for c in pack]
@@ -932,6 +996,92 @@ class PacksSelectView(discord.ui.View):
                     send_kwargs["files"] = files
                 await dm.send(**send_kwargs)
                 await asyncio.sleep(0.25)
+
+    async def _open_nemeses_bundle(
+        self,
+        interaction: discord.Interaction,
+        state,
+        requester,
+        pack_name: str,
+        amount: int | None = None,
+    ):
+        bundle_pack_names = sorted((state.packs_index or {}).keys())
+        per_pack_results: list[tuple[str, list[list[dict]]]] = []
+        total_packs_opened = 0
+
+        for bundle_pack in bundle_pack_names:
+            per_pack = open_box_from_csv(state, bundle_pack)
+            per_pack_results.append((bundle_pack, per_pack))
+            total_packs_opened += len(per_pack)
+            flat = [card for pack_cards in per_pack for card in pack_cards]
+            db_add_cards(state, requester.id, flat, bundle_pack)
+
+        dm_sent = False
+        try:
+            dm = await requester.create_dm()
+            for bundle_pack, per_pack in per_pack_results:
+                for i, cards in enumerate(per_pack, start=1):
+                    content, embeds, files = _pack_embed_for_cards(
+                        interaction.client,
+                        bundle_pack,
+                        cards,
+                        i,
+                        len(per_pack),
+                    )
+                    send_kwargs: dict = {"embeds": embeds}
+                    if content:
+                        send_kwargs["content"] = content
+                    if files:
+                        send_kwargs["files"] = files
+                    await dm.send(**send_kwargs)
+                    await asyncio.sleep(0.25)
+            dm_sent = True
+        except Exception:
+            dm_sent = False
+
+        try:
+            await interaction.edit_original_response(content=None, view=None)
+        except Exception:
+            pass
+
+        quests_cog = interaction.client.get_cog("Quests")
+        if quests_cog:
+            await quests_cog.tick_pack_open(
+                user_id=interaction.user.id,
+                amount=total_packs_opened,
+            )
+
+        pack_list = ", ".join(bundle_pack_names)
+        pack_count = len(bundle_pack_names)
+        pack_word = "pack" if pack_count == 1 else "packs"
+        summary = (
+            f"{requester.mention} opened the **{NEMESES_BUNDLE_NAME}** "
+            f"(one box each of {pack_count} {pack_word})."
+            f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
+        )
+        if pack_list:
+            summary += f"\nIncludes: {pack_list}"
+
+        if interaction.channel:
+            await interaction.channel.send(summary)
+
+        if not dm_sent and interaction.channel:
+            for bundle_pack, per_pack in per_pack_results:
+                for i, cards in enumerate(per_pack, start=1):
+                    content, embeds, files = _pack_embed_for_cards(
+                        interaction.client,
+                        bundle_pack,
+                        cards,
+                        i,
+                        len(per_pack),
+                    )
+                    send_kwargs: dict = {"embeds": embeds}
+                    if content:
+                        send_kwargs["content"] = content
+                    if files:
+                        send_kwargs["files"] = files
+                    await interaction.channel.send(**send_kwargs)
+                    await asyncio.sleep(0.25)
 
 class CollectionPaginator(View):
     def __init__(self, requester: discord.User, target: discord.User, rows: List[Tuple[str,int,str,str,str,str]], page_size: int = 20, timeout: float = 180):
