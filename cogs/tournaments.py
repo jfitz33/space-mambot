@@ -27,6 +27,7 @@ from core.state import AppState
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
+ACTIVE_TOURNAMENT_STATES = {"pending", "checking_in", "checked_in", "underway"}
 
 def _normalize_card_id(value: str | int | None) -> str | None:
     if value is None:
@@ -333,9 +334,79 @@ class Tournaments(commands.Cog):
             data=payload,
         )
         return response.get("participant", response)
+    
+    async def _fetch_active_tournaments(self) -> list[dict]:
+        response = await self._challonge_request("GET", "/tournaments.json")
+
+        if isinstance(response, list):
+            raw_entries = response
+        elif isinstance(response, dict):
+            potential = response.get("tournaments") or response.get("data") or []
+            raw_entries = potential if isinstance(potential, list) else []
+        else:
+            raw_entries = []
+
+        tournaments: list[dict] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+            tournament = entry.get("tournament")
+            if isinstance(tournament, dict):
+                candidate = tournament
+            else:
+                candidate = entry
+            archived_flag = candidate.get("archived")
+            archived_at = candidate.get("archived_at")
+
+            def _is_truthy(value: object) -> bool:
+                if value is None:
+                    return False
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return value != 0
+                if isinstance(value, str):
+                    lowered = value.strip().lower()
+                    if lowered in {"", "0", "false", "no", "off", "f", "null", "none"}:
+                        return False
+                    if lowered in {"1", "true", "yes", "on", "t"}:
+                        return True
+                return True
+
+            if _is_truthy(archived_flag) or _is_truthy(archived_at):
+                continue
+            state = (candidate.get("state") or "").strip().lower()
+            if state not in ACTIVE_TOURNAMENT_STATES:
+                continue
+            identifier = (
+                candidate.get("id")
+                or candidate.get("url")
+                or candidate.get("slug")
+                or candidate.get("full_challonge_url")
+            )
+            if not identifier:
+                continue
+            tournaments.append(candidate)
+
+        return tournaments
+
+    def _resolve_tournament_identifier(self, tournament: dict) -> str | None:
+        keys = ("id", "url", "slug")
+        for key in keys:
+            value = tournament.get(key)
+            if value:
+                return str(value)
+
+        full_url = (tournament.get("full_challonge_url") or tournament.get("url"))
+        if full_url:
+            slug = full_url.rstrip("/").split("/")[-1]
+            if slug:
+                return slug
+
+        return None
 
     @app_commands.command(
-        name="challonge_create",
+        name="tournament_create",
         description="Create a Challonge tournament in the configured organization.",
     )
     @app_commands.guilds(GUILD)
@@ -352,7 +423,7 @@ class Tournaments(commands.Cog):
             app_commands.Choice(name="Swiss", value="swiss"),
         ]
     )
-    async def challonge_create(
+    async def tournament_create(
         self,
         interaction: discord.Interaction,
         name: str,
@@ -378,6 +449,74 @@ class Tournaments(commands.Cog):
         if url:
             parts.append(f"URL: {url}")
         await interaction.followup.send("\n".join(parts), ephemeral=True)
+
+    @app_commands.command(
+        name="tournament_join",
+        description="Join an active Challonge tournament by submitting your deck.",
+    )
+    @app_commands.guilds(GUILD)
+    async def tournament_join(self, interaction: discord.Interaction) -> None:
+        try:
+            tournaments = await self._fetch_active_tournaments()
+        except RuntimeError as exc:
+            await interaction.response.send_message(
+                f"Failed to retrieve active tournaments: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        if not tournaments:
+            await interaction.response.send_message(
+                "There are no active tournaments available to join right now.",
+                ephemeral=True,
+            )
+            return
+
+        # Deduplicate tournaments by resolved identifier while preserving order.
+        seen_identifiers: set[str] = set()
+        unique_tournaments: list[dict] = []
+        for tournament in tournaments:
+            identifier = self._resolve_tournament_identifier(tournament)
+            if not identifier or identifier in seen_identifiers:
+                continue
+            seen_identifiers.add(identifier)
+            unique_tournaments.append(tournament)
+
+        if not unique_tournaments:
+            await interaction.response.send_message(
+                "I couldn't find any joinable tournaments right now.",
+                ephemeral=True,
+            )
+            return
+
+        if len(unique_tournaments) == 1:
+            tournament = unique_tournaments[0]
+            tournament_name = tournament.get("name") or "Unnamed Tournament"
+            await interaction.response.send_message(
+                f"Please check your DMs to submit your deck for **{tournament_name}**.",
+                ephemeral=True,
+            )
+            await self._start_tournament_join_flow(interaction, tournament)
+            return
+
+        view = TournamentSelectView(self, unique_tournaments)
+        if not view.options_available():
+            await interaction.response.send_message(
+                "I couldn't find any joinable tournaments right now.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "Select an active tournament to join:",
+            view=view,
+            ephemeral=True,
+        )
+
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            self.logger.exception("Failed to capture tournament selection message")
 
     @app_commands.command(
         name="challonge_add_participant",
@@ -571,37 +710,49 @@ class Tournaments(commands.Cog):
             file = discord.File(image_buffer, filename=filename)
             await channel.send(f"{title} ({len(entries)} cards)", file=file)
 
-    @app_commands.command(name="deck_check", description="Verify a YDK deck against your collection and the banlist")
-    @app_commands.guilds(GUILD)
-    async def deck_check(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "Please check DMs for deck check submission", ephemeral=True
-        )
+    async def _collect_deck_submission(
+        self,
+        *,
+        interaction: discord.Interaction,
+        dm_prompt: str,
+        timeout: float = 300.0,
+    ) -> tuple[discord.abc.Messageable, Counter[str], list[str], dict[str, list[str]]] | None:
+        async def _notify_user(message: str) -> None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+            except Exception:
+                self.logger.exception("Failed to notify user about deck submission issue", exc_info=True)
 
         try:
             dm_channel = interaction.user.dm_channel or await interaction.user.create_dm()
         except discord.Forbidden:
-            await interaction.followup.send(
-                "I couldn't send you a DM. Please enable direct messages and try again.",
-                ephemeral=True,
+            await _notify_user(
+                "I couldn't send you a DM. Please enable direct messages and try again."
             )
-            return
-
-        await dm_channel.send("Please attach a ydk file or copy and paste a ydke code below")
-
-        def check(message: discord.Message) -> bool:
-            return (
-                message.author.id == interaction.user.id
-                and message.channel == dm_channel
-            )
+            return None
+        except Exception:
+            self.logger.exception("Unexpected error creating DM channel")
+            await _notify_user("Something went wrong while opening a DM with you. Please try again later.")
+            return None
 
         try:
-            submission: discord.Message = await self.bot.wait_for(
-                "message", timeout=300, check=check
-            )
+            await dm_channel.send(dm_prompt)
+        except Exception:
+            self.logger.exception("Failed to send deck submission prompt")
+            await _notify_user("I couldn't send you a DM. Please try again later.")
+            return None
+
+        def check(message: discord.Message) -> bool:
+            return message.author.id == interaction.user.id and message.channel == dm_channel
+
+        try:
+            submission: discord.Message = await self.bot.wait_for("message", timeout=timeout, check=check)
         except asyncio.TimeoutError:
-            await dm_channel.send("Deck check cancelled because no deck was submitted in time.")
-            return
+            await dm_channel.send("Deck submission cancelled because no deck was received in time.")
+            return None
 
         text: str | None = None
 
@@ -609,30 +760,25 @@ class Tournaments(commands.Cog):
             attachment = submission.attachments[0]
             filename = (attachment.filename or "").lower()
             if not filename.endswith(".ydk"):
-                await dm_channel.send(
-                    "That file isn't a `.ydk` deck. Please try the command again with a valid file."
-                )
-                return
+                await dm_channel.send("That file isn't a `.ydk` deck. Please try the command again with a valid file.")
+                return None
             try:
                 raw_bytes = await attachment.read()
             except Exception:
+                self.logger.exception("Failed to read deck attachment")
                 await dm_channel.send("I couldn't read that file. Please try again later.")
-                return
+                return None
             text = raw_bytes.decode("utf-8-sig", errors="ignore")
         else:
             content = (submission.content or "").strip()
             if not content:
-                await dm_channel.send(
-                    "I didn't receive any deck information. Please run the command again."
-                )
-                return
+                await dm_channel.send("I didn't receive any deck information. Please run the command again.")
+                return None
             if content.lower().startswith("ydke://"):
                 text = _ydke_to_ydk_text(content)
                 if text is None:
-                    await dm_channel.send(
-                        "That YDKE code couldn't be parsed. Please make sure it's a valid code."
-                    )
-                    return
+                    await dm_channel.send("That YDKE code couldn't be parsed. Please make sure it's a valid code.")
+                    return None
             else:
                 text = content
 
@@ -643,7 +789,79 @@ class Tournaments(commands.Cog):
                 example = invalid_lines[0]
                 message += f" Example ignored line: `{example}`."
             await dm_channel.send(message)
+            return None
+        
+        return dm_channel, card_counts, invalid_lines, deck_sections
+    
+    async def _start_tournament_join_flow(
+        self,
+        interaction: discord.Interaction,
+        tournament: dict,
+    ) -> None:
+        tournament_name = tournament.get("name") or "Unnamed Tournament"
+        prompt = (
+            f"Please attach a ydk file or copy and paste a ydke code for the deck you plan to use in **{tournament_name}**."
+        )
+        result = await self._collect_deck_submission(interaction=interaction, dm_prompt=prompt)
+        if not result:
             return
+
+        dm_channel, card_counts, invalid_lines, deck_sections = result
+
+        async with dm_channel.typing():
+            deck_is_legal = await self._send_deck_results(
+                dm_channel,
+                interaction.user.id,
+                card_counts,
+                invalid_lines,
+                deck_sections,
+                success_message=(
+                    f"Deck submission received for **{tournament_name}**. Here's the deck you'll be using in the tournament."
+                ),
+            )
+
+        if not deck_is_legal:
+            return
+
+        identifier = self._resolve_tournament_identifier(tournament)
+        if not identifier:
+            await dm_channel.send(
+                "I couldn't determine which Challonge tournament to register you for. Please contact a staff member."
+            )
+            return
+
+        try:
+            participant = await self._create_challonge_participant(
+                identifier,
+                name=interaction.user.display_name,
+                discord_id=interaction.user.id,
+            )
+        except RuntimeError as exc:
+            await dm_channel.send(
+                f"Your deck is legal, but I couldn't register you for **{tournament_name}**: {exc}"
+            )
+            return
+
+        display_name = participant.get("name") or interaction.user.display_name
+        await dm_channel.send(
+            f"You're now registered for **{tournament_name}** on Challonge as **{display_name}**. Good luck!"
+        )
+
+    @app_commands.command(name="deck_check", description="Verify a YDK deck against your collection and the banlist")
+    @app_commands.guilds(GUILD)
+    async def deck_check(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "Please check DMs for deck check submission", ephemeral=True
+        )
+
+        result = await self._collect_deck_submission(
+            interaction=interaction,
+            dm_prompt="Please attach a ydk file or copy and paste a ydke code below",
+        )
+        if not result:
+            return
+
+        dm_channel, card_counts, invalid_lines, deck_sections = result
 
         async with dm_channel.typing():
             await self._send_deck_results(
@@ -661,7 +879,9 @@ class Tournaments(commands.Cog):
         card_counts: Counter[str],
         invalid_lines: list[str],
         deck_sections: dict[str, list[str]],
-    ) -> None:
+        *,
+        success_message: str | None = None,
+    ) -> bool:
         collection_rows = db_get_collection(self.state, user_id) or []
         owned_by_id: dict[str, int] = {}
         owned_by_name: dict[str, int] = {}
@@ -741,12 +961,111 @@ class Tournaments(commands.Cog):
             messages = _chunk_issue_messages("**Deck issues detected:**", issue_lines)
             for message in messages:
                 await channel.send(message)
-            return
+            return False
 
-        await channel.send("Your deck is perfectly legal.")
+        await channel.send(success_message or "Your deck is perfectly legal.")
 
         await self._send_deck_images(channel, deck_sections, metadata)
 
+        return True
+
+class TournamentSelect(discord.ui.Select):
+    def __init__(self, view: "TournamentSelectView", options: list[discord.SelectOption]):
+        super().__init__(
+            placeholder="Select a tournament…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.parent_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_value = self.values[0]
+        tournament = self.parent_view.tournament_map.get(selected_value)
+        if not tournament:
+            await interaction.response.send_message(
+                "The selected tournament is no longer available.",
+                ephemeral=True,
+            )
+            return
+
+        self.parent_view.disable_all_items()
+        self.parent_view.stop()
+        tournament_name = tournament.get("name") or "Unnamed Tournament"
+
+        await interaction.response.edit_message(
+            content=(
+                f"You selected **{tournament_name}**. Please check your DMs to submit your deck."
+            ),
+            view=self.parent_view,
+        )
+
+        async def runner() -> None:
+            try:
+                await self.parent_view.cog._start_tournament_join_flow(interaction, tournament)
+            except Exception:
+                self.parent_view.cog.logger.exception("Error while processing tournament join request")
+
+        asyncio.create_task(runner())
+
+
+class TournamentSelectView(discord.ui.View):
+    def __init__(self, cog: Tournaments, tournaments: list[dict]):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.message: discord.Message | None = None
+        self.tournament_map: dict[str, dict] = {}
+
+        options: list[discord.SelectOption] = []
+        for tournament in tournaments:
+            identifier = cog._resolve_tournament_identifier(tournament)
+            if not identifier or identifier in self.tournament_map:
+                continue
+
+            name = (tournament.get("name") or "Unnamed Tournament")[:100]
+            state = (tournament.get("state") or "").replace("_", " ").title() or "Pending"
+            start_at = tournament.get("start_at") or tournament.get("started_at")
+            description_parts = [state]
+            if start_at:
+                description_parts.append(f"Start: {start_at}")
+            description = " • ".join(description_parts)
+
+            options.append(
+                discord.SelectOption(
+                    label=name,
+                    description=description[:100] if description else None,
+                    value=identifier,
+                )
+            )
+            self.tournament_map[identifier] = tournament
+
+            if len(options) >= 25:
+                break
+
+        self.select: TournamentSelect | None = None
+        if options:
+            self.select = TournamentSelect(self, options)
+            self.add_item(self.select)
+
+    def options_available(self) -> bool:
+        return bool(self.tournament_map)
+
+    def disable_all_items(self) -> None:
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+
+    async def on_timeout(self) -> None:
+        if not self.message:
+            return
+        self.disable_all_items()
+        try:
+            await self.message.edit(
+                content="Tournament selection timed out.",
+                view=self,
+            )
+        except Exception:
+            self.cog.logger.exception("Failed to update tournament selection message on timeout")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tournaments(bot))
