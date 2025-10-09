@@ -27,7 +27,7 @@ from core.state import AppState
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
-ACTIVE_TOURNAMENT_STATES = {"pending", "checking_in", "checked_in", "underway"}
+JOINABLE_TOURNAMENT_STATES = {"pending"}
 
 def _normalize_card_id(value: str | int | None) -> str | None:
     if value is None:
@@ -336,56 +336,132 @@ class Tournaments(commands.Cog):
         return response.get("participant", response)
     
     async def _fetch_active_tournaments(self) -> list[dict]:
+        def _is_truthy(value: object) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"", "0", "false", "no", "off", "f", "null", "none"}:
+                    return False
+                if lowered in {"1", "true", "yes", "on", "t"}:
+                    return True
+            return True
+
+        def _resolve_response_entries(response: object) -> list[dict]:
+            if isinstance(response, list):
+                raw_entries = response
+            elif isinstance(response, dict):
+                potential = response.get("tournaments") or response.get("data") or []
+                raw_entries = potential if isinstance(potential, list) else []
+            else:
+                raw_entries = []
+
+            resolved: list[dict] = []
+            for entry in raw_entries:
+                if not isinstance(entry, dict):
+                    continue
+
+                tournament = entry.get("tournament")
+                if isinstance(tournament, dict):
+                    resolved.append(tournament)
+                    continue
+
+                attributes = entry.get("attributes")
+                if isinstance(attributes, dict):
+                    merged: dict = {}
+                    merged.update(attributes)
+                    for key, value in entry.items():
+                        if key in {"attributes", "relationships"}:
+                            continue
+                        merged.setdefault(key, value)
+                    resolved.append(merged)
+                    continue
+
+                resolved.append(entry)
+            return resolved
+
+        def _resolve_response_entries(response: object) -> list[dict]:
+            if isinstance(response, list):
+                raw_entries = response
+            elif isinstance(response, dict):
+                potential = response.get("tournaments") or response.get("data") or []
+                raw_entries = potential if isinstance(potential, list) else []
+            else:
+                raw_entries = []
+
+            resolved: list[dict] = []
+            for entry in raw_entries:
+                if not isinstance(entry, dict):
+                    continue
+
+                tournament = entry.get("tournament")
+                if isinstance(tournament, dict):
+                    resolved.append(tournament)
+                    continue
+
+                attributes = entry.get("attributes")
+                if isinstance(attributes, dict):
+                    merged: dict = {}
+                    merged.update(attributes)
+                    for key, value in entry.items():
+                        if key in {"attributes", "relationships"}:
+                            continue
+                        merged.setdefault(key, value)
+                    resolved.append(merged)
+                    continue
+
+                resolved.append(entry)
+            return resolved
+
+        def _get_candidate_value(candidate: dict, key: str) -> object | None:
+            if key in candidate:
+                return candidate.get(key)
+
+            attributes = candidate.get("attributes")
+            if isinstance(attributes, dict):
+                return attributes.get(key)
+            return None
+        
         response = await self._challonge_request("GET", "/tournaments.json")
 
-        if isinstance(response, list):
-            raw_entries = response
-        elif isinstance(response, dict):
-            potential = response.get("tournaments") or response.get("data") or []
-            raw_entries = potential if isinstance(potential, list) else []
-        else:
-            raw_entries = []
-
         tournaments: list[dict] = []
-        for entry in raw_entries:
-            if not isinstance(entry, dict):
-                continue
-            tournament = entry.get("tournament")
-            if isinstance(tournament, dict):
-                candidate = tournament
-            else:
-                candidate = entry
-            archived_flag = candidate.get("archived")
-            archived_at = candidate.get("archived_at")
+        seen_identifiers: set[str] = set()
+        for candidate in _resolve_response_entries(response):
+            archived_flag = _get_candidate_value(candidate, "archived")
+            archived_at = _get_candidate_value(candidate, "archived_at")
+            hidden_flag = _get_candidate_value(candidate, "hidden")
 
-            def _is_truthy(value: object) -> bool:
-                if value is None:
-                    return False
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, (int, float)):
-                    return value != 0
-                if isinstance(value, str):
-                    lowered = value.strip().lower()
-                    if lowered in {"", "0", "false", "no", "off", "f", "null", "none"}:
-                        return False
-                    if lowered in {"1", "true", "yes", "on", "t"}:
-                        return True
-                return True
+            if (
+                _is_truthy(archived_flag)
+                or _is_truthy(archived_at)
+                or _is_truthy(hidden_flag)
+            ):
+                continue
 
-            if _is_truthy(archived_flag) or _is_truthy(archived_at):
+            normalized_state = (
+                (_get_candidate_value(candidate, "state") or "").strip().lower()
+            )
+            if normalized_state not in JOINABLE_TOURNAMENT_STATES:
                 continue
-            state = (candidate.get("state") or "").strip().lower()
-            if state not in ACTIVE_TOURNAMENT_STATES:
-                continue
+
             identifier = (
-                candidate.get("id")
-                or candidate.get("url")
-                or candidate.get("slug")
-                or candidate.get("full_challonge_url")
+                _get_candidate_value(candidate, "id")
+                or _get_candidate_value(candidate, "url")
+                or _get_candidate_value(candidate, "slug")
+                or _get_candidate_value(candidate, "full_challonge_url")
             )
             if not identifier:
                 continue
+
+            identifier_text = str(identifier)
+            if identifier_text in seen_identifiers:
+                continue
+
+            seen_identifiers.add(identifier_text)
             tournaments.append(candidate)
 
         return tournaments
@@ -460,14 +536,14 @@ class Tournaments(commands.Cog):
             tournaments = await self._fetch_active_tournaments()
         except RuntimeError as exc:
             await interaction.response.send_message(
-                f"Failed to retrieve active tournaments: {exc}",
+                f"Failed to retrieve pending tournaments: {exc}",
                 ephemeral=True,
             )
             return
 
         if not tournaments:
             await interaction.response.send_message(
-                "There are no active tournaments available to join right now.",
+                "There are no pending tournaments available to join right now.",
                 ephemeral=True,
             )
             return
@@ -484,7 +560,7 @@ class Tournaments(commands.Cog):
 
         if not unique_tournaments:
             await interaction.response.send_message(
-                "I couldn't find any joinable tournaments right now.",
+                "I couldn't find any pending tournaments you can join right now.",
                 ephemeral=True,
             )
             return
@@ -502,7 +578,7 @@ class Tournaments(commands.Cog):
         view = TournamentSelectView(self, unique_tournaments)
         if not view.options_available():
             await interaction.response.send_message(
-                "I couldn't find any joinable tournaments right now.",
+                "I couldn't find any pending tournaments you can join right now.",
                 ephemeral=True,
             )
             return
