@@ -334,6 +334,50 @@ class Tournaments(commands.Cog):
             data=payload,
         )
         return response.get("participant", response)
+
+    async def _fetch_challonge_participants(self, tournament_id: str) -> list[dict]:
+        response = await self._challonge_request(
+            "GET",
+            f"/tournaments/{tournament_id}/participants.json",
+        )
+
+        if isinstance(response, list):
+            raw_entries = response
+        elif isinstance(response, dict):
+            potential = response.get("participants") or response.get("data") or []
+            raw_entries = potential if isinstance(potential, list) else []
+        else:
+            raw_entries = []
+
+        participants: list[dict] = []
+        for entry in raw_entries:
+            participant = None
+            if isinstance(entry, dict):
+                potential = entry.get("participant")
+                if isinstance(potential, dict):
+                    participant = potential
+                else:
+                    participant = entry
+            if isinstance(participant, dict):
+                participants.append(participant)
+
+        return participants
+
+    async def _find_existing_challonge_participant(
+        self,
+        tournament_id: str,
+        *,
+        discord_id: int,
+    ) -> dict | None:
+        participants = await self._fetch_challonge_participants(tournament_id)
+        target_id = str(discord_id)
+
+        for participant in participants:
+            misc = participant.get("misc")
+            if isinstance(misc, str) and misc.strip() == target_id:
+                return participant
+
+        return None
     
     async def _fetch_active_tournaments(self) -> list[dict]:
         def _is_truthy(value: object) -> bool:
@@ -593,6 +637,61 @@ class Tournaments(commands.Cog):
             view.message = await interaction.original_response()
         except Exception:
             self.logger.exception("Failed to capture tournament selection message")
+
+    @app_commands.command(
+        name="tournament_view",
+        description="Show active Challonge tournaments and their brackets.",
+    )
+    @app_commands.guilds(GUILD)
+    async def tournament_view(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+
+        try:
+            tournaments = await self._fetch_active_tournaments()
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to retrieve active tournaments: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        seen_identifiers: set[str] = set()
+        lines: list[str] = []
+
+        for tournament in tournaments:
+            identifier = self._resolve_tournament_identifier(tournament)
+            if identifier and identifier in seen_identifiers:
+                continue
+            if identifier:
+                seen_identifiers.add(identifier)
+
+            name = tournament.get("name") or "Unnamed Tournament"
+            url = tournament.get("full_challonge_url") or tournament.get("url")
+
+            if not url:
+                slug = tournament.get("slug") or identifier
+                subdomain = tournament.get("subdomain")
+                if slug:
+                    slug_text = str(slug).strip("/")
+                    if subdomain:
+                        url = f"https://{subdomain}.challonge.com/{slug_text}"
+                    else:
+                        url = f"https://challonge.com/{slug_text}"
+
+            if url:
+                lines.append(f"• **{name}** — {url}")
+            else:
+                lines.append(f"• **{name}** — Bracket link unavailable")
+
+        if not lines:
+            await interaction.followup.send(
+                "There are no active Challonge tournaments right now.",
+                ephemeral=False,
+            )
+            return
+
+        header = "Active Nemeses Tournaments"
+        await interaction.followup.send("\n".join([header, *lines]))
 
     @app_commands.command(
         name="challonge_add_participant",
@@ -875,9 +974,29 @@ class Tournaments(commands.Cog):
         tournament: dict,
     ) -> None:
         tournament_name = tournament.get("name") or "Unnamed Tournament"
-        prompt = (
-            f"Please attach a ydk file or copy and paste a ydke code for the deck you plan to use in **{tournament_name}**."
-        )
+        identifier = self._resolve_tournament_identifier(tournament)
+        existing_participant: dict | None = None
+
+        if identifier:
+            try:
+                existing_participant = await self._find_existing_challonge_participant(
+                    identifier,
+                    discord_id=interaction.user.id,
+                )
+            except RuntimeError:
+                self.logger.exception(
+                    "Failed to determine if user is already registered for tournament",
+                )
+
+        is_resubmission = existing_participant is not None
+        if is_resubmission:
+            prompt = (
+                f"You're already registered for **{tournament_name}**. Please attach a ydk file or copy and paste a ydke code to resubmit your deck."
+            )
+        else:
+            prompt = (
+                f"Please attach a ydk file or copy and paste a ydke code for the deck you plan to use in **{tournament_name}**."
+            )
         result = await self._collect_deck_submission(interaction=interaction, dm_prompt=prompt)
         if not result:
             return
@@ -892,17 +1011,26 @@ class Tournaments(commands.Cog):
                 invalid_lines,
                 deck_sections,
                 success_message=(
-                    f"Deck submission received for **{tournament_name}**. Here's the deck you'll be using in the tournament."
+                    f"Updated deck submission received for **{tournament_name}**. Here's your new decklist."
+                    if is_resubmission
+                    else (
+                        f"Deck submission received for **{tournament_name}**. Here's the deck you'll be using in the tournament."
+                    )
                 ),
             )
 
         if not deck_is_legal:
             return
 
-        identifier = self._resolve_tournament_identifier(tournament)
         if not identifier:
             await dm_channel.send(
                 "I couldn't determine which Challonge tournament to register you for. Please contact a staff member."
+            )
+            return
+        
+        if is_resubmission:
+            await dm_channel.send(
+                f"Thanks for resubmitting your deck for **{tournament_name}**. I've recorded this updated list."
             )
             return
 
