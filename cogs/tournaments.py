@@ -335,6 +335,21 @@ class Tournaments(commands.Cog):
         )
         return response.get("participant", response)
 
+    async def _fetch_challonge_tournament(
+        self,
+        tournament_id: str,
+        *,
+        include_participants: bool = False,
+    ) -> dict:
+        query = "?include_participants=1" if include_participants else ""
+        response = await self._challonge_request(
+            "GET", f"/tournaments/{tournament_id}.json{query}"
+        )
+        tournament = response.get("tournament", response)
+        if isinstance(tournament, dict):
+            return tournament
+        return {}
+
     async def _fetch_challonge_participants(self, tournament_id: str) -> list[dict]:
         response = await self._challonge_request(
             "GET",
@@ -362,6 +377,90 @@ class Tournaments(commands.Cog):
                 participants.append(participant)
 
         return participants
+
+    def _extract_tournament_participants(self, tournament: dict) -> list[dict]:
+        raw_entries = tournament.get("participants")
+        if not isinstance(raw_entries, list):
+            return []
+
+        participants: list[dict] = []
+        for entry in raw_entries:
+            participant: dict | None = None
+            if isinstance(entry, dict):
+                potential = entry.get("participant")
+                if isinstance(potential, dict):
+                    participant = potential
+                else:
+                    participant = entry if isinstance(entry, dict) else None
+            if participant is not None:
+                participants.append(participant)
+        return participants
+
+    def _render_tournament_standings(
+        self, tournament: dict
+    ) -> tuple[list[str], str | None]:
+        participants = self._extract_tournament_participants(tournament)
+        name = tournament.get("name") or "Unnamed Tournament"
+        state = (tournament.get("state") or "").replace("_", " ")
+        state_display = state.title() if state else "Unknown"
+
+        if not participants:
+            return [], f"I couldn't find any participants for **{name}**."
+
+        def _to_int(value: object) -> int | None:
+            if value is None:
+                return None
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                return None
+            return number if number > 0 else None
+
+        def _sort_key(participant: dict) -> tuple[int, int, str]:
+            final_rank = _to_int(participant.get("final_rank"))
+            seed = _to_int(participant.get("seed"))
+            name_key = (participant.get("display_name") or participant.get("name") or "").lower()
+            return (
+                final_rank if final_rank is not None else 10**9,
+                seed if seed is not None else 10**9,
+                name_key,
+            )
+
+        lines = [f"Standings for **{name}** ({state_display})"]
+        for participant in sorted(participants, key=_sort_key):
+            final_rank = _to_int(participant.get("final_rank"))
+            seed = _to_int(participant.get("seed"))
+            display_name = (
+                participant.get("display_name")
+                or participant.get("name")
+                or participant.get("username")
+                or f"Participant #{participant.get('id', '?')}"
+            )
+
+            rank_text = f"{final_rank}" if final_rank is not None else "—"
+            seed_text = f"Seed {seed}" if seed is not None else "Seed ?"
+
+            wins = _to_int(participant.get("matches_won"))
+            losses = _to_int(participant.get("matches_lost"))
+            ties = _to_int(participant.get("matches_tied"))
+            status_bits: list[str] = []
+            if wins is not None and losses is not None:
+                record = f"{wins}-{losses}"
+                if ties is not None and ties > 0:
+                    record += f"-{ties}"
+                status_bits.append(record)
+            active_flag = participant.get("active")
+            if isinstance(active_flag, bool) and not active_flag:
+                status_bits.append("Dropped")
+
+            status_text = f" — {', '.join(status_bits)}" if status_bits else ""
+            lines.append(f"{rank_text:>3} | {display_name} ({seed_text}){status_text}")
+
+        content = "\n".join(lines)
+        chunks = _chunk_issue_messages("", [content], limit=2000)
+        if not chunks:
+            chunks = [content]
+        return chunks, None
 
     async def _find_existing_challonge_participant(
         self,
@@ -619,7 +718,7 @@ class Tournaments(commands.Cog):
             await self._start_tournament_join_flow(interaction, tournament)
             return
 
-        view = TournamentSelectView(self, unique_tournaments)
+        view = TournamentJoinSelectView(self, unique_tournaments)
         if not view.options_available():
             await interaction.response.send_message(
                 "I couldn't find any pending tournaments you can join right now.",
@@ -694,7 +793,59 @@ class Tournaments(commands.Cog):
         await interaction.followup.send("\n".join([header, *lines]))
 
     @app_commands.command(
-        name="challonge_add_participant",
+        name="tournament_standings",
+        description="View the standings for a Challonge tournament.",
+    )
+    @app_commands.guilds(GUILD)
+    async def tournament_standings(self, interaction: discord.Interaction) -> None:
+        try:
+            tournaments = await self._fetch_active_tournaments()
+        except RuntimeError as exc:
+            await interaction.response.send_message(
+                f"Failed to retrieve active tournaments: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        seen_identifiers: set[str] = set()
+        unique_tournaments: list[dict] = []
+        for tournament in tournaments:
+            identifier = self._resolve_tournament_identifier(tournament)
+            if not identifier or identifier in seen_identifiers:
+                continue
+            seen_identifiers.add(identifier)
+            unique_tournaments.append(tournament)
+
+        if not unique_tournaments:
+            await interaction.response.send_message(
+                "There are no active Challonge tournaments right now.",
+                ephemeral=True,
+            )
+            return
+
+        view = TournamentStandingsSelectView(self, unique_tournaments)
+        if not view.options_available():
+            await interaction.response.send_message(
+                "I couldn't find any tournaments with available standings right now.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "Select a tournament to view standings:",
+            view=view,
+            ephemeral=True,
+        )
+
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            self.logger.exception(
+                "Failed to capture tournament standings selection message"
+            )
+
+    @app_commands.command(
+        name="tournament_add_participant",
         description="Register a Discord member into a Challonge tournament.",
     )
     @app_commands.guilds(GUILD)
@@ -703,7 +854,7 @@ class Tournaments(commands.Cog):
         tournament_id="The Challonge tournament identifier (slug or ID).",
         member="Discord member to register.",
     )
-    async def challonge_add_participant(
+    async def tournament_add_participant(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
@@ -780,6 +931,234 @@ class Tournaments(commands.Cog):
                 )
 
         await interaction.followup.send("\n".join(message_lines), ephemeral=True)
+
+    @app_commands.command(
+        name="challonge_shuffle_seeds",
+        description="Shuffle the seeding for a pending single or double elimination tournament.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(tournament_id="The Challonge tournament identifier (slug or ID).")
+    async def challonge_shuffle_seeds(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            tournament = await self._fetch_challonge_tournament(tournament_id)
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to load tournament details: {exc}", ephemeral=True
+            )
+            return
+
+        if not tournament:
+            await interaction.followup.send(
+                "I couldn't find that tournament on Challonge.", ephemeral=True
+            )
+            return
+
+        tournament_type = (tournament.get("tournament_type") or "").strip().lower()
+        if tournament_type not in {"single elimination", "double elimination"}:
+            await interaction.followup.send(
+                "Seeding can only be shuffled for single or double elimination tournaments.",
+                ephemeral=True,
+            )
+            return
+
+        state = (tournament.get("state") or "").strip().lower()
+        if state not in {"pending", "checking_in"}:
+            await interaction.followup.send(
+                "Seeding can only be shuffled before the tournament begins.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await self._challonge_request(
+                "POST",
+                f"/tournaments/{tournament_id}/participants/randomize.json",
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to shuffle seeds: {exc}", ephemeral=True
+            )
+            return
+
+        name = tournament.get("name") or tournament_id
+        await interaction.followup.send(
+            f"Randomized seeding for **{name}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="challonge_drop_player",
+        description="Drop or remove a participant from a Challonge tournament.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        tournament_id="The Challonge tournament identifier (slug or ID).",
+        player="Discord mention/ID, participant ID, or exact Challonge name.",
+    )
+    async def challonge_drop_player(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        player: str,
+    ) -> None:
+        token = (player or "").strip()
+        if not token:
+            await interaction.response.send_message(
+                "You need to provide a participant to drop or remove.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            tournament = await self._fetch_challonge_tournament(
+                tournament_id, include_participants=True
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to load tournament details: {exc}", ephemeral=True
+            )
+            return
+
+        if not tournament:
+            await interaction.followup.send(
+                "I couldn't find that tournament on Challonge.", ephemeral=True
+            )
+            return
+
+        participants = self._extract_tournament_participants(tournament)
+        if not participants:
+            await interaction.followup.send(
+                "That tournament has no registered participants.",
+                ephemeral=True,
+            )
+            return
+
+        mention_match = re.fullmatch(r"<@!?(\d+)>", token)
+        numeric_tokens: set[str] = set()
+        if mention_match:
+            numeric_tokens.add(mention_match.group(1))
+        if token.isdigit():
+            numeric_tokens.add(token)
+        lower_token = token.lower()
+
+        matches: list[dict] = []
+        for participant in participants:
+            candidate_ids = {
+                str(participant.get("id")) if participant.get("id") is not None else "",
+                str(participant.get("seed")) if participant.get("seed") is not None else "",
+                str(participant.get("misc")) if participant.get("misc") is not None else "",
+            }
+            candidate_ids = {value for value in candidate_ids if value}
+            if numeric_tokens and candidate_ids.intersection(numeric_tokens):
+                matches.append(participant)
+                continue
+
+            for key in ("display_name", "name", "username", "challonge_username"):
+                value = participant.get(key)
+                if isinstance(value, str) and value.strip().lower() == lower_token:
+                    matches.append(participant)
+                    break
+
+        if not matches:
+            await interaction.followup.send(
+                "I couldn't find a participant matching that value.",
+                ephemeral=True,
+            )
+            return
+
+        if len(matches) > 1:
+            preview = ", ".join(
+                (match.get("display_name") or match.get("name") or str(match.get("id")) or "?")
+                for match in matches[:5]
+            )
+            if len(matches) > 5:
+                preview += ", ..."
+            await interaction.followup.send(
+                f"That reference matches multiple participants: {preview}. Please be more specific.",
+                ephemeral=True,
+            )
+            return
+
+        participant = matches[0]
+        participant_id = participant.get("id")
+        if participant_id is None:
+            await interaction.followup.send(
+                "I couldn't determine the participant's Challonge ID.",
+                ephemeral=True,
+            )
+            return
+
+        normalized_state = (tournament.get("state") or "").strip().lower()
+        pending_states = {"pending", "checking_in"}
+        completed_states = {"complete"}
+
+        if normalized_state in completed_states:
+            await interaction.followup.send(
+                "The tournament is complete and participants can no longer be modified.",
+                ephemeral=True,
+            )
+            return
+
+        participant_name = (
+            participant.get("display_name")
+            or participant.get("name")
+            or participant.get("username")
+            or f"Participant #{participant_id}"
+        )
+
+        if normalized_state in pending_states:
+            try:
+                await self._challonge_request(
+                    "DELETE",
+                    f"/tournaments/{tournament_id}/participants/{participant_id}.json",
+                )
+            except RuntimeError as exc:
+                await interaction.followup.send(
+                    f"Failed to remove {participant_name}: {exc}",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                f"Removed **{participant_name}** from `{tournament_id}`.",
+                ephemeral=True,
+            )
+            return
+
+        active_flag = participant.get("active")
+        if isinstance(active_flag, bool) and not active_flag:
+            await interaction.followup.send(
+                f"**{participant_name}** is already dropped from `{tournament_id}`.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await self._challonge_request(
+                "POST",
+                f"/tournaments/{tournament_id}/participants/{participant_id}/mark_inactive.json",
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to drop {participant_name}: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"Dropped **{participant_name}** from `{tournament_id}`.",
+            ephemeral=True,
+        )
 
     async def _fetch_card_details(self, card_ids: list[str]) -> dict[str, dict[str, str]]:
         numeric_ids = []
@@ -1173,8 +1552,8 @@ class Tournaments(commands.Cog):
 
         return True
 
-class TournamentSelect(discord.ui.Select):
-    def __init__(self, view: "TournamentSelectView", options: list[discord.SelectOption]):
+class TournamentJoinSelect(discord.ui.Select):
+    def __init__(self, view: "TournamentJoinSelectView", options: list[discord.SelectOption]):
         super().__init__(
             placeholder="Select a tournament…",
             min_values=1,
@@ -1213,7 +1592,7 @@ class TournamentSelect(discord.ui.Select):
         asyncio.create_task(runner())
 
 
-class TournamentSelectView(discord.ui.View):
+class TournamentJoinSelectView(discord.ui.View):
     def __init__(self, cog: Tournaments, tournaments: list[dict]):
         super().__init__(timeout=60)
         self.cog = cog
@@ -1246,9 +1625,9 @@ class TournamentSelectView(discord.ui.View):
             if len(options) >= 25:
                 break
 
-        self.select: TournamentSelect | None = None
+        self.select: TournamentJoinSelect | None = None
         if options:
-            self.select = TournamentSelect(self, options)
+            self.select = TournamentJoinSelect(self, options)
             self.add_item(self.select)
 
     def options_available(self) -> bool:
@@ -1270,6 +1649,165 @@ class TournamentSelectView(discord.ui.View):
             )
         except Exception:
             self.cog.logger.exception("Failed to update tournament selection message on timeout")
+
+class TournamentStandingsSelect(discord.ui.Select):
+    def __init__(
+        self, view: "TournamentStandingsSelectView", options: list[discord.SelectOption]
+    ):
+        super().__init__(
+            placeholder="Select a tournament…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.parent_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_value = self.values[0]
+        tournament = self.parent_view.tournament_map.get(selected_value)
+        if not tournament:
+            await interaction.response.send_message(
+                "The selected tournament is no longer available.",
+                ephemeral=True,
+            )
+            return
+
+        self.parent_view.disable_all_items()
+        self.parent_view.stop()
+        tournament_name = tournament.get("name") or "Unnamed Tournament"
+
+        await interaction.response.edit_message(
+            content=f"Generating standings for **{tournament_name}**…",
+            view=self.parent_view,
+        )
+
+        async def runner() -> None:
+            try:
+                await self.parent_view.show_standings(interaction, tournament, selected_value)
+            except Exception:
+                self.parent_view.cog.logger.exception(
+                    "Error while preparing tournament standings"
+                )
+                try:
+                    await interaction.followup.send(
+                        "Failed to load standings due to an unexpected error.",
+                        ephemeral=True,
+                    )
+                except Exception:
+                    self.parent_view.cog.logger.exception(
+                        "Failed to send tournament standings error message"
+                    )
+
+        asyncio.create_task(runner())
+
+
+class TournamentStandingsSelectView(discord.ui.View):
+    def __init__(self, cog: Tournaments, tournaments: list[dict]):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.message: discord.Message | None = None
+        self.tournament_map: dict[str, dict] = {}
+
+        options: list[discord.SelectOption] = []
+        for tournament in tournaments:
+            identifier = cog._resolve_tournament_identifier(tournament)
+            if not identifier or identifier in self.tournament_map:
+                continue
+
+            name = (tournament.get("name") or "Unnamed Tournament")[:100]
+            state = (tournament.get("state") or "").replace("_", " ").title() or "Pending"
+            start_at = tournament.get("start_at") or tournament.get("started_at")
+            description_parts = [state]
+            if start_at:
+                description_parts.append(f"Start: {start_at}")
+            description = " • ".join(description_parts)
+
+            options.append(
+                discord.SelectOption(
+                    label=name,
+                    description=description[:100] if description else None,
+                    value=identifier,
+                )
+            )
+            self.tournament_map[identifier] = tournament
+
+            if len(options) >= 25:
+                break
+
+        self.select: TournamentStandingsSelect | None = None
+        if options:
+            self.select = TournamentStandingsSelect(self, options)
+            self.add_item(self.select)
+
+    def options_available(self) -> bool:
+        return bool(self.tournament_map)
+
+    def disable_all_items(self) -> None:
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+
+    async def show_standings(
+        self,
+        interaction: discord.Interaction,
+        tournament: dict,
+        identifier: str,
+    ) -> None:
+        resolved_identifier = self.cog._resolve_tournament_identifier(tournament) or identifier
+        if not resolved_identifier:
+            await interaction.followup.send(
+                "I couldn't determine the identifier for that tournament.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            detailed = await self.cog._fetch_challonge_tournament(
+                resolved_identifier,
+                include_participants=True,
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to retrieve tournament: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        if not detailed:
+            await interaction.followup.send(
+                "I couldn't find that tournament on Challonge.",
+                ephemeral=True,
+            )
+            return
+
+        chunks, error_message = self.cog._render_tournament_standings(detailed)
+        if error_message:
+            await interaction.followup.send(error_message, ephemeral=True)
+            return
+
+        if not chunks:
+            await interaction.followup.send(
+                "No standings are available for that tournament yet.",
+                ephemeral=True,
+            )
+            return
+
+        for chunk in chunks:
+            await interaction.followup.send(chunk, ephemeral=True)
+
+    async def on_timeout(self) -> None:
+        if not self.message:
+            return
+        self.disable_all_items()
+        try:
+            await self.message.edit(
+                content="Tournament selection timed out.",
+                view=self,
+            )
+        except Exception:
+            self.cog.logger.exception(
+                "Failed to update tournament standings selection message on timeout"
+            )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tournaments(bot))
