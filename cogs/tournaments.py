@@ -27,6 +27,16 @@ from core.state import AppState
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
+# Challonge exposes a handful of tournament states. "pending" means the
+# tournament has been created but not started yet, while "underway" indicates
+# that matches are currently being played. "awaiting_review" happens after play
+# concludes but before the organizer finalizes results. All of these cases
+# should be surfaced as "active" to Discord users, but only "pending"
+# tournaments should be joinable. Previously we only accepted "pending" when
+# fetching Challonge data, which meant ongoing events such as Swiss tournaments
+# in the "underway" state were filtered out and never shown in
+# `/tournament_view` or `/tournament_standings`.
+ACTIVE_TOURNAMENT_STATES = {"pending", "underway", "awaiting_review"}
 JOINABLE_TOURNAMENT_STATES = {"pending"}
 
 def _normalize_card_id(value: str | int | None) -> str | None:
@@ -478,7 +488,9 @@ class Tournaments(commands.Cog):
 
         return None
     
-    async def _fetch_active_tournaments(self) -> list[dict]:
+    async def _fetch_active_tournaments(
+        self, *, allowed_states: set[str] | None = None
+    ) -> list[dict]:
         def _is_truthy(value: object) -> bool:
             if value is None:
                 return False
@@ -573,6 +585,7 @@ class Tournaments(commands.Cog):
 
         tournaments: list[dict] = []
         seen_identifiers: set[str] = set()
+        valid_states = allowed_states or ACTIVE_TOURNAMENT_STATES
         for candidate in _resolve_response_entries(response):
             archived_flag = _get_candidate_value(candidate, "archived")
             archived_at = _get_candidate_value(candidate, "archived_at")
@@ -588,7 +601,7 @@ class Tournaments(commands.Cog):
             normalized_state = (
                 (_get_candidate_value(candidate, "state") or "").strip().lower()
             )
-            if normalized_state not in JOINABLE_TOURNAMENT_STATES:
+            if normalized_state not in valid_states:
                 continue
 
             identifier = (
@@ -676,7 +689,9 @@ class Tournaments(commands.Cog):
     @app_commands.guilds(GUILD)
     async def tournament_join(self, interaction: discord.Interaction) -> None:
         try:
-            tournaments = await self._fetch_active_tournaments()
+            tournaments = await self._fetch_active_tournaments(
+                allowed_states=JOINABLE_TOURNAMENT_STATES
+            )
         except RuntimeError as exc:
             await interaction.response.send_message(
                 f"Failed to retrieve pending tournaments: {exc}",
@@ -727,7 +742,7 @@ class Tournaments(commands.Cog):
             return
 
         await interaction.response.send_message(
-            "Select an active tournament to join:",
+            "Select a pending tournament to join:",
             view=view,
             ephemeral=True,
         )
