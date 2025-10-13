@@ -436,10 +436,11 @@ class Tournaments(commands.Cog):
                 name_key,
             )
 
+        sorted_participants = sorted(participants, key=_sort_key)
         lines = [f"Standings for **{name}** ({state_display})"]
-        for participant in sorted(participants, key=_sort_key):
+        for index, participant in enumerate(sorted_participants, start=1):
             final_rank = _to_int(participant.get("final_rank"))
-            seed = _to_int(participant.get("seed"))
+            rank_value = final_rank if final_rank is not None else index
             display_name = (
                 participant.get("display_name")
                 or participant.get("name")
@@ -447,24 +448,12 @@ class Tournaments(commands.Cog):
                 or f"Participant #{participant.get('id', '?')}"
             )
 
-            rank_text = f"{final_rank}" if final_rank is not None else "—"
-            seed_text = f"Seed {seed}" if seed is not None else "Seed ?"
-
-            wins = _to_int(participant.get("matches_won"))
-            losses = _to_int(participant.get("matches_lost"))
-            ties = _to_int(participant.get("matches_tied"))
-            status_bits: list[str] = []
-            if wins is not None and losses is not None:
-                record = f"{wins}-{losses}"
-                if ties is not None and ties > 0:
-                    record += f"-{ties}"
-                status_bits.append(record)
+            suffix = ""
             active_flag = participant.get("active")
             if isinstance(active_flag, bool) and not active_flag:
-                status_bits.append("Dropped")
+                suffix = " (dropped)"
 
-            status_text = f" — {', '.join(status_bits)}" if status_bits else ""
-            lines.append(f"{rank_text:>3} | {display_name} ({seed_text}){status_text}")
+            lines.append(f"{rank_value}. {display_name}{suffix}")
 
         content = "\n".join(lines)
         chunks = _chunk_issue_messages("", [content], limit=2000)
@@ -948,13 +937,13 @@ class Tournaments(commands.Cog):
         await interaction.followup.send("\n".join(message_lines), ephemeral=True)
 
     @app_commands.command(
-        name="challonge_shuffle_seeds",
+        name="tournament_shuffle_seeds",
         description="Shuffle the seeding for a pending single or double elimination tournament.",
     )
     @app_commands.guilds(GUILD)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(tournament_id="The Challonge tournament identifier (slug or ID).")
-    async def challonge_shuffle_seeds(
+    async def tournament_shuffle_seeds(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
@@ -1009,28 +998,18 @@ class Tournaments(commands.Cog):
         )
 
     @app_commands.command(
-        name="challonge_drop_player",
-        description="Drop or remove a participant from a Challonge tournament.",
+        name="tournament_drop",
+        description="Drop yourself from a Challonge tournament.",
     )
     @app_commands.guilds(GUILD)
-    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         tournament_id="The Challonge tournament identifier (slug or ID).",
-        player="Discord mention/ID, participant ID, or exact Challonge name.",
     )
-    async def challonge_drop_player(
+    async def tournament_drop(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
-        player: str,
     ) -> None:
-        token = (player or "").strip()
-        if not token:
-            await interaction.response.send_message(
-                "You need to provide a participant to drop or remove.",
-                ephemeral=True,
-            )
-            return
 
         await interaction.response.defer(ephemeral=True)
 
@@ -1050,6 +1029,15 @@ class Tournaments(commands.Cog):
             )
             return
 
+        normalized_state = (tournament.get("state") or "").strip().lower()
+        pending_states = {"pending", "checking_in"}
+        if normalized_state not in pending_states:
+            await interaction.followup.send(
+                "Drops during an active tournament must be done manually. Ensure all remaining matches are reported and ask an admin to drop you",
+                ephemeral=True,
+            )
+            return
+
         participants = self._extract_tournament_participants(tournament)
         if not participants:
             await interaction.followup.send(
@@ -1058,120 +1046,67 @@ class Tournaments(commands.Cog):
             )
             return
 
-        mention_match = re.fullmatch(r"<@!?(\d+)>", token)
-        numeric_tokens: set[str] = set()
-        if mention_match:
-            numeric_tokens.add(mention_match.group(1))
-        if token.isdigit():
-            numeric_tokens.add(token)
-        lower_token = token.lower()
+        user_id_str = str(interaction.user.id)
+        name_candidates = {
+            getattr(interaction.user, "display_name", None),
+            getattr(interaction.user, "global_name", None),
+            getattr(interaction.user, "name", None),
+            getattr(interaction.user, "nick", None),
+        }
+        normalized_names = {
+            value.strip().lower()
+            for value in name_candidates
+            if isinstance(value, str) and value.strip()
+        }
 
-        matches: list[dict] = []
-        for participant in participants:
-            candidate_ids = {
-                str(participant.get("id")) if participant.get("id") is not None else "",
-                str(participant.get("seed")) if participant.get("seed") is not None else "",
-                str(participant.get("misc")) if participant.get("misc") is not None else "",
-            }
-            candidate_ids = {value for value in candidate_ids if value}
-            if numeric_tokens and candidate_ids.intersection(numeric_tokens):
-                matches.append(participant)
-                continue
+        participant: dict | None = None
+        for entry in participants:
+            misc = entry.get("misc")
+            if isinstance(misc, str) and misc.strip() == user_id_str:
+                participant = entry
+                break
 
             for key in ("display_name", "name", "username", "challonge_username"):
-                value = participant.get(key)
-                if isinstance(value, str) and value.strip().lower() == lower_token:
-                    matches.append(participant)
+                value = entry.get(key)
+                if (
+                    isinstance(value, str)
+                    and value.strip().lower() in normalized_names
+                ):
+                    participant = entry
                     break
+            if participant is not None:
+                break
 
-        if not matches:
+        if participant is None:
             await interaction.followup.send(
-                "I couldn't find a participant matching that value.",
+                "I couldn't find your registration in that tournament.",
                 ephemeral=True,
             )
             return
 
-        if len(matches) > 1:
-            preview = ", ".join(
-                (match.get("display_name") or match.get("name") or str(match.get("id")) or "?")
-                for match in matches[:5]
-            )
-            if len(matches) > 5:
-                preview += ", ..."
-            await interaction.followup.send(
-                f"That reference matches multiple participants: {preview}. Please be more specific.",
-                ephemeral=True,
-            )
-            return
-
-        participant = matches[0]
         participant_id = participant.get("id")
         if participant_id is None:
             await interaction.followup.send(
-                "I couldn't determine the participant's Challonge ID.",
-                ephemeral=True,
-            )
-            return
-
-        normalized_state = (tournament.get("state") or "").strip().lower()
-        pending_states = {"pending", "checking_in"}
-        completed_states = {"complete"}
-
-        if normalized_state in completed_states:
-            await interaction.followup.send(
-                "The tournament is complete and participants can no longer be modified.",
-                ephemeral=True,
-            )
-            return
-
-        participant_name = (
-            participant.get("display_name")
-            or participant.get("name")
-            or participant.get("username")
-            or f"Participant #{participant_id}"
-        )
-
-        if normalized_state in pending_states:
-            try:
-                await self._challonge_request(
-                    "DELETE",
-                    f"/tournaments/{tournament_id}/participants/{participant_id}.json",
-                )
-            except RuntimeError as exc:
-                await interaction.followup.send(
-                    f"Failed to remove {participant_name}: {exc}",
-                    ephemeral=True,
-                )
-                return
-
-            await interaction.followup.send(
-                f"Removed **{participant_name}** from `{tournament_id}`.",
-                ephemeral=True,
-            )
-            return
-
-        active_flag = participant.get("active")
-        if isinstance(active_flag, bool) and not active_flag:
-            await interaction.followup.send(
-                f"**{participant_name}** is already dropped from `{tournament_id}`.",
+                "I couldn't determine your Challonge participant ID.",
                 ephemeral=True,
             )
             return
 
         try:
             await self._challonge_request(
-                "POST",
-                f"/tournaments/{tournament_id}/participants/{participant_id}/mark_inactive.json",
+                "DELETE",
+                f"/tournaments/{tournament_id}/participants/{participant_id}.json",
             )
         except RuntimeError as exc:
             await interaction.followup.send(
-                f"Failed to drop {participant_name}: {exc}",
+                f"Failed to drop you from the tournament: {exc}",
                 ephemeral=True,
             )
             return
 
+        tournament_name = tournament.get("name") or tournament_id
         await interaction.followup.send(
-            f"Dropped **{participant_name}** from `{tournament_id}`.",
+            f"Removed you from **{tournament_name}**.",
             ephemeral=True,
         )
 
@@ -1762,12 +1697,25 @@ class TournamentStandingsSelectView(discord.ui.View):
             if hasattr(child, "disabled"):
                 child.disabled = True
 
+    async def _delete_selection_message(
+        self, interaction: discord.Interaction
+    ) -> None:
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            self.cog.logger.exception(
+                "Failed to delete tournament standings selection message"
+            )
+        finally:
+            self.message = None
+
     async def show_standings(
         self,
         interaction: discord.Interaction,
         tournament: dict,
         identifier: str,
     ) -> None:
+        await self._delete_selection_message(interaction)
         resolved_identifier = self.cog._resolve_tournament_identifier(tournament) or identifier
         if not resolved_identifier:
             await interaction.followup.send(
