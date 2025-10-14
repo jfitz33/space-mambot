@@ -249,9 +249,12 @@ class Tournaments(commands.Cog):
         path: str,
         *,
         data: dict[str, str] | None = None,
+        api_base: str | None = None,
     ) -> dict:
         username, api_key = self._get_challonge_credentials()
-        base_url = os.getenv("CHALLONGE_API_BASE", "https://api.challonge.com/v1")
+        base_url = api_base or os.getenv(
+            "CHALLONGE_API_BASE", "https://api.challonge.com/v1"
+        )
         url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
         parsed_url = urlparse(url)
@@ -408,44 +411,6 @@ class Tournaments(commands.Cog):
 
         return participants
 
-    async def _fetch_challonge_standings(self, tournament_id: str) -> list[dict]:
-        response = await self._challonge_request(
-            "GET",
-            f"/tournaments/{tournament_id}/standings.json",
-        )
-
-        if isinstance(response, list):
-            raw_entries = response
-        elif isinstance(response, dict):
-            potential = response.get("standings") or response.get("data") or []
-            raw_entries = potential if isinstance(potential, list) else []
-        else:
-            raw_entries = []
-
-        standings: list[dict] = []
-        for entry in raw_entries:
-            standing: dict | None = None
-            if isinstance(entry, dict):
-                potential = entry.get("standing")
-                if isinstance(potential, dict):
-                    standing = potential
-                else:
-                    attributes = entry.get("attributes")
-                    if isinstance(attributes, dict):
-                        merged: dict = {}
-                        merged.update(attributes)
-                        for key, value in entry.items():
-                            if key in {"attributes", "relationships"}:
-                                continue
-                            merged.setdefault(key, value)
-                        standing = merged
-                    else:
-                        standing = entry
-            if isinstance(standing, dict):
-                standings.append(standing)
-
-        return standings
-
     def _extract_tournament_participants(self, tournament: dict) -> list[dict]:
         raw_entries = tournament.get("participants")
         if not isinstance(raw_entries, list):
@@ -501,124 +466,6 @@ class Tournaments(commands.Cog):
                     return entry
 
         return None
-
-    def _render_tournament_standings(
-        self, tournament: dict, standings: list[dict] | None = None
-    ) -> tuple[list[str], str | None]:
-        name = tournament.get("name") or "Unnamed Tournament"
-        state = (tournament.get("state") or "").replace("_", " ")
-        state_display = state.title() if state else "Unknown"
-        standings = standings or []
-
-        if not standings:
-            return [], "No standings are available for that tournament yet."
-
-        participants = self._extract_tournament_participants(tournament)
-
-        def _normalize_identifier(value: object) -> str | None:
-            if value is None or isinstance(value, bool):
-                return None
-            if isinstance(value, (int, float)):
-                try:
-                    integer = int(value)
-                except (TypeError, ValueError, OverflowError):
-                    return None
-                return str(integer)
-            if isinstance(value, str):
-                text_value = value.strip()
-                return text_value or None
-            return None
-
-        participant_lookup: dict[str, dict] = {}
-        for participant in participants:
-            if not isinstance(participant, dict):
-                continue
-            for key in ("id", "participant_id", "player_id", "user_id", "challonge_user_id"):
-                identifier = _normalize_identifier(participant.get(key))
-                if identifier and identifier not in participant_lookup:
-                    participant_lookup[identifier] = participant
-
-        def _resolve_participant(entry: dict) -> dict | None:
-            if not isinstance(entry, dict):
-                return None
-            for key in ("participant_id", "player_id", "id", "user_id", "challonge_user_id"):
-                identifier = _normalize_identifier(entry.get(key))
-                if identifier and identifier in participant_lookup:
-                    return participant_lookup[identifier]
-            for nested_key in ("participant", "player", "team"):
-                nested = entry.get(nested_key)
-                if isinstance(nested, dict):
-                    resolved = _resolve_participant(nested)
-                    if resolved is not None:
-                        return resolved
-            return None
-
-        def _resolve_rank(entry: dict) -> int | None:
-            for key in ("rank", "placement", "position"):
-                value = entry.get(key)
-                if value is None:
-                    continue
-                try:
-                    number = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if number > 0:
-                    return number
-            return None
-
-        def _format_name(participant: dict | None, entry: dict) -> str:
-            if participant:
-                return (
-                    participant.get("display_name")
-                    or participant.get("name")
-                    or participant.get("username")
-                    or f"Participant #{participant.get('id', '?')}"
-                )
-            return (
-                entry.get("display_name")
-                or entry.get("name")
-                or entry.get("username")
-                or entry.get("player_name")
-                or f"Participant #{entry.get('participant_id', entry.get('id', '?'))}"
-            )
-
-        def _is_active(participant: dict | None, entry: dict) -> bool | None:
-            if participant and isinstance(participant.get("active"), bool):
-                return participant["active"]
-            active_flag = entry.get("active")
-            if isinstance(active_flag, bool):
-                return active_flag
-            return None
-
-        ordered_standings = sorted(
-            (entry for entry in standings if isinstance(entry, dict)),
-            key=lambda entry: (_resolve_rank(entry) or 10**9, entry.get("tiebreak_rank", 10**9)),
-        )
-
-        lines = [f"Standings for **{name}** ({state_display})"]
-        entries_rendered = 0
-
-        for entry in ordered_standings:
-            rank_value = _resolve_rank(entry)
-            if rank_value is None:
-                continue
-
-            participant = _resolve_participant(entry)
-            display_name = _format_name(participant, entry)
-            active_flag = _is_active(participant, entry)
-            suffix = " (dropped)" if active_flag is False else ""
-
-            lines.append(f"{rank_value}. {display_name}{suffix}")
-            entries_rendered += 1
-
-        if entries_rendered == 0:
-            return [], "No standings are available for that tournament yet."
-
-        content = "\n".join(lines)
-        chunks = _chunk_issue_messages("", [content], limit=2000)
-        if not chunks:
-            chunks = [content]
-        return chunks, None
 
     async def _find_existing_challonge_participant(
         self,
@@ -2061,7 +1908,7 @@ class TournamentStandingsSelect(discord.ui.Select):
         tournament_name = tournament.get("name") or "Unnamed Tournament"
 
         await interaction.response.edit_message(
-            content=f"Generating standings for **{tournament_name}**…",
+            content=f"Preparing standings link for **{tournament_name}**…",
             view=self.parent_view,
         )
 
@@ -2150,7 +1997,9 @@ class TournamentStandingsSelectView(discord.ui.View):
         identifier: str,
     ) -> None:
         await self._delete_selection_message(interaction)
-        resolved_identifier = self.cog._resolve_tournament_identifier(tournament) or identifier
+        resolved_identifier = (
+            self.cog._resolve_tournament_identifier(tournament) or identifier
+        )
         if not resolved_identifier:
             await interaction.followup.send(
                 "I couldn't determine the identifier for that tournament.",
@@ -2158,53 +2007,34 @@ class TournamentStandingsSelectView(discord.ui.View):
             )
             return
 
-        try:
-            detailed = await self.cog._fetch_challonge_tournament(
-                resolved_identifier,
-                include_participants=True,
-            )
-        except RuntimeError as exc:
+        raw_url = tournament.get("full_challonge_url") or tournament.get("url")
+        standings_url: str | None = None
+        if isinstance(raw_url, str) and raw_url.strip():
+            candidate = raw_url.strip()
+            if candidate.startswith("http://") or candidate.startswith("https://"):
+                standings_url = candidate.rstrip("/")
+            else:
+                standings_url = f"https://challonge.com/{candidate.lstrip('/')}".rstrip("/")
+        else:
+            if resolved_identifier.startswith("http://") or resolved_identifier.startswith("https://"):
+                standings_url = resolved_identifier.rstrip("/")
+            else:
+                standings_url = f"https://challonge.com/{resolved_identifier}".rstrip("/")
+
+        if not standings_url:
             await interaction.followup.send(
-                f"Failed to retrieve tournament: {exc}",
+                "I couldn't determine a standings link for that tournament.",
                 ephemeral=True,
             )
             return
 
-        if not detailed:
-            await interaction.followup.send(
-                "I couldn't find that tournament on Challonge.",
-                ephemeral=True,
-            )
-            return
+        if not standings_url.lower().endswith("/standings"):
+            standings_url = f"{standings_url}/standings"
 
-        standings_data: list[dict] | None = None
-        try:
-            standings_data = await self.cog._fetch_challonge_standings(
-                resolved_identifier
-            )
-        except RuntimeError as exc:
-            self.cog.logger.warning(
-                "Failed to fetch Challonge standings for %s: %s",
-                resolved_identifier,
-                exc,
-            )
-
-        chunks, error_message = self.cog._render_tournament_standings(
-            detailed, standings_data
+        await interaction.followup.send(
+            f"Here is a link to this tournament's standings: {standings_url}",
+            ephemeral=True,
         )
-        if error_message:
-            await interaction.followup.send(error_message, ephemeral=True)
-            return
-
-        if not chunks:
-            await interaction.followup.send(
-                "No standings are available for that tournament yet.",
-                ephemeral=True,
-            )
-            return
-
-        for chunk in chunks:
-            await interaction.followup.send(chunk, ephemeral=True)
 
     async def on_timeout(self) -> None:
         if not self.message:
