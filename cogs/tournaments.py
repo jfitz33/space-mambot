@@ -370,14 +370,8 @@ class Tournaments(commands.Cog):
         tournament_id: str,
         *,
         include_participants: bool = False,
-        include_matches: bool = False,
     ) -> dict:
-        query_params: list[str] = []
-        if include_participants:
-            query_params.append("include_participants=1")
-        if include_matches:
-            query_params.append("include_matches=1")
-        query = f"?{'&'.join(query_params)}" if query_params else ""
+        query = "?include_participants=1" if include_participants else ""
         response = await self._challonge_request(
             "GET", f"/tournaments/{tournament_id}.json{query}"
         )
@@ -432,106 +426,6 @@ class Tournaments(commands.Cog):
                 participants.append(participant)
         return participants
 
-    def _extract_tournament_matches(self, tournament: dict) -> list[dict]:
-        raw_entries = tournament.get("matches")
-        if not isinstance(raw_entries, list):
-            return []
-
-        matches: list[dict] = []
-        for entry in raw_entries:
-            match: dict | None = None
-            if isinstance(entry, dict):
-                potential = entry.get("match")
-                if isinstance(potential, dict):
-                    match = potential
-                else:
-                    match = entry if isinstance(entry, dict) else None
-            if match is not None:
-                matches.append(match)
-        return matches
-
-    async def _auto_report_bye_matches(
-        self,
-        tournament: dict,
-        *,
-        identifier: str | None = None,
-    ) -> bool:
-        matches = self._extract_tournament_matches(tournament)
-        if not matches:
-            return False
-
-        resolved_identifier = identifier or self._resolve_tournament_identifier(tournament)
-        if not resolved_identifier:
-            return False
-
-        def _normalize_id(value: object) -> str | None:
-            if value is None:
-                return None
-            if isinstance(value, str):
-                stripped = value.strip()
-                return stripped or None
-            try:
-                return str(int(value))
-            except (TypeError, ValueError):
-                return str(value)
-
-        any_reported = False
-
-        for match in matches:
-            if not isinstance(match, dict):
-                continue
-
-            state_value = str(match.get("state") or "").strip().lower()
-            if state_value in {"complete", "completed"}:
-                continue
-
-            winner_id = _normalize_id(match.get("winner_id"))
-            if winner_id is not None:
-                continue
-
-            player1_id = _normalize_id(match.get("player1_id"))
-            player2_id = _normalize_id(match.get("player2_id"))
-            active_players = [pid for pid in (player1_id, player2_id) if pid is not None]
-            if len(active_players) != 1:
-                continue
-
-            target_winner = active_players[0]
-            match_id = _normalize_id(match.get("id"))
-            if match_id is None:
-                continue
-
-            payload = {
-                "match[winner_id]": target_winner,
-                "match[scores_csv]": "1-0",
-            }
-
-            try:
-                response = await self._challonge_request(
-                    "PUT",
-                    f"/tournaments/{resolved_identifier}/matches/{match_id}.json",
-                    data=payload,
-                )
-            except RuntimeError as exc:
-                self.logger.warning(
-                    "Failed to auto-report bye match %s in tournament %s: %s",
-                    match_id,
-                    resolved_identifier,
-                    exc,
-                )
-                continue
-
-            updated = response.get("match", response)
-            if isinstance(updated, dict):
-                match.update(updated)
-            else:
-                match["winner_id"] = target_winner
-                match["state"] = "complete"
-                match["scores_csv"] = "1-0"
-
-            any_reported = True
-
-        return any_reported
-
     def _find_matching_participant(
         self, participants: list[dict], user: "discord.abc.User"
     ) -> dict | None:
@@ -574,36 +468,12 @@ class Tournaments(commands.Cog):
         self, tournament: dict
     ) -> tuple[list[str], str | None]:
         participants = self._extract_tournament_participants(tournament)
-        matches = self._extract_tournament_matches(tournament)
         name = tournament.get("name") or "Unnamed Tournament"
         state = (tournament.get("state") or "").replace("_", " ")
         state_display = state.title() if state else "Unknown"
 
         if not participants:
             return [], f"I couldn't find any participants for **{name}**."
-
-        def _normalize_id(value: object) -> str | None:
-            if value is None:
-                return None
-            if isinstance(value, str):
-                stripped = value.strip()
-                return stripped or None
-            try:
-                return str(int(value))
-            except (TypeError, ValueError):
-                return str(value)
-
-        def _ensure_record(target: str) -> dict:
-            record = participant_records.get(target)
-            if record is None:
-                record = {
-                    "wins": 0,
-                    "losses": 0,
-                    "draws": 0,
-                    "byes": 0,
-                }
-                participant_records[target] = record
-            return record
 
         def _to_int(value: object) -> int | None:
             if value is None:
@@ -613,60 +483,6 @@ class Tournaments(commands.Cog):
             except (TypeError, ValueError):
                 return None
             return number if number > 0 else None
-
-        participant_records: dict[str, dict[str, int]] = {}
-        for participant in participants:
-            identifier = _normalize_id(participant.get("id"))
-            if identifier is None:
-                continue
-            participant_records[identifier] = {
-                "wins": 0,
-                "losses": 0,
-                "draws": 0,
-                "byes": 0,
-            }
-
-        for match in matches:
-            if not isinstance(match, dict):
-                continue
-
-            state_value = str(match.get("state") or "").strip().lower()
-            if state_value not in {"complete", "completed"}:
-                continue
-
-            winner_id = _normalize_id(match.get("winner_id"))
-            loser_id = _normalize_id(match.get("loser_id"))
-            player1_id = _normalize_id(match.get("player1_id"))
-            player2_id = _normalize_id(match.get("player2_id"))
-
-            if winner_id is not None:
-                winner_record = _ensure_record(winner_id)
-                winner_record["wins"] += 1
-
-                opponent_id: str | None
-                if winner_id == player1_id:
-                    opponent_id = player2_id
-                elif winner_id == player2_id:
-                    opponent_id = player1_id
-                else:
-                    opponent_id = None
-
-                if opponent_id is None:
-                    winner_record["byes"] += 1
-
-            if loser_id is not None:
-                loser_record = _ensure_record(loser_id)
-                loser_record["losses"] += 1
-
-            if (
-                winner_id is None
-                and loser_id is None
-                and player1_id is not None
-                and player2_id is not None
-            ):
-                for participant_id in (player1_id, player2_id):
-                    draw_record = _ensure_record(participant_id)
-                    draw_record["draws"] += 1
 
         def _sort_key(participant: dict) -> tuple[int, int, str]:
             final_rank = _to_int(participant.get("final_rank"))
@@ -695,29 +511,7 @@ class Tournaments(commands.Cog):
             if isinstance(active_flag, bool) and not active_flag:
                 suffix = " (dropped)"
 
-            record_info = ""
-            participant_id = _normalize_id(participant.get("id"))
-            if participant_id is not None:
-                record = participant_records.get(participant_id)
-                if record:
-                    wins = record.get("wins", 0)
-                    losses = record.get("losses", 0)
-                    draws = record.get("draws", 0)
-                    byes = record.get("byes", 0)
-
-                    total_results = wins + losses + draws
-                    pieces: list[str] = []
-                    if total_results:
-                        base_record = f"{wins}-{losses}"
-                        if draws:
-                            base_record += f"-{draws}"
-                        pieces.append(base_record)
-                    if byes:
-                        pieces.append(f"{byes} bye{'s' if byes != 1 else ''}")
-                    if pieces:
-                        record_info = " (" + ", ".join(pieces) + ")"
-
-            lines.append(f"{rank_value}. {display_name}{suffix}{record_info}")
+            lines.append(f"{rank_value}. {display_name}{suffix}")
 
         content = "\n".join(lines)
         chunks = _chunk_issue_messages("", [content], limit=2000)
@@ -2267,7 +2061,6 @@ class TournamentStandingsSelectView(discord.ui.View):
             detailed = await self.cog._fetch_challonge_tournament(
                 resolved_identifier,
                 include_participants=True,
-                include_matches=True,
             )
         except RuntimeError as exc:
             await interaction.followup.send(
@@ -2282,16 +2075,6 @@ class TournamentStandingsSelectView(discord.ui.View):
                 ephemeral=True,
             )
             return
-
-        try:
-            await self.cog._auto_report_bye_matches(
-                detailed, identifier=resolved_identifier
-            )
-        except Exception:
-            self.cog.logger.exception(
-                "Failed to auto-report bye matches for tournament %s",
-                resolved_identifier,
-            )
 
         chunks, error_message = self.cog._render_tournament_standings(detailed)
         if error_message:
