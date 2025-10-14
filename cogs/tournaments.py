@@ -38,6 +38,10 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 # `/tournament_view` or `/tournament_standings`.
 ACTIVE_TOURNAMENT_STATES = {"pending", "underway", "awaiting_review"}
 JOINABLE_TOURNAMENT_STATES = {"pending"}
+DROP_ELIGIBLE_TOURNAMENT_STATES = {"pending", "checking_in"}
+DROP_DISCOVERY_TOURNAMENT_STATES = (
+    ACTIVE_TOURNAMENT_STATES | DROP_ELIGIBLE_TOURNAMENT_STATES
+)
 
 def _normalize_card_id(value: str | int | None) -> str | None:
     if value is None:
@@ -167,6 +171,22 @@ class CardMetadata:
     card_type: str | None = None
     from_state: bool = False
     from_api: bool = False
+
+
+@dataclass(slots=True)
+class TournamentDropEntry:
+    identifier: str
+    tournament: dict
+    participant_id: str
+
+    def display_name(self) -> str:
+        if isinstance(self.tournament, dict):
+            name = self.tournament.get("name")
+            if isinstance(name, str):
+                cleaned = name.strip()
+                if cleaned:
+                    return cleaned
+        return self.identifier
 
 
 def _categorize_card_type(card_type: str | None) -> str:
@@ -406,6 +426,44 @@ class Tournaments(commands.Cog):
                 participants.append(participant)
         return participants
 
+    def _find_matching_participant(
+        self, participants: list[dict], user: "discord.abc.User"
+    ) -> dict | None:
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return None
+
+        user_id_str = str(user_id)
+        name_candidates = {
+            getattr(user, "display_name", None),
+            getattr(user, "global_name", None),
+            getattr(user, "name", None),
+            getattr(user, "nick", None),
+        }
+        normalized_names = {
+            value.strip().lower()
+            for value in name_candidates
+            if isinstance(value, str) and value.strip()
+        }
+
+        for entry in participants:
+            if not isinstance(entry, dict):
+                continue
+
+            misc = entry.get("misc")
+            if isinstance(misc, str) and misc.strip() == user_id_str:
+                return entry
+
+            for key in ("display_name", "name", "username", "challonge_username"):
+                value = entry.get(key)
+                if not isinstance(value, str):
+                    continue
+                cleaned = value.strip().lower()
+                if cleaned and cleaned in normalized_names:
+                    return entry
+
+        return None
+
     def _render_tournament_standings(
         self, tournament: dict
     ) -> tuple[list[str], str | None]:
@@ -476,7 +534,15 @@ class Tournaments(commands.Cog):
                 return participant
 
         return None
-    
+
+    async def _drop_tournament_participant(
+        self, tournament_id: str, participant_id: str
+    ) -> None:
+        await self._challonge_request(
+            "DELETE",
+            f"/tournaments/{tournament_id}/participants/{participant_id}.json",
+        )
+
     async def _fetch_active_tournaments(
         self, *, allowed_states: set[str] | None = None
     ) -> list[dict]:
@@ -1002,20 +1068,16 @@ class Tournaments(commands.Cog):
         description="Drop yourself from a Challonge tournament.",
     )
     @app_commands.guilds(GUILD)
-    @app_commands.describe(
-        tournament_id="The Challonge tournament identifier (slug or ID).",
-    )
     async def tournament_drop(
         self,
         interaction: discord.Interaction,
-        tournament_id: str,
     ) -> None:
 
         await interaction.response.defer(ephemeral=True)
 
         try:
-            tournament = await self._fetch_challonge_tournament(
-                tournament_id, include_participants=True
+            tournaments = await self._fetch_active_tournaments(
+                allowed_states=DROP_DISCOVERY_TOURNAMENT_STATES
             )
         except RuntimeError as exc:
             await interaction.followup.send(
@@ -1023,90 +1085,178 @@ class Tournaments(commands.Cog):
             )
             return
 
-        if not tournament:
+        if not tournaments:
             await interaction.followup.send(
-                "I couldn't find that tournament on Challonge.", ephemeral=True
+                "I couldn't find any active tournaments.", ephemeral=True
             )
             return
 
-        normalized_state = (tournament.get("state") or "").strip().lower()
-        pending_states = {"pending", "checking_in"}
-        if normalized_state not in pending_states:
+        def _resolve_name(data: dict, fallback: str) -> str:
+            if isinstance(data, dict):
+                name = data.get("name")
+                if isinstance(name, str):
+                    cleaned = name.strip()
+                    if cleaned:
+                        return cleaned
+            return fallback
+
+        def _format_list(values: list[str]) -> str:
+            return ", ".join(f"**{value}**" for value in values)
+
+        eligible_entries: list[TournamentDropEntry] = []
+        manual_entries: list[str] = []
+        missing_id_entries: list[str] = []
+        seen_identifiers: set[str] = set()
+
+        for candidate in tournaments:
+            if not isinstance(candidate, dict):
+                continue
+
+            identifier = self._resolve_tournament_identifier(candidate)
+            if not identifier or identifier in seen_identifiers:
+                continue
+            seen_identifiers.add(identifier)
+
+            try:
+                detailed = await self._fetch_challonge_tournament(
+                    identifier, include_participants=True
+                )
+            except RuntimeError:
+                continue
+
+            if not detailed:
+                continue
+
+            participants = self._extract_tournament_participants(detailed)
+            if not participants:
+                continue
+
+            participant = self._find_matching_participant(
+                participants, interaction.user
+            )
+            if participant is None:
+                continue
+
+            normalized_state = (detailed.get("state") or "").strip().lower()
+            display_name = _resolve_name(detailed, identifier)
+
+            if normalized_state not in DROP_ELIGIBLE_TOURNAMENT_STATES:
+                if display_name not in manual_entries:
+                    manual_entries.append(display_name)
+                continue
+
+            participant_id = participant.get("id")
+            if participant_id is None:
+                if display_name not in missing_id_entries:
+                    missing_id_entries.append(display_name)
+                continue
+
+            eligible_entries.append(
+                TournamentDropEntry(
+                    identifier=identifier,
+                    tournament=detailed,
+                    participant_id=str(participant_id),
+                )
+            )
+
+        if not eligible_entries:
+            if manual_entries or missing_id_entries:
+                message_parts: list[str] = []
+                if manual_entries:
+                    message_parts.append(
+                        "Drops during an active tournament must be done manually. "
+                        "Ensure all remaining matches are reported and ask an admin to drop you from "
+                        f"{_format_list(manual_entries)}."
+                    )
+                if missing_id_entries:
+                    message_parts.append(
+                        "I couldn't determine your Challonge participant ID for "
+                        f"{_format_list(missing_id_entries)}. Please ask an admin for assistance."
+                    )
+                await interaction.followup.send(
+                    "\n\n".join(message_parts),
+                    ephemeral=True,
+                )
+                return
+
             await interaction.followup.send(
-                "Drops during an active tournament must be done manually. Ensure all remaining matches are reported and ask an admin to drop you",
+                "I couldn't find any active tournaments you're registered in.",
                 ephemeral=True,
             )
             return
 
-        participants = self._extract_tournament_participants(tournament)
-        if not participants:
+        if len(eligible_entries) == 1:
+            entry = eligible_entries[0]
+            tournament_name = entry.display_name()
+
+            try:
+                await self._drop_tournament_participant(
+                    entry.identifier, entry.participant_id
+                )
+            except RuntimeError as exc:
+                message = (
+                    f"Failed to drop you from **{tournament_name}**: {exc}"
+                )
+                if manual_entries:
+                    message += (
+                        "\n\nDrops during an active tournament must be done manually. "
+                        "Ensure all remaining matches are reported and ask an admin to drop you from "
+                        f"{_format_list(manual_entries)}."
+                    )
+                if missing_id_entries:
+                    message += (
+                        "\n\nI couldn't determine your Challonge participant ID for "
+                        f"{_format_list(missing_id_entries)}. Please ask an admin for assistance."
+                    )
+                await interaction.followup.send(message, ephemeral=True)
+                return
+
+            message = f"Removed you from **{tournament_name}**."
+            if manual_entries:
+                message += (
+                    "\n\nDrops during an active tournament must be done manually. "
+                    "Ensure all remaining matches are reported and ask an admin to drop you from "
+                    f"{_format_list(manual_entries)}."
+                )
+            if missing_id_entries:
+                message += (
+                    "\n\nI couldn't determine your Challonge participant ID for "
+                    f"{_format_list(missing_id_entries)}. Please ask an admin for assistance."
+                )
+            await interaction.followup.send(message, ephemeral=True)
+            return
+
+        notes_sections: list[str] = []
+        if manual_entries:
+            notes_sections.append(
+                "Drops during an active tournament must be done manually. "
+                "Ensure all remaining matches are reported and ask an admin to drop you from "
+                f"{_format_list(manual_entries)}."
+            )
+        if missing_id_entries:
+            notes_sections.append(
+                "I couldn't determine your Challonge participant ID for "
+                f"{_format_list(missing_id_entries)}. Please ask an admin for assistance."
+            )
+
+        notes_text = "\n\n".join(notes_sections) if notes_sections else None
+
+        view = TournamentDropSelectView(self, eligible_entries, notes=notes_text)
+        if not view.options_available():
             await interaction.followup.send(
-                "That tournament has no registered participants.",
+                "I couldn't find any tournaments you're able to drop from right now.",
                 ephemeral=True,
             )
             return
 
-        user_id_str = str(interaction.user.id)
-        name_candidates = {
-            getattr(interaction.user, "display_name", None),
-            getattr(interaction.user, "global_name", None),
-            getattr(interaction.user, "name", None),
-            getattr(interaction.user, "nick", None),
-        }
-        normalized_names = {
-            value.strip().lower()
-            for value in name_candidates
-            if isinstance(value, str) and value.strip()
-        }
+        base_prompt = "Select the tournament you want to drop from:"
+        initial_message = (
+            f"{base_prompt}\n\n{notes_text}" if notes_text else base_prompt
+        )
 
-        participant: dict | None = None
-        for entry in participants:
-            misc = entry.get("misc")
-            if isinstance(misc, str) and misc.strip() == user_id_str:
-                participant = entry
-                break
-
-            for key in ("display_name", "name", "username", "challonge_username"):
-                value = entry.get(key)
-                if (
-                    isinstance(value, str)
-                    and value.strip().lower() in normalized_names
-                ):
-                    participant = entry
-                    break
-            if participant is not None:
-                break
-
-        if participant is None:
-            await interaction.followup.send(
-                "I couldn't find your registration in that tournament.",
-                ephemeral=True,
-            )
-            return
-
-        participant_id = participant.get("id")
-        if participant_id is None:
-            await interaction.followup.send(
-                "I couldn't determine your Challonge participant ID.",
-                ephemeral=True,
-            )
-            return
-
-        try:
-            await self._challonge_request(
-                "DELETE",
-                f"/tournaments/{tournament_id}/participants/{participant_id}.json",
-            )
-        except RuntimeError as exc:
-            await interaction.followup.send(
-                f"Failed to drop you from the tournament: {exc}",
-                ephemeral=True,
-            )
-            return
-
-        tournament_name = tournament.get("name") or tournament_id
-        await interaction.followup.send(
-            f"Removed you from **{tournament_name}**.",
+        view.message = await interaction.followup.send(
+            initial_message,
+            view=view,
             ephemeral=True,
         )
 
@@ -1501,6 +1651,189 @@ class Tournaments(commands.Cog):
         await self._send_deck_images(channel, deck_sections, metadata)
 
         return True
+
+
+class TournamentDropSelect(discord.ui.Select):
+    def __init__(
+        self, view: "TournamentDropSelectView", options: list[discord.SelectOption]
+    ) -> None:
+        super().__init__(
+            placeholder="Select a tournament…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.parent_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_value = self.values[0]
+        entry = self.parent_view.entry_map.get(selected_value)
+        if not entry:
+            await interaction.response.send_message(
+                "The selected tournament is no longer available.",
+                ephemeral=True,
+            )
+            return
+
+        self.parent_view.disable_all_items()
+        self.parent_view.stop()
+
+        tournament_name = entry.display_name()
+
+        try:
+            await interaction.response.edit_message(
+                content=f"Removing you from **{tournament_name}**…",
+                view=self.parent_view,
+            )
+        except Exception:
+            self.parent_view.cog.logger.exception(
+                "Failed to update tournament drop selection message"
+            )
+
+        async def runner() -> None:
+            try:
+                await self.parent_view.cog._drop_tournament_participant(
+                    entry.identifier, entry.participant_id
+                )
+            except RuntimeError as exc:
+                content = (
+                    f"Failed to drop you from **{tournament_name}**: {exc}"
+                )
+                updated = await self.parent_view.update_message_content(content)
+                if not updated:
+                    try:
+                        await interaction.followup.send(
+                            content,
+                            ephemeral=True,
+                        )
+                    except Exception:
+                        self.parent_view.cog.logger.exception(
+                            "Failed to send tournament drop error message"
+                        )
+                return
+            except Exception:
+                self.parent_view.cog.logger.exception(
+                    "Unexpected error while dropping tournament participant"
+                )
+                fallback = (
+                    "Failed to drop you from the tournament due to an unexpected error."
+                )
+                updated = await self.parent_view.update_message_content(fallback)
+                if not updated:
+                    try:
+                        await interaction.followup.send(
+                            fallback,
+                            ephemeral=True,
+                        )
+                    except Exception:
+                        self.parent_view.cog.logger.exception(
+                            "Failed to send tournament drop fallback message"
+                        )
+                return
+
+            success_message = (
+                f"You have been removed from **{tournament_name}**."
+            )
+            updated = await self.parent_view.update_message_content(success_message)
+            if not updated:
+                try:
+                    await interaction.followup.send(
+                        success_message,
+                        ephemeral=True,
+                    )
+                except Exception:
+                    self.parent_view.cog.logger.exception(
+                        "Failed to send tournament drop confirmation"
+                    )
+
+        asyncio.create_task(runner())
+
+
+class TournamentDropSelectView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "Tournaments",
+        entries: list[TournamentDropEntry],
+        *,
+        notes: str | None = None,
+    ):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.message: discord.Message | None = None
+        self.entry_map: dict[str, TournamentDropEntry] = {}
+        self.notes = notes
+
+        options: list[discord.SelectOption] = []
+        for entry in entries:
+            identifier = entry.identifier
+            if identifier in self.entry_map:
+                continue
+
+            tournament = entry.tournament if isinstance(entry.tournament, dict) else {}
+            name = entry.display_name()[:100]
+            state = (tournament.get("state") or "").replace("_", " ").title()
+            start_at = tournament.get("start_at") or tournament.get("started_at")
+            description_parts = []
+            if state:
+                description_parts.append(state)
+            if start_at:
+                description_parts.append(f"Start: {start_at}")
+            description = " • ".join(description_parts)
+
+            options.append(
+                discord.SelectOption(
+                    label=name,
+                    description=description[:100] if description else None,
+                    value=identifier,
+                )
+            )
+            self.entry_map[identifier] = entry
+
+            if len(options) >= 25:
+                break
+
+        self.select: TournamentDropSelect | None = None
+        if options:
+            self.select = TournamentDropSelect(self, options)
+            self.add_item(self.select)
+
+    def options_available(self) -> bool:
+        return bool(self.entry_map)
+
+    def disable_all_items(self) -> None:
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+
+    async def update_message_content(
+        self, content: str, *, include_notes: bool = True
+    ) -> bool:
+        if not self.message:
+            return False
+        if include_notes and self.notes:
+            if content:
+                content_to_send = f"{content}\n\n{self.notes}"
+            else:
+                content_to_send = self.notes
+        else:
+            content_to_send = content
+        try:
+            await self.message.edit(content=content_to_send, view=self)
+            return True
+        except Exception:
+            self.cog.logger.exception(
+                "Failed to update tournament drop selection message"
+            )
+            return False
+
+    async def on_timeout(self) -> None:
+        if not self.message:
+            return
+        self.disable_all_items()
+        await self.update_message_content(
+            "Tournament selection timed out.", include_notes=False
+        )
+
 
 class TournamentJoinSelect(discord.ui.Select):
     def __init__(self, view: "TournamentJoinSelectView", options: list[discord.SelectOption]):
