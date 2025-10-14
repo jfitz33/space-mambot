@@ -408,6 +408,44 @@ class Tournaments(commands.Cog):
 
         return participants
 
+    async def _fetch_challonge_standings(self, tournament_id: str) -> list[dict]:
+        response = await self._challonge_request(
+            "GET",
+            f"/tournaments/{tournament_id}/standings.json",
+        )
+
+        if isinstance(response, list):
+            raw_entries = response
+        elif isinstance(response, dict):
+            potential = response.get("standings") or response.get("data") or []
+            raw_entries = potential if isinstance(potential, list) else []
+        else:
+            raw_entries = []
+
+        standings: list[dict] = []
+        for entry in raw_entries:
+            standing: dict | None = None
+            if isinstance(entry, dict):
+                potential = entry.get("standing")
+                if isinstance(potential, dict):
+                    standing = potential
+                else:
+                    attributes = entry.get("attributes")
+                    if isinstance(attributes, dict):
+                        merged: dict = {}
+                        merged.update(attributes)
+                        for key, value in entry.items():
+                            if key in {"attributes", "relationships"}:
+                                continue
+                            merged.setdefault(key, value)
+                        standing = merged
+                    else:
+                        standing = entry
+            if isinstance(standing, dict):
+                standings.append(standing)
+
+        return standings
+
     def _extract_tournament_participants(self, tournament: dict) -> list[dict]:
         raw_entries = tournament.get("participants")
         if not isinstance(raw_entries, list):
@@ -465,17 +503,18 @@ class Tournaments(commands.Cog):
         return None
 
     def _render_tournament_standings(
-        self, tournament: dict
+        self, tournament: dict, standings: list[dict] | None = None
     ) -> tuple[list[str], str | None]:
         participants = self._extract_tournament_participants(tournament)
         name = tournament.get("name") or "Unnamed Tournament"
         state = (tournament.get("state") or "").replace("_", " ")
         state_display = state.title() if state else "Unknown"
+        standings = standings or []
 
-        if not participants:
+        if not participants and not standings:
             return [], f"I couldn't find any participants for **{name}**."
 
-        def _to_int(value: object) -> int | None:
+        def _to_positive_int(value: object) -> int | None:
             if value is None:
                 return None
             try:
@@ -484,34 +523,187 @@ class Tournaments(commands.Cog):
                 return None
             return number if number > 0 else None
 
-        def _sort_key(participant: dict) -> tuple[int, int, str]:
-            final_rank = _to_int(participant.get("final_rank"))
-            seed = _to_int(participant.get("seed"))
-            name_key = (participant.get("display_name") or participant.get("name") or "").lower()
+        def _to_int_allow_zero(value: object) -> int | None:
+            if value is None:
+                return None
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                return None
+            return number
+
+        def _normalize_identifier(value: object) -> str | None:
+            if value is None or isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                try:
+                    integer = int(value)
+                except (TypeError, ValueError, OverflowError):
+                    text_value = str(value).strip()
+                    return text_value or None
+                return str(integer)
+            if isinstance(value, str):
+                text_value = value.strip()
+                return text_value or None
+            return None
+
+        def _collect_candidate_ids(entry: dict) -> list[str]:
+            ids: set[str] = set()
+            for key in (
+                "participant_id",
+                "player_id",
+                "id",
+                "user_id",
+                "challonge_user_id",
+                "team_id",
+            ):
+                identifier = _normalize_identifier(entry.get(key))
+                if identifier:
+                    ids.add(identifier)
+            for nested_key in ("player", "participant", "team"):
+                nested = entry.get(nested_key)
+                if isinstance(nested, dict):
+                    ids.update(_collect_candidate_ids(nested))
+            return sorted(ids)
+
+        participant_lookup: dict[str, dict] = {}
+        for participant in participants:
+            for key in (
+                "id",
+                "participant_id",
+                "player_id",
+                "user_id",
+                "challonge_user_id",
+            ):
+                identifier = _normalize_identifier(participant.get(key))
+                if identifier and identifier not in participant_lookup:
+                    participant_lookup[identifier] = participant
+
+        used_participants: set[int] = set()
+        lines = [f"Standings for **{name}** ({state_display})"]
+
+        def _format_participant_name(participant: dict | None, entry: dict | None) -> str:
+            if participant:
+                return (
+                    participant.get("display_name")
+                    or participant.get("name")
+                    or participant.get("username")
+                    or f"Participant #{participant.get('id', '?')}"
+                )
+            entry = entry or {}
             return (
-                final_rank if final_rank is not None else 10**9,
-                seed if seed is not None else 10**9,
-                name_key,
+                entry.get("display_name")
+                or entry.get("name")
+                or entry.get("username")
+                or entry.get("player_name")
+                or f"Participant #{entry.get('participant_id', entry.get('id', '?'))}"
             )
 
-        sorted_participants = sorted(participants, key=_sort_key)
-        lines = [f"Standings for **{name}** ({state_display})"]
-        for index, participant in enumerate(sorted_participants, start=1):
-            final_rank = _to_int(participant.get("final_rank"))
-            rank_value = final_rank if final_rank is not None else index
-            display_name = (
+        def _extract_active_flag(participant: dict | None, entry: dict | None) -> bool | None:
+            if participant is not None:
+                active_flag = participant.get("active")
+                if isinstance(active_flag, bool):
+                    return active_flag
+            if entry is not None:
+                entry_active = entry.get("active")
+                if isinstance(entry_active, bool):
+                    return entry_active
+            return None
+
+        def _standing_sort_key(entry: dict) -> tuple[int, int]:
+            rank = _to_positive_int(
+                entry.get("rank")
+                or entry.get("placement")
+                or entry.get("position")
+            )
+            secondary = _to_positive_int(entry.get("tiebreak_rank"))
+            primary_value = rank if rank is not None else 10**9
+            secondary_value = secondary if secondary is not None else 10**9
+            return (primary_value, secondary_value)
+
+        entries_rendered = 0
+
+        if standings:
+            for entry in sorted(standings, key=_standing_sort_key):
+                rank_value = _to_positive_int(
+                    entry.get("rank")
+                    or entry.get("placement")
+                    or entry.get("position")
+                )
+                if rank_value is None:
+                    continue
+
+                participant: dict | None = None
+                for identifier in _collect_candidate_ids(entry):
+                    participant = participant_lookup.get(identifier)
+                    if participant is not None:
+                        used_participants.add(id(participant))
+                        break
+
+                display_name = _format_participant_name(participant, entry)
+                active_flag = _extract_active_flag(participant, entry)
+                suffix = " (dropped)" if active_flag is False else ""
+
+                lines.append(f"{rank_value}. {display_name}{suffix}")
+                entries_rendered += 1
+
+        def _participant_sort_key(participant: dict) -> tuple[object, ...]:
+            final_rank = _to_positive_int(participant.get("final_rank"))
+            alt_rank = _to_positive_int(participant.get("rank"))
+            wins = (
+                _to_int_allow_zero(participant.get("matches_won"))
+                or _to_int_allow_zero(participant.get("wins"))
+                or 0
+            )
+            losses = (
+                _to_int_allow_zero(participant.get("matches_lost"))
+                or _to_int_allow_zero(participant.get("losses"))
+                or 0
+            )
+            name_key = (
                 participant.get("display_name")
                 or participant.get("name")
                 or participant.get("username")
-                or f"Participant #{participant.get('id', '?')}"
+                or ""
+            ).lower()
+            return (
+                final_rank if final_rank is not None else 10**9,
+                alt_rank if alt_rank is not None else 10**9,
+                -wins,
+                losses,
+                name_key,
             )
 
-            suffix = ""
-            active_flag = participant.get("active")
-            if isinstance(active_flag, bool) and not active_flag:
-                suffix = " (dropped)"
+        if standings:
+            fallback_participants = [
+                participant
+                for participant in participants
+                if id(participant) not in used_participants
+            ]
+        else:
+            fallback_participants = list(participants)
 
-            lines.append(f"{rank_value}. {display_name}{suffix}")
+        if fallback_participants:
+            next_rank = entries_rendered + 1
+            for participant in sorted(fallback_participants, key=_participant_sort_key):
+                rank_value = (
+                    _to_positive_int(participant.get("final_rank"))
+                    or _to_positive_int(participant.get("rank"))
+                    or next_rank
+                )
+                if rank_value < next_rank:
+                    rank_value = next_rank
+                next_rank = rank_value + 1
+
+                display_name = _format_participant_name(participant, None)
+                active_flag = _extract_active_flag(participant, None)
+                suffix = " (dropped)" if active_flag is False else ""
+
+                lines.append(f"{rank_value}. {display_name}{suffix}")
+                entries_rendered += 1
+
+        if entries_rendered == 0:
+            return [], "No standings are available for that tournament yet."
 
         content = "\n".join(lines)
         chunks = _chunk_issue_messages("", [content], limit=2000)
@@ -2076,7 +2268,21 @@ class TournamentStandingsSelectView(discord.ui.View):
             )
             return
 
-        chunks, error_message = self.cog._render_tournament_standings(detailed)
+        standings_data: list[dict] | None = None
+        try:
+            standings_data = await self.cog._fetch_challonge_standings(
+                resolved_identifier
+            )
+        except RuntimeError as exc:
+            self.cog.logger.warning(
+                "Failed to fetch Challonge standings for %s: %s",
+                resolved_identifier,
+                exc,
+            )
+
+        chunks, error_message = self.cog._render_tournament_standings(
+            detailed, standings_data
+        )
         if error_message:
             await interaction.followup.send(error_message, ephemeral=True)
             return
