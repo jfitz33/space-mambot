@@ -16,7 +16,7 @@ from core.views import _pack_embed_for_cards
 from core.db import db_wallet_add, db_add_cards
 from core.images import ensure_rarity_emojis
 from core.wallet_api import get_mambucks, credit_mambucks, get_shards, add_shards
-from core.constants import PACKS_BY_SET
+from core.constants import PACKS_BY_SET, TEAM_ROLE_MAPPING, TEAM_ROLE_NAMES
 from core.currency import shard_set_name
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -27,12 +27,6 @@ STARTER_TO_PACK = {
     "Cult of the Mambo": "Storm of the Abyss",
     "Hellfire Heretics": "Blazing Genesis",
 }
-
-TEAM_ROLE_MAPPING = {
-    "Cult of the Mambo": "Water",
-    "Hellfire Heretics": "Fire",
-}
-TEAM_ROLE_NAMES = set(TEAM_ROLE_MAPPING.values())
 
 async def _resolve_member(interaction: discord.Interaction) -> discord.Member | None:
     # Must be in a server

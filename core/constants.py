@@ -35,6 +35,12 @@ PACKS_BY_SET = {
     2: {"DARK", "LIGHT"}
     # 2: {"...","..."},    # Add future sets here
 }
+# Team roles
+TEAM_ROLE_MAPPING = {
+    "Cult of the Mambo": "Water",
+    "Hellfire Heretics": "Fire",
+}
+TEAM_ROLE_NAMES = frozenset(TEAM_ROLE_MAPPING.values())
 
 def set_id_for_pack(pack_name: str) -> int | None:
     if not pack_name:

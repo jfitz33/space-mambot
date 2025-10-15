@@ -15,8 +15,7 @@ from core.db import (
     db_team_tracker_store,
 )
 from core.state import AppState
-
-from cogs.start import TEAM_ROLE_NAMES
+from core.constants import TEAM_ROLE_NAMES
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None

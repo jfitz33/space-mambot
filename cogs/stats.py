@@ -9,7 +9,7 @@ from core.db import (
     db_stats_get, db_stats_record_loss,
     db_match_h2h, db_team_points_for_user,
 )
-from cogs.start import TEAM_ROLE_NAMES
+from core.constants import TEAM_ROLE_NAMES
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None

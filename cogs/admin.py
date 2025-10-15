@@ -9,14 +9,13 @@ from core.db import (
     db_shards_get, db_shards_add, db_shard_override_set,
     db_shard_override_clear, db_shard_override_clear, db_shard_override_list_active
 )
-from core.constants import PACKS_BY_SET
+from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
-TEAM_ROLE_NAMES = ("Fire", "Water")
 
 # NEW: currency selector for admin wallet ops
 Currency = Literal["mambucks", "shards"]
