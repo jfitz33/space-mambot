@@ -1676,6 +1676,25 @@ def db_team_points_top(state, guild_id: int, team_name: str, limit: int = 3) -> 
             rows.append((int(user_id), int(points)))
     return rows
 
+def db_team_points_for_user(state, guild_id: int, user_id: int) -> dict[str, int]:
+    """Return the team points for ``user_id`` scoped to ``guild_id``."""
+    import sqlite3
+
+    results: dict[str, int] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT team_name, points
+              FROM team_points
+             WHERE guild_id = ? AND user_id = ?
+            """,
+            (str(guild_id), str(user_id)),
+        )
+        for team_name, points in cur.fetchall():
+            if not team_name:
+                continue
+            results[str(team_name)] = int(points or 0)
+    return results
 
 def db_team_tracker_store(state, guild_id: int, channel_id: int, message_id: int):
     import sqlite3, time

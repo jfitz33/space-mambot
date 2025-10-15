@@ -7,8 +7,9 @@ from core.state import AppState
 from core.db import (
     db_init_user_stats, db_init_match_log,
     db_stats_get, db_stats_record_loss,
-    db_match_h2h,
+    db_match_h2h, db_team_points_for_user,
 )
+from cogs.start import TEAM_ROLE_NAMES
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -93,6 +94,22 @@ class Stats(commands.Cog):
         embed.add_field(name="Wins", value=f"**{data['wins']}**", inline=True)
         embed.add_field(name="Losses", value=f"**{data['losses']}**", inline=True)
         embed.add_field(name="Win %", value=f"**{pct:.1f}%**", inline=True)
+
+        team_lines: list[str] = []
+        guild = interaction.guild
+        if guild and isinstance(target, discord.Member):
+            team_points = db_team_points_for_user(self.state, guild.id, target.id)
+            team_roles = [role.name for role in target.roles if role.name in TEAM_ROLE_NAMES]
+            for role_name in sorted(team_roles, key=str.lower):
+                points = team_points.get(role_name, 0)
+                team_lines.append(f"Team {role_name}: **{points:,}**")
+
+        if team_lines:
+            value = "\n".join(team_lines)
+        else:
+            value = "No team roles assigned."
+
+        embed.add_field(name="Team Points", value=value, inline=False)
 
         await interaction.response.send_message(embed=embed)
 
