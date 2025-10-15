@@ -22,13 +22,17 @@ from core.currency import shard_set_name
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
-STARTER_ROLE_NAME = "starter"
-
 # Map starter deck name → which pack to auto-open. If empty, we fall back to using the deck name as pack name.
 STARTER_TO_PACK = {
     "Cult of the Mambo": "Storm of the Abyss",
     "Hellfire Heretics": "Blazing Genesis",
 }
+
+TEAM_ROLE_MAPPING = {
+    "Cult of the Mambo": "Water",
+    "Hellfire Heretics": "Fire",
+}
+TEAM_ROLE_NAMES = set(TEAM_ROLE_MAPPING.values())
 
 async def _resolve_member(interaction: discord.Interaction) -> discord.Member | None:
     # Must be in a server
@@ -51,9 +55,6 @@ from discord.ui import View
 from core.starters import grant_starter_to_user
 from core.packs import open_pack_from_csv
 from core.views import PackResultsPaginator
-
-STARTER_ROLE_NAME = "starter"  # keep your constant
-# STARTER_TO_PACK should already be defined at module top
 
 class StarterDeckSelectView(View):
     def __init__(self, state, member: discord.Member, timeout: float = 180):
@@ -177,18 +178,20 @@ class StarterDeckSelectView(View):
         if delta_mb != 0:
             credit_mambucks(self.state, self.member.id, delta_mb)
 
-        # 5) Assign the 'starter' role only after success
-        try:
-            role = discord.utils.get(interaction.guild.roles, name=STARTER_ROLE_NAME)
-            if role is None:
-                role = await interaction.guild.create_role(name=STARTER_ROLE_NAME, reason="Starter gate")
-            await self.member.add_roles(role, reason="Completed starter flow")
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "Packs opened, but I couldn’t assign the **starter** role. "
-                "Please grant me **Manage Roles** and ensure my top role is above `starter`.",
-                ephemeral=True
-            )
+        # 5) Assign the appropriate team role only after success
+        team_role_name = TEAM_ROLE_MAPPING.get(deck_name)
+        if team_role_name:
+            try:
+                role = discord.utils.get(interaction.guild.roles, name=team_role_name)
+                if role is None:
+                    role = await interaction.guild.create_role(name=team_role_name, reason="Starter gate")
+                await self.member.add_roles(role, reason="Completed starter flow")
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "Packs opened, but I couldn’t assign your team role. "
+                    "Please grant me **Manage Roles** and ensure my top role is above the team roles.",
+                    ephemeral=True
+                )
         
         # 6) Delete the original message upon completion
         try:
@@ -219,7 +222,7 @@ class Start(commands.Cog):
         self.bot = bot
         self.state: AppState = self.bot.state
 
-    @app_commands.command(name="start", description="Claim your starter deck and 3 matching packs")
+    @app_commands.command(name="start", description="Claim your starter deck and receive your matching starter packs")
     @app_commands.guilds(GUILD)
     async def start(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -242,21 +245,9 @@ class Start(commands.Cog):
             await interaction.response.send_message("No starter decks found. Add CSVs to `starters_csv/` and reload.", ephemeral=True)
             return
 
-        # Starter role gate
-        role = discord.utils.get(interaction.guild.roles, name="starter")
-        if role and role in member.roles:
+        # Team role gate
+        if any(role.name in TEAM_ROLE_NAMES for role in member.roles):
             await interaction.response.send_message(f"{member.mention} already has their starter cards.", ephemeral=True)
-            return
-        if not role:
-            try:
-                role = await interaction.guild.create_role(name=STARTER_ROLE_NAME, reason="Starter gate")
-            except discord.Forbidden:
-                await interaction.response.send_message("I need **Manage Roles** to create/assign the starter role.", ephemeral=True)
-                return
-        try:
-            await member.add_roles(role, reason="Claimed starter pack")
-        except discord.Forbidden:
-            await interaction.response.send_message("I need **Manage Roles** to assign the starter role.", ephemeral=True)
             return
 
         # Prompt with dropdown (ephemeral)
