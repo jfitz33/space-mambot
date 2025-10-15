@@ -16,7 +16,7 @@ from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
-STARTER_ROLE_NAME = "starter"
+TEAM_ROLE_NAMES = ("Fire", "Water")
 
 # NEW: currency selector for admin wallet ops
 Currency = Literal["mambucks", "shards"]
@@ -191,7 +191,7 @@ class Admin(commands.Cog):
 
     @app_commands.command(
         name="admin_reset_user",
-        description="(Admin) Clear a user's collection and remove their starter role."
+        description="(Admin) Clear a user's collection and remove their team roles."
     )
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
@@ -217,21 +217,30 @@ class Admin(commands.Cog):
             if before:
                 db_shards_add(self.state, user.id, sid, -before)
 
-        # Remove starter role (if present)
-        removed_role = False
-        role = discord.utils.get(interaction.guild.roles, name=STARTER_ROLE_NAME) if interaction.guild else None
-        if role and role in user.roles:
-            try:
-                await user.remove_roles(role, reason=reason or "Admin reset user")
-                removed_role = True
-            except discord.Forbidden:
-                pass  # Manage Roles / hierarchy issue
+        # Remove team roles (if present)
+        removed_roles: list[str] = []
+        failed_roles: list[str] = []
+        if interaction.guild:
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(interaction.guild.roles, name=role_name)
+                if not role or role not in user.roles:
+                    continue
+                try:
+                    await user.remove_roles(role, reason=reason or "Admin reset user")
+                    removed_roles.append(role_name)
+                except discord.Forbidden:
+                    failed_roles.append(role_name)
 
         lines = [f"✅ Cleared **{deleted}** row(s) for {user.mention}."]
-        if role:
-            lines.append("✅ Starter role removed." if removed_role else "⚠️ Could not remove starter role (permissions/position).")
-        else:
-            lines.append("ℹ️ Starter role not found in this server.")
+        if removed_roles:
+            lines.append("✅ Removed team role(s): " + ", ".join(sorted(removed_roles)))
+        missing_roles = [name for name in TEAM_ROLE_NAMES if name not in removed_roles and name not in failed_roles]
+        if missing_roles:
+            lines.append("ℹ️ Team role(s) not present: " + ", ".join(sorted(missing_roles)))
+        if failed_roles:
+            lines.append("⚠️ Could not remove team role(s): " + ", ".join(sorted(failed_roles)))
+        if not removed_roles and not missing_roles and not failed_roles:
+            lines.append("ℹ️ No team roles configured for removal.")
         if reason:
             lines.append(f"📝 Reason: {reason}")
 

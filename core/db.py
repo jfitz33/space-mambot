@@ -46,6 +46,23 @@ def db_init(state: AppState):
             PRIMARY KEY (user_id, card_name, card_rarity, card_set, card_code, card_id)
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_points (
+            guild_id   TEXT NOT NULL,
+            user_id    TEXT NOT NULL,
+            team_name  TEXT NOT NULL,
+            points     INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_tracker_message (
+            guild_id   TEXT NOT NULL PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            updated_ts REAL NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
 
@@ -1572,6 +1589,131 @@ def db_shop_banner_load(state, guild_id: int) -> dict | None:
         r = c.fetchone()
         if not r: return None
         return {"channel_id": int(r[0]), "message_id": int(r[1])}
+
+# --- Team points -------------------------------------------------------------
+
+def db_team_points_add(state, guild_id: int, user_id: int, team_name: str, delta: int) -> int:
+    """Add ``delta`` points for ``user_id`` within ``guild_id``. Returns new total."""
+    import sqlite3
+
+    guild_id_s = str(guild_id)
+    user_id_s = str(user_id)
+    team_name = (team_name or "").strip()
+    delta = int(delta)
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute(
+            """
+            SELECT points
+              FROM team_points
+             WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id_s, user_id_s),
+        )
+        row = cur.fetchone()
+        current = int(row[0]) if row else 0
+        new_total = max(0, current + delta)
+
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO team_points (guild_id, user_id, team_name, points)
+                VALUES (?, ?, ?, ?)
+                """,
+                (guild_id_s, user_id_s, team_name, new_total),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE team_points
+                   SET team_name = ?,
+                       points = ?
+                 WHERE guild_id = ? AND user_id = ?
+                """,
+                (team_name, new_total, guild_id_s, user_id_s),
+            )
+
+    return new_total
+
+
+def db_team_points_totals(state, guild_id: int) -> dict[str, int]:
+    import sqlite3
+
+    totals: dict[str, int] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT team_name, SUM(points)
+              FROM team_points
+             WHERE guild_id = ?
+             GROUP BY team_name
+            """,
+            (str(guild_id),),
+        )
+        for team_name, points in cur.fetchall():
+            if not team_name:
+                continue
+            totals[str(team_name)] = int(points or 0)
+    return totals
+
+
+def db_team_points_top(state, guild_id: int, team_name: str, limit: int = 3) -> list[tuple[int, int]]:
+    import sqlite3
+
+    rows: list[tuple[int, int]] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT user_id, points
+              FROM team_points
+             WHERE guild_id = ? AND team_name = ? AND points > 0
+             ORDER BY points DESC, user_id ASC
+             LIMIT ?
+            """,
+            (str(guild_id), team_name, int(limit)),
+        )
+        for user_id, points in cur.fetchall():
+            rows.append((int(user_id), int(points)))
+    return rows
+
+
+def db_team_tracker_store(state, guild_id: int, channel_id: int, message_id: int):
+    import sqlite3, time
+
+    now = float(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO team_tracker_message (guild_id, channel_id, message_id, updated_ts)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                message_id = excluded.message_id,
+                updated_ts = excluded.updated_ts
+            """,
+            (str(guild_id), str(channel_id), str(message_id), now),
+        )
+
+
+def db_team_tracker_load(state, guild_id: int) -> dict | None:
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT channel_id, message_id
+              FROM team_tracker_message
+             WHERE guild_id = ?
+            """,
+            (str(guild_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "channel_id": int(row[0]),
+            "message_id": int(row[1]),
+        }
 
 # --- Wheel tokens ------------------------------------------------------------
 

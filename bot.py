@@ -57,7 +57,7 @@ COGS = ["cogs.system", "cogs.packs", "cogs.collection",
         "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", 
         "cogs.cards_shop", "cogs.wheel", "cogs.quests", 
         "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales",
-        "cogs.wheel_tokens", "cogs.tournaments"]
+        "cogs.wheel_tokens", "cogs.tournaments", "cogs.teams"]
 
 @bot.event
 async def on_ready():
