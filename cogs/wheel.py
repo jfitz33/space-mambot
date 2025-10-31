@@ -4,15 +4,26 @@ import io
 import math
 import random
 import asyncio
-from typing import List, Tuple, Optional
+from dataclasses import dataclass
+from typing import List, Tuple, Optional, Sequence
 from functools import lru_cache
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont
-from core.db import db_wallet_get, db_wallet_try_spend_mambucks, db_add_cards, db_wheel_tokens_get, db_wheel_tokens_try_spend
+from core.db import (
+    db_wallet_get,
+    db_wallet_try_spend_mambucks,
+    db_wallet_add,
+    db_add_cards,
+    db_wheel_tokens_get,
+    db_wheel_tokens_try_spend,
+    db_shards_add,
+)
 from core.cards_shop import card_label
+from core.currency import shards_label, mambucks_label
+from core.images import rarity_badge, FALLBACK_BADGES
 
 # ---------------- Guild scope ----------------
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -28,36 +39,182 @@ PAD_SECONDS = 0.8             # static lead-in (covers client start-up)
 TAIL_SECONDS = 0.8            # static hold at end (prevents frame-1 flash)
 GIF_COLORS = 64               # fewer colors -> smaller GIF
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+WHEEL_START_ANGLE = -90.0
 
-# Weighted rarity segments by duplication (equal slice renderer)
-# 20 total segments: 8C (40%), 5R (25%), 3SR (15%), 3UR (15%), 1SCR (5%)
-RARITY_SEGMENTS: List[Tuple[str, int]] = [
-    ("COMMON", 3),
-    ("RARE", 2),
-    ("SUPER RARE", 2),
-    ("ULTRA RARE", 1),
-    ("SECRET RARE", 1),
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        return default
+
+
+WHEEL_SHARD_SET_ID = _env_int("WHEEL_SHARD_SET_ID", 1)
+
+
+@dataclass(frozen=True)
+class WheelPrize:
+    key: str
+    weight: float
+    prize_type: str
+    description: str
+    rarity: Optional[str] = None
+    amount: Optional[int] = None
+    shard_set_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class WheelSlice:
+    prize: WheelPrize
+    label: str
+    weight: float
+    start_angle: float
+    end_angle: float
+
+    @property
+    def mid_angle(self) -> float:
+        return (self.start_angle + self.end_angle) / 2
+
+    @property
+    def rotation_offset(self) -> float:
+        return self.mid_angle - WHEEL_START_ANGLE
+
+
+WHEEL_PRIZES: List[WheelPrize] = [
+    WheelPrize(
+        key="card_super_rare",
+        weight=0.40,
+        prize_type="card",
+        rarity="SUPER RARE",
+        description="Random Super Rare Card",
+    ),
+    WheelPrize(
+        key="card_ultra_rare",
+        weight=0.15,
+        prize_type="card",
+        rarity="ULTRA RARE",
+        description="Random Ultra Rare Card",
+    ),
+    WheelPrize(
+        key="shards_100",
+        weight=0.20,
+        prize_type="shards",
+        amount=100,
+        description="100 Shards",
+    ),
+    WheelPrize(
+        key="mambucks_10",
+        weight=0.20,
+        prize_type="mambucks",
+        amount=10,
+        description="10 Mambucks",
+    ),
+    WheelPrize(
+        key="card_secret_rare",
+        weight=0.05,
+        prize_type="card",
+        rarity="SECRET RARE",
+        description="Random Secret Rare Card",
+    ),
 ]
 
+
+def _rarity_key(rarity: str) -> str:
+    r = (rarity or "").strip().lower()
+    mapping = {
+        "common": "common",
+        "c": "common",
+        "rare": "rare",
+        "r": "rare",
+        "super rare": "super",
+        "super": "super",
+        "sr": "super",
+        "ultra rare": "ultra",
+        "ultra": "ultra",
+        "ur": "ultra",
+        "secret rare": "secret",
+        "secret": "secret",
+        "scr": "secret",
+    }
+    return mapping.get(r, "secret")
+
+
+def _rarity_slice_emoji(bot: commands.Bot, rarity: str) -> str:
+    badge = rarity_badge(bot, rarity)
+    if not badge or badge.startswith("<"):
+        badge = FALLBACK_BADGES.get(_rarity_key(rarity), "★")
+    return badge
+
+
+def _resolve_prize_label(bot: commands.Bot, prize: WheelPrize) -> str:
+    if prize.prize_type == "card" and prize.rarity:
+        return _rarity_slice_emoji(bot, prize.rarity)
+    if prize.prize_type == "shards":
+        return "💎"
+    if prize.prize_type == "mambucks":
+        return "💰"
+    return "❔"
+
+
+def _build_wheel_slices(bot: commands.Bot) -> List[WheelSlice]:
+    raw_weights = [max(p.weight, 0.0) for p in WHEEL_PRIZES]
+    total = sum(raw_weights)
+    if total <= 0:
+        raw_weights = [1.0 for _ in WHEEL_PRIZES]
+        total = float(len(WHEEL_PRIZES))
+
+    slices: List[WheelSlice] = []
+    accum = 0.0
+    for idx, prize in enumerate(WHEEL_PRIZES):
+        weight = raw_weights[idx]
+        prev_fraction = accum / total if total else 0.0
+        accum += weight
+        next_fraction = 1.0 if idx == len(WHEEL_PRIZES) - 1 else (accum / total if total else 0.0)
+        start_angle = WHEEL_START_ANGLE + prev_fraction * 360.0
+        end_angle = WHEEL_START_ANGLE + next_fraction * 360.0
+        label = _resolve_prize_label(bot, prize)
+        slices.append(WheelSlice(prize=prize, label=label, weight=weight, start_angle=start_angle, end_angle=end_angle))
+    return slices
+
+
+def _layout_key_from_slices(slices: Sequence[WheelSlice]) -> Tuple[Tuple[str, float, float], ...]:
+    return tuple((s.label, s.start_angle, s.end_angle) for s in slices)
+
+
+def _rotation_offset(layout: Sequence[Tuple[str, float, float]], index: int) -> float:
+    _, start, end = layout[index]
+    mid = (start + end) / 2.0
+    return mid - WHEEL_START_ANGLE
+
+
 # ---------------- Helpers: render, wheel data, rarity pick ----------------
-def _parse_segments() -> List[str]:
-    opts: List[str] = []
-    for rarity, n in RARITY_SEGMENTS:
-        opts.extend([rarity] * n)
-    return opts
+
+_FONT_CANDIDATES: Tuple[str, ...] = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "DejaVuSans.ttf",
+    "arial.ttf",
+)
+
 
 def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype("arial.ttf", size)
-    except Exception:
-        return ImageFont.load_default()
+    for path in _FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
 
 @lru_cache(maxsize=64)
-def _wheel_base_cached(options_key: tuple[str, ...], size: int) -> Image.Image:
+def _wheel_base_cached(layout_key: Tuple[Tuple[str, float, float], ...], size: int) -> Image.Image:
     """Cache the wheel with labels; copy() before modifying."""
-    return _draw_wheel_base(list(options_key), size=size)
+    return _draw_wheel_base(layout_key, size=size)
 
-def _draw_wheel_base(options: List[str], size: int = WHEEL_SIZE) -> Image.Image:
+
+def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHEEL_SIZE) -> Image.Image:
     """Return a PIL image of the wheel (no pointer), with slice labels."""
     W = H = size
     cx, cy = W // 2, H // 2
@@ -74,13 +231,9 @@ def _draw_wheel_base(options: List[str], size: int = WHEEL_SIZE) -> Image.Image:
         (124, 77, 255), (175, 180, 43), (255, 112, 67), (41, 98, 255),
     ]
 
-    n = max(1, len(options))
-    sweep = 360 / n
-    start_angle = -90  # 12 o'clock
+    n = max(1, len(layout))
 
-    for i, label in enumerate(options):
-        a0 = start_angle + i * sweep
-        a1 = a0 + sweep
+    for i, (label, a0, a1) in enumerate(layout):
         color = palette[i % len(palette)]
         draw.pieslice([cx - radius, cy - radius, cx + radius, cy + radius],
                       a0, a1, fill=color, outline=(255, 255, 255), width=2)
@@ -111,11 +264,9 @@ def _draw_pointer_pointing_down(img: Image.Image):
     ]
     draw.polygon(pointer, fill=(0, 0, 0))
 
-def _render_static_wheel(options: List[str], winner_idx: Optional[int] = None, size: int = WHEEL_SIZE) -> io.BytesIO:
-    base = _wheel_base_cached(tuple(options), size).copy()
-    n = max(1, len(options))
-    sweep = 360 / n
-    angle = (winner_idx + 0.5) * sweep if winner_idx is not None else 0.0
+def _render_static_wheel(layout_key: Tuple[Tuple[str, float, float], ...], winner_idx: Optional[int] = None, size: int = WHEEL_SIZE) -> io.BytesIO:
+    base = _wheel_base_cached(layout_key, size).copy()
+    angle = _rotation_offset(layout_key, winner_idx) if winner_idx is not None else 0.0
     rotated = base.rotate(angle, resample=Image.BICUBIC, expand=False,
                           center=(size // 2, size // 2), fillcolor=(255, 255, 255))
     _draw_pointer_pointing_down(rotated)
@@ -125,7 +276,7 @@ def _render_static_wheel(options: List[str], winner_idx: Optional[int] = None, s
     return buf
 
 def _render_spin_gif(
-    options: List[str],
+    layout: Sequence[Tuple[str, float, float]],
     winner_idx: int,
     *,
     size: int = WHEEL_SIZE,
@@ -135,10 +286,9 @@ def _render_spin_gif(
     spins: int = 2,
     fps: int = FPS
 ) -> io.BytesIO:
-    base = _wheel_base_cached(tuple(options), size).copy()
-    n = max(1, len(options))
-    sweep = 360 / n
-    final_deg = (winner_idx + 0.5) * sweep + spins * 360
+    layout_key = tuple(layout)
+    base = _wheel_base_cached(layout_key, size).copy()
+    final_deg = _rotation_offset(layout_key, winner_idx) + spins * 360.0
 
     total_time   = pad_sec + duration_sec + tail_sec
     total_frames = max(8, int(fps * total_time))
@@ -170,8 +320,23 @@ def _render_spin_gif(
     buf.seek(0)
     return buf
 
-async def _make_gif_async(options: List[str], winner_idx: int, size: int, duration_sec: float, pad_sec: float, tail_sec: float) -> io.BytesIO:
-    return await asyncio.to_thread(_render_spin_gif, options, winner_idx, size=size, duration_sec=duration_sec, pad_sec=pad_sec, tail_sec=tail_sec)
+async def _make_gif_async(
+    layout_key: Tuple[Tuple[str, float, float], ...],
+    winner_idx: int,
+    size: int,
+    duration_sec: float,
+    pad_sec: float,
+    tail_sec: float,
+) -> io.BytesIO:
+    return await asyncio.to_thread(
+        _render_spin_gif,
+        layout_key,
+        winner_idx,
+        size=size,
+        duration_sec=duration_sec,
+        pad_sec=pad_sec,
+        tail_sec=tail_sec,
+    )
 
 # ---------------- Prize selection helpers ----------------
 def _normalize_rarity(r: str) -> str:
@@ -315,19 +480,36 @@ class WheelTokenConfirmView(discord.ui.View):
         )
 
 class WheelView(discord.ui.View):
-    def __init__(self, author_id: int, options: List[str], size: int, state):
+    def __init__(
+        self,
+        author_id: int,
+        slices: List[WheelSlice],
+        layout_key: Tuple[Tuple[str, float, float], ...],
+        size: int,
+        state,
+    ):
         super().__init__(timeout=180.0)
         self.author_id = author_id
-        self.options = options
+        self.slices = slices
+        self.layout_key = layout_key
         self.size = size
         self.state = state
         self.spinning = False  # gate re-entrancy
+        self._weights = [max(s.weight, 0.0) for s in slices]
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
             await interaction.response.send_message("Only the original user can spin this wheel.", ephemeral=True)
             return False
         return True
+
+    def _choose_winner_index(self) -> int:
+        if not self.slices:
+            raise RuntimeError("wheel slices unavailable")
+        total = sum(self._weights)
+        if total <= 0:
+            return random.randrange(len(self.slices))
+        return random.choices(range(len(self.slices)), weights=self._weights, k=1)[0]
 
     @discord.ui.button(label="Spin", style=discord.ButtonStyle.primary, emoji="🎡")
     async def spin_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -341,7 +523,7 @@ class WheelView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
         # Show "Preparing…" ABOVE the wheel by re-attaching a fresh idle PNG (single attachment)
-        idle_png = _render_static_wheel(self.options, winner_idx=None, size=self.size)
+        idle_png = _render_static_wheel(self.layout_key, winner_idx=None, size=self.size)
         prep = discord.Embed(title="🎡 Preparing spin…", description="Rendering animation…")
         prep.set_image(url="attachment://idle.png")
         await interaction.edit_original_response(
@@ -350,21 +532,27 @@ class WheelView(discord.ui.View):
             view=self
         )
 
-        # Pick winner rarity via the weighted index
-        winner_idx = random.randrange(len(self.options))
-        winner_rarity = self.options[winner_idx]
+        # Pick winner via weighted odds
+        winner_idx = self._choose_winner_index()
+        winner_slice = self.slices[winner_idx]
+        prize = winner_slice.prize
+        winner_text = f"{winner_slice.label} {prize.description}".strip()
 
         # Build padded + tailed GIF
         try:
             gif_buf = await _make_gif_async(
-                self.options, winner_idx,
+                self.layout_key,
+                winner_idx,
                 size=self.size, duration_sec=SPIN_SECONDS,
                 pad_sec=PAD_SECONDS, tail_sec=TAIL_SECONDS
             )
         except Exception as e:
             # Fallback: static result
-            final_png = _render_static_wheel(self.options, winner_idx, size=self.size)
-            final_embed = discord.Embed(title="🎡 Wheel Result", description=f"**Winner:** {winner_rarity}\n\n(Spin rendering failed; showing static result.)")
+            final_png = _render_static_wheel(self.layout_key, winner_idx, size=self.size)
+            final_embed = discord.Embed(
+                title="🎡 Wheel Result",
+                description=f"**Winner:** {winner_text}\n\n(Spin rendering failed; showing static result.)"
+            )
             final_embed.set_image(url="attachment://result.png")
             await interaction.edit_original_response(
                 embed=final_embed,
@@ -379,7 +567,8 @@ class WheelView(discord.ui.View):
         if gif_buf.getbuffer().nbytes > MAX_UPLOAD_BYTES:
             try:
                 small = await _make_gif_async(
-                    self.options, winner_idx,
+                    self.layout_key,
+                    winner_idx,
                     size=max(256, self.size // 2),
                     duration_sec=SPIN_SECONDS, pad_sec=PAD_SECONDS, tail_sec=TAIL_SECONDS
                 )
@@ -388,8 +577,8 @@ class WheelView(discord.ui.View):
                 else:
                     raise RuntimeError("gif-too-large")
             except Exception:
-                final_png = _render_static_wheel(self.options, winner_idx, size=self.size)
-                final_embed = discord.Embed(title="🎡 Wheel Result", description=f"**Winner:** {winner_rarity}")
+                final_png = _render_static_wheel(self.layout_key, winner_idx, size=self.size)
+                final_embed = discord.Embed(title="🎡 Wheel Result", description=f"**Winner:** {winner_text}")
                 final_embed.set_image(url="attachment://result.png")
                 await interaction.edit_original_response(
                     embed=final_embed,
@@ -412,18 +601,39 @@ class WheelView(discord.ui.View):
         # Wait until mid-tail so there’s no replay flash
         await asyncio.sleep(PAD_SECONDS + SPIN_SECONDS + (TAIL_SECONDS * 0.5))
 
-        # Pick & award a random card of the winner rarity
-        picked = _pick_random_card_by_rarity(self.state, winner_rarity)
-        if picked:
-            set_name, printing = picked
-            await _award_card_to_user(self.state, interaction.user.id, printing, set_name, qty=1)
-            prize_line = f"\n**Prize:** {card_label(printing)}"
-        else:
-            prize_line = "\n*(No prize source found for that rarity — contact an admin.)*"
+        # Award the prize
+        prize_line = ""
+        if prize.prize_type == "card" and prize.rarity:
+            picked = _pick_random_card_by_rarity(self.state, prize.rarity)
+            if picked:
+                set_name, printing = picked
+                await _award_card_to_user(self.state, interaction.user.id, printing, set_name, qty=1)
+                prize_line = f"\n**Prize:** {card_label(printing)}"
+            else:
+                prize_line = "\n*(No prize source found for that rarity — contact an admin.)*"
+        elif prize.prize_type == "shards":
+            amount = int(prize.amount or 0)
+            set_id = int(prize.shard_set_id or WHEEL_SHARD_SET_ID)
+            try:
+                if amount:
+                    db_shards_add(self.state, interaction.user.id, set_id, amount)
+            except Exception as err:
+                print(f"[wheel] failed to add shards: {err}")
+            pretty = shards_label(amount, set_id)
+            prize_line = f"\n**Prize:** 💎 {pretty}"
+        elif prize.prize_type == "mambucks":
+            amount = int(prize.amount or 0)
+            try:
+                if amount:
+                    db_wallet_add(self.state, interaction.user.id, d_mambucks=amount)
+            except Exception as err:
+                print(f"[wheel] failed to add mambucks: {err}")
+            pretty = mambucks_label(amount)
+            prize_line = f"\n**Prize:** 💰 {pretty}"
 
         # Send the final result as a NEW message with a fresh view…
-        result_png = _render_static_wheel(self.options, winner_idx, size=self.size)
-        result = discord.Embed(title="🎡 Wheel Result", description=f"**Winner:** {winner_rarity}{prize_line}")
+        result_png = _render_static_wheel(self.layout_key, winner_idx, size=self.size)
+        result = discord.Embed(title="🎡 Wheel Result", description=f"**Winner:** {winner_text}{prize_line}")
         result.set_image(url="attachment://result.png")
 
         # no further spin button offered here:
@@ -445,14 +655,15 @@ class RewardsWheel(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Build weighted options once
-        self.options = _parse_segments()
+        self.slices = _build_wheel_slices(bot)
+        self.layout_key = _layout_key_from_slices(self.slices)
 
     async def _show_wheel_idle(self, interaction: discord.Interaction):
         # Use the message that contained the confirm buttons
         msg = interaction.message
 
         # Render the static wheel (your existing helper)
-        idle_png = _render_static_wheel(self.options, winner_idx=None, size=WHEEL_SIZE)
+        idle_png = _render_static_wheel(self.layout_key, winner_idx=None, size=WHEEL_SIZE)
         file = discord.File(idle_png, filename="wheel.png")
 
         embed = discord.Embed(
@@ -465,7 +676,8 @@ class RewardsWheel(commands.Cog):
         # Your existing interactive view that handles the actual spin & animation
         view = WheelView(
             author_id=interaction.user.id,
-            options=self.options,
+            slices=self.slices,
+            layout_key=self.layout_key,
             size=WHEEL_SIZE,
             state=self.bot.state,
         )
