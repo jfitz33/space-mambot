@@ -4,6 +4,7 @@ import io
 import math
 import random
 import asyncio
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Sequence
 from functools import lru_cache
@@ -11,7 +12,7 @@ from functools import lru_cache
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from core.db import (
     db_wallet_get,
     db_wallet_try_spend_mambucks,
@@ -23,7 +24,6 @@ from core.db import (
 )
 from core.cards_shop import card_label
 from core.currency import shards_label, mambucks_label
-from core.images import rarity_badge, FALLBACK_BADGES
 
 # ---------------- Guild scope ----------------
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -70,6 +70,7 @@ class WheelPrize:
 class WheelSlice:
     prize: WheelPrize
     label: str
+    icon_key: Optional[str]
     weight: float
     start_angle: float
     end_angle: float
@@ -142,24 +143,18 @@ def _rarity_key(rarity: str) -> str:
     return mapping.get(r, "secret")
 
 
-def _rarity_slice_emoji(bot: commands.Bot, rarity: str) -> str:
-    badge = rarity_badge(bot, rarity)
-    if not badge or badge.startswith("<"):
-        badge = FALLBACK_BADGES.get(_rarity_key(rarity), "★")
-    return badge
-
-
-def _resolve_prize_label(bot: commands.Bot, prize: WheelPrize) -> str:
+def _resolve_prize_label(prize: WheelPrize) -> tuple[str, Optional[str]]:
     if prize.prize_type == "card" and prize.rarity:
-        return _rarity_slice_emoji(bot, prize.rarity)
+        rarity = prize.rarity.strip()
+        return rarity.title(), _rarity_key(rarity)
     if prize.prize_type == "shards":
-        return "💎"
+        return "💎", None
     if prize.prize_type == "mambucks":
-        return "💰"
-    return "❔"
+        return "💰", None
+    return "❔", None
 
 
-def _build_wheel_slices(bot: commands.Bot) -> List[WheelSlice]:
+def _build_wheel_slices(_: commands.Bot) -> List[WheelSlice]:
     raw_weights = [max(p.weight, 0.0) for p in WHEEL_PRIZES]
     total = sum(raw_weights)
     if total <= 0:
@@ -175,53 +170,79 @@ def _build_wheel_slices(bot: commands.Bot) -> List[WheelSlice]:
         next_fraction = 1.0 if idx == len(WHEEL_PRIZES) - 1 else (accum / total if total else 0.0)
         start_angle = WHEEL_START_ANGLE + prev_fraction * 360.0
         end_angle = WHEEL_START_ANGLE + next_fraction * 360.0
-        label = _resolve_prize_label(bot, prize)
-        slices.append(WheelSlice(prize=prize, label=label, weight=weight, start_angle=start_angle, end_angle=end_angle))
+        label, icon_key = _resolve_prize_label(prize)
+        slices.append(
+            WheelSlice(
+                prize=prize,
+                label=label,
+                icon_key=icon_key,
+                weight=weight,
+                start_angle=start_angle,
+                end_angle=end_angle,
+            )
+        )
     return slices
 
 
-def _layout_key_from_slices(slices: Sequence[WheelSlice]) -> Tuple[Tuple[str, float, float], ...]:
-    return tuple((s.label, s.start_angle, s.end_angle) for s in slices)
+def _layout_key_from_slices(slices: Sequence[WheelSlice]) -> Tuple[Tuple[str, Optional[str], float, float], ...]:
+    return tuple((s.label, s.icon_key, s.start_angle, s.end_angle) for s in slices)
 
 
-def _rotation_offset(layout: Sequence[Tuple[str, float, float]], index: int) -> float:
-    _, start, end = layout[index]
+def _rotation_offset(layout: Sequence[Tuple[str, Optional[str], float, float]], index: int) -> float:
+    _, _, start, end = layout[index]
     mid = (start + end) / 2.0
     return mid - WHEEL_START_ANGLE
 
 
 # ---------------- Helpers: render, wheel data, rarity pick ----------------
 
-_FONT_CANDIDATES: Tuple[str, ...] = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-    "DejaVuSans.ttf",
-    "arial.ttf",
-)
-
-
-def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    for path in _FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_RARITY_ICON_DIR = _REPO_ROOT / "images" / "rarity_logos"
+_MISSING_RARITY_ICONS: set[str] = set()
 
 @lru_cache(maxsize=64)
-def _wheel_base_cached(layout_key: Tuple[Tuple[str, float, float], ...], size: int) -> Image.Image:
+def _wheel_base_cached(layout_key: Tuple[Tuple[str, Optional[str], float, float], ...], size: int) -> Image.Image:
     """Cache the wheel with labels; copy() before modifying."""
     return _draw_wheel_base(layout_key, size=size)
 
 
-def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHEEL_SIZE) -> Image.Image:
+@lru_cache(maxsize=16)
+def _load_rarity_icon(rarity_key: str) -> Optional[Image.Image]:
+    rarity_key = (rarity_key or "").strip().lower()
+    if not rarity_key:
+        return None
+    path = _RARITY_ICON_DIR / f"{rarity_key}.png"
+    if not path.is_file():
+        if rarity_key not in _MISSING_RARITY_ICONS:
+            print(f"[wheel] missing rarity icon PNG: {path}")
+            _MISSING_RARITY_ICONS.add(rarity_key)
+        return None
+    try:
+        with Image.open(path) as src:
+            return src.convert("RGBA")
+    except Exception as exc:
+        if rarity_key not in _MISSING_RARITY_ICONS:
+            print(f"[wheel] failed to load rarity icon {path}: {exc}")
+            _MISSING_RARITY_ICONS.add(rarity_key)
+        return None
+
+
+def _render_label_icon(icon_key: Optional[str]) -> Optional[Image.Image]:
+    if not icon_key:
+        return None
+    icon = _load_rarity_icon(icon_key)
+    if icon is None:
+        return None
+    return icon
+
+
+def _draw_wheel_base(layout: Sequence[Tuple[str, Optional[str], float, float]], size: int = WHEEL_SIZE) -> Image.Image:
     """Return a PIL image of the wheel (no pointer), with slice labels."""
     W = H = size
     cx, cy = W // 2, H // 2
     radius = size // 2 - 12
     img = Image.new("RGBA", (W, H), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
-    font = _load_font(18)
 
     palette = [
         (244, 67, 54), (33, 150, 243), (76, 175, 80), (255, 235, 59), (156, 39, 176),
@@ -231,9 +252,9 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
         (124, 77, 255), (175, 180, 43), (255, 112, 67), (41, 98, 255),
     ]
 
-    n = max(1, len(layout))
+    icon_target = max(48, int(radius * 0.35))
 
-    for i, (label, a0, a1) in enumerate(layout):
+    for i, (label, icon_key, a0, a1) in enumerate(layout):
         color = palette[i % len(palette)]
         draw.pieslice([cx - radius, cy - radius, cx + radius, cy + radius],
                       a0, a1, fill=color, outline=(255, 255, 255), width=2)
@@ -241,11 +262,30 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
         mid = math.radians((a0 + a1) / 2)
         tx = cx + int(math.cos(mid) * (radius * 0.6))
         ty = cy + int(math.sin(mid) * (radius * 0.6))
-        text = label  # "COMMON", etc.
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((tx - tw // 2, ty - th // 2), text, fill=(255, 255, 255),
-                  font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+        icon = _render_label_icon(icon_key)
+        if icon is not None:
+            iw, ih = icon.size
+            if iw == 0 or ih == 0:
+                continue
+            scale = min(icon_target / iw, icon_target / ih)
+            if scale <= 0:
+                continue
+            if abs(scale - 1.0) > 1e-3:
+                new_size = (max(1, int(iw * scale)), max(1, int(ih * scale)))
+                icon = icon.resize(new_size, resample=Image.LANCZOS)
+                iw, ih = icon.size
+            px = tx - iw // 2
+            py = ty - ih // 2
+            img.alpha_composite(icon, (px, py))
+        elif not icon_key:
+            text = str(label or "")
+            if not text:
+                continue
+            bbox = draw.textbbox((0, 0), text)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            px = tx - tw // 2
+            py = ty - th // 2
+            draw.text((px, py), text, fill=(255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0))
 
     # center hub
     draw.ellipse([cx - 14, cy - 14, cx + 14, cy + 14], fill=(250, 250, 250), outline=(0, 0, 0))
@@ -264,7 +304,11 @@ def _draw_pointer_pointing_down(img: Image.Image):
     ]
     draw.polygon(pointer, fill=(0, 0, 0))
 
-def _render_static_wheel(layout_key: Tuple[Tuple[str, float, float], ...], winner_idx: Optional[int] = None, size: int = WHEEL_SIZE) -> io.BytesIO:
+def _render_static_wheel(
+    layout_key: Tuple[Tuple[str, Optional[str], float, float], ...],
+    winner_idx: Optional[int] = None,
+    size: int = WHEEL_SIZE,
+) -> io.BytesIO:
     base = _wheel_base_cached(layout_key, size).copy()
     angle = _rotation_offset(layout_key, winner_idx) if winner_idx is not None else 0.0
     rotated = base.rotate(angle, resample=Image.BICUBIC, expand=False,
@@ -276,7 +320,7 @@ def _render_static_wheel(layout_key: Tuple[Tuple[str, float, float], ...], winne
     return buf
 
 def _render_spin_gif(
-    layout: Sequence[Tuple[str, float, float]],
+    layout: Sequence[Tuple[str, Optional[str], float, float]],
     winner_idx: int,
     *,
     size: int = WHEEL_SIZE,
@@ -321,7 +365,7 @@ def _render_spin_gif(
     return buf
 
 async def _make_gif_async(
-    layout_key: Tuple[Tuple[str, float, float], ...],
+    layout_key: Tuple[Tuple[str, Optional[str], float, float], ...],
     winner_idx: int,
     size: int,
     duration_sec: float,
@@ -484,7 +528,7 @@ class WheelView(discord.ui.View):
         self,
         author_id: int,
         slices: List[WheelSlice],
-        layout_key: Tuple[Tuple[str, float, float], ...],
+        layout_key: Tuple[Tuple[str, Optional[str], float, float], ...],
         size: int,
         state,
     ):
