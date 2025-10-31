@@ -4,6 +4,7 @@ import io
 import math
 import random
 import asyncio
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Sequence
 from functools import lru_cache
@@ -11,7 +12,7 @@ from functools import lru_cache
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from core.db import (
     db_wallet_get,
     db_wallet_try_spend_mambucks,
@@ -192,26 +193,151 @@ def _rotation_offset(layout: Sequence[Tuple[str, float, float]], index: int) -> 
 
 # ---------------- Helpers: render, wheel data, rarity pick ----------------
 
-_FONT_CANDIDATES: Tuple[str, ...] = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-    "DejaVuSans.ttf",
-    "arial.ttf",
-)
-
-
-def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    for path in _FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_RARITY_ICON_DIR = _REPO_ROOT / "images" / "rarity_logos"
 
 @lru_cache(maxsize=64)
 def _wheel_base_cached(layout_key: Tuple[Tuple[str, float, float], ...], size: int) -> Image.Image:
     """Cache the wheel with labels; copy() before modifying."""
     return _draw_wheel_base(layout_key, size=size)
+
+
+@lru_cache(maxsize=16)
+def _load_rarity_icon(rarity_key: str) -> Optional[Image.Image]:
+    rarity_key = (rarity_key or "").strip().lower()
+    if not rarity_key:
+        return None
+    for ext in ("png", "gif"):
+        candidate = _RARITY_ICON_DIR / f"{rarity_key}.{ext}"
+        if candidate.is_file():
+            try:
+                img = Image.open(candidate)
+                if getattr(img, "is_animated", False):
+                    img.seek(0)
+                return img.convert("RGBA")
+            except Exception:
+                continue
+    return None
+
+
+def _parse_custom_emoji(label: str) -> Optional[str]:
+    label = (label or "").strip()
+    if not (label.startswith("<") and label.endswith(">")):
+        return None
+    parts = label.strip("<>").split(":")
+    if len(parts) != 3:
+        return None
+    name = parts[1]
+    if not name:
+        return None
+    if name.startswith("rar_"):
+        return name[4:]
+    return None
+
+
+def _render_colored_disc(color: Tuple[int, int, int], size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    inset = max(1, size // 10)
+    draw.ellipse((inset, inset, size - inset, size - inset), fill=color + (255,), outline=(0, 0, 0, 200), width=max(1, size // 16))
+    return img
+
+
+def _render_star(color: Tuple[int, int, int], size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx = cy = size / 2
+    outer = size * 0.45
+    inner = outer * 0.45
+    points = []
+    for i in range(10):
+        angle = math.pi / 2 + i * math.pi / 5
+        radius = outer if i % 2 == 0 else inner
+        x = cx + radius * math.cos(angle)
+        y = cy - radius * math.sin(angle)
+        points.append((x, y))
+    draw.polygon(points, fill=color + (255,), outline=(0, 0, 0, 200), width=max(1, size // 24))
+    return img
+
+
+def _render_diamond(size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx = cy = size / 2
+    top = (cx, size * 0.1)
+    left = (size * 0.18, size * 0.5)
+    right = (size * 0.82, size * 0.5)
+    bottom = (cx, size * 0.9)
+    draw.polygon([top, left, bottom, right], fill=(59, 130, 246, 255), outline=(17, 94, 240, 255), width=max(1, size // 24))
+    facet_top = (cx, size * 0.22)
+    facet_left = (size * 0.32, size * 0.5)
+    facet_right = (size * 0.68, size * 0.5)
+    draw.polygon([facet_top, facet_left, bottom, facet_right], fill=(96, 165, 250, 200))
+    return img
+
+
+def _render_money_bag(size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    bag_color = (217, 119, 6, 255)
+    outline = (124, 45, 18, 255)
+    draw.ellipse((size * 0.18, size * 0.38, size * 0.82, size * 0.92), fill=bag_color, outline=outline, width=max(1, size // 28))
+    neck = [
+        (size * 0.35, size * 0.32),
+        (size * 0.65, size * 0.32),
+        (size * 0.72, size * 0.40),
+        (size * 0.28, size * 0.40),
+    ]
+    draw.polygon(neck, fill=bag_color, outline=outline)
+    draw.arc((size * 0.28, size * 0.26, size * 0.72, size * 0.70), start=200, end=340, fill=outline, width=max(1, size // 28))
+    tie_y = size * 0.38
+    draw.line((size * 0.32, tie_y, size * 0.68, tie_y), fill=outline, width=max(1, size // 18))
+    draw.line((size * 0.32, tie_y + size * 0.03, size * 0.68, tie_y + size * 0.03), fill=(252, 211, 77, 255), width=max(1, size // 22))
+    return img
+
+
+def _render_question_mark(size: int) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    bg_color = (129, 140, 248, 255)
+    draw.ellipse((0, 0, size, size), fill=bg_color)
+    stroke = max(2, size // 12)
+    cx = size / 2
+    draw.arc((size * 0.2, size * 0.15, size * 0.8, size * 0.75), start=200, end=340, fill=(255, 255, 255, 255), width=stroke)
+    draw.line((cx, size * 0.55, cx, size * 0.78), fill=(255, 255, 255, 255), width=stroke)
+    dot_r = size * 0.08
+    draw.ellipse((cx - dot_r, size * 0.82, cx + dot_r, size * 0.82 + dot_r * 2), fill=(255, 255, 255, 255))
+    return img
+
+
+_FALLBACK_DISC_COLORS = {
+    "🟡": (253, 224, 71),
+    "🔴": (239, 68, 68),
+    "🔵": (59, 130, 246),
+    "🟢": (34, 197, 94),
+    "⚪": (249, 250, 251),
+}
+
+
+def _render_label_icon(label: str, target_size: int) -> Optional[Image.Image]:
+    if not label:
+        return None
+    rarity_key = _parse_custom_emoji(label)
+    if rarity_key:
+        icon = _load_rarity_icon(rarity_key)
+        if icon:
+            return icon
+    if label in _FALLBACK_DISC_COLORS:
+        return _render_colored_disc(_FALLBACK_DISC_COLORS[label], target_size)
+    if label == "★":
+        return _render_star((251, 191, 36), target_size)
+    if label == "💎":
+        return _render_diamond(target_size)
+    if label == "💰":
+        return _render_money_bag(target_size)
+    if label == "❔":
+        return _render_question_mark(target_size)
+    return None
 
 
 def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHEEL_SIZE) -> Image.Image:
@@ -221,7 +347,6 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
     radius = size // 2 - 12
     img = Image.new("RGBA", (W, H), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
-    font = _load_font(18)
 
     palette = [
         (244, 67, 54), (33, 150, 243), (76, 175, 80), (255, 235, 59), (156, 39, 176),
@@ -231,7 +356,7 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
         (124, 77, 255), (175, 180, 43), (255, 112, 67), (41, 98, 255),
     ]
 
-    n = max(1, len(layout))
+    icon_target = max(48, int(radius * 0.35))
 
     for i, (label, a0, a1) in enumerate(layout):
         color = palette[i % len(palette)]
@@ -241,11 +366,30 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
         mid = math.radians((a0 + a1) / 2)
         tx = cx + int(math.cos(mid) * (radius * 0.6))
         ty = cy + int(math.sin(mid) * (radius * 0.6))
-        text = label  # "COMMON", etc.
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((tx - tw // 2, ty - th // 2), text, fill=(255, 255, 255),
-                  font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+        icon = _render_label_icon(label, icon_target)
+        if icon is not None:
+            iw, ih = icon.size
+            if iw == 0 or ih == 0:
+                continue
+            scale = min(icon_target / iw, icon_target / ih)
+            if scale <= 0:
+                continue
+            if abs(scale - 1.0) > 1e-3:
+                new_size = (max(1, int(iw * scale)), max(1, int(ih * scale)))
+                icon = icon.resize(new_size, resample=Image.LANCZOS)
+                iw, ih = icon.size
+            px = tx - iw // 2
+            py = ty - ih // 2
+            img.alpha_composite(icon, (px, py))
+        else:
+            text = str(label or "")
+            if not text:
+                continue
+            bbox = draw.textbbox((0, 0), text)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            px = tx - tw // 2
+            py = ty - th // 2
+            draw.text((px, py), text, fill=(255, 255, 255), stroke_width=2, stroke_fill=(0, 0, 0))
 
     # center hub
     draw.ellipse([cx - 14, cy - 14, cx + 14, cy + 14], fill=(250, 250, 250), outline=(0, 0, 0))
