@@ -4,9 +4,11 @@ import io
 import math
 import random
 import asyncio
+from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Sequence
+from typing import List, Tuple, Optional, Sequence, Union
 from functools import lru_cache
+import unicodedata
 
 import discord
 from discord import app_commands
@@ -192,26 +194,70 @@ def _rotation_offset(layout: Sequence[Tuple[str, float, float]], index: int) -> 
 
 # ---------------- Helpers: render, wheel data, rarity pick ----------------
 
-_FONT_CANDIDATES: Tuple[str, ...] = (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_ASSETS_DIR = _REPO_ROOT / "assets"
+
+_FONT_CANDIDATES: Tuple[Union[str, Path], ...] = (
+    _ASSETS_DIR / "DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
     "DejaVuSans.ttf",
     "arial.ttf",
 )
 
+_EMOJI_FONT_CANDIDATES: Tuple[Union[str, Path], ...] = (
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    _ASSETS_DIR / "NotoColorEmoji.ttf",
+    _ASSETS_DIR / "NotoEmoji-Regular.ttf",
+    "NotoColorEmoji.ttf",
+)
 
+
+def _iter_font_paths(candidates: Sequence[Union[str, Path]]):
+    for candidate in candidates:
+        yield str(candidate)
+
+
+@lru_cache(maxsize=32)
 def _load_font(size: int = 18) -> ImageFont.ImageFont:
-    for path in _FONT_CANDIDATES:
+    for path in _iter_font_paths(_FONT_CANDIDATES):
         try:
             return ImageFont.truetype(path, size)
         except Exception:
             continue
     return ImageFont.load_default()
 
+
+@lru_cache(maxsize=32)
+def _load_emoji_font(size: int = 48) -> ImageFont.ImageFont:
+    layout = getattr(ImageFont, "LAYOUT_RAQM", getattr(ImageFont, "LAYOUT_BASIC", None))
+    for path in _iter_font_paths(_EMOJI_FONT_CANDIDATES):
+        try:
+            if layout is not None:
+                return ImageFont.truetype(path, size, layout_engine=layout)
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return _load_font(size)
+
 @lru_cache(maxsize=64)
 def _wheel_base_cached(layout_key: Tuple[Tuple[str, float, float], ...], size: int) -> Image.Image:
     """Cache the wheel with labels; copy() before modifying."""
     return _draw_wheel_base(layout_key, size=size)
+
+
+def _is_probably_emoji(text: str) -> bool:
+    if not text:
+        return False
+    for ch in text:
+        if ch.isspace():
+            continue
+        code = ord(ch)
+        if code in (0x200d, 0xfe0f, 0xfe0e):  # joiners / variation selectors
+            continue
+        cat = unicodedata.category(ch)
+        if code >= 0x2600 or cat.startswith("So"):
+            return True
+    return False
 
 
 def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHEEL_SIZE) -> Image.Image:
@@ -221,7 +267,10 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
     radius = size // 2 - 12
     img = Image.new("RGBA", (W, H), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
-    font = _load_font(18)
+    label_font = _load_font(max(16, size // 20))
+    emoji_font = _load_emoji_font(max(36, size // 7))
+    if not hasattr(emoji_font, "getbbox"):
+        emoji_font = label_font
 
     palette = [
         (244, 67, 54), (33, 150, 243), (76, 175, 80), (255, 235, 59), (156, 39, 176),
@@ -242,10 +291,21 @@ def _draw_wheel_base(layout: Sequence[Tuple[str, float, float]], size: int = WHE
         tx = cx + int(math.cos(mid) * (radius * 0.6))
         ty = cy + int(math.sin(mid) * (radius * 0.6))
         text = label  # "COMMON", etc.
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text((tx - tw // 2, ty - th // 2), text, fill=(255, 255, 255),
-                  font=font, stroke_width=2, stroke_fill=(0, 0, 0))
+        if _is_probably_emoji(text):
+            bbox = emoji_font.getbbox(text)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            px = int(round(tx - tw / 2 - bbox[0]))
+            py = int(round(ty - th / 2 - bbox[1]))
+            # subtle shadow for contrast
+            draw.text((px + 1, py + 1), text, font=emoji_font, fill=(0, 0, 0, 160))
+            draw.text((px, py), text, font=emoji_font, embedded_color=True)
+        else:
+            bbox = draw.textbbox((0, 0), text, font=label_font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            px = tx - tw // 2
+            py = ty - th // 2
+            draw.text((px, py), text, fill=(255, 255, 255), font=label_font,
+                      stroke_width=2, stroke_fill=(0, 0, 0))
 
     # center hub
     draw.ellipse([cx - 14, cy - 14, cx + 14, cy + 14], fill=(250, 250, 250), outline=(0, 0, 0))
