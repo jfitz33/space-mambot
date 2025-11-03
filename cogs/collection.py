@@ -242,7 +242,6 @@ class Collection(commands.Cog):
 
     @app_commands.command(name="export_collection", description="Export collection CSV for site import")
     @app_commands.guilds(GUILD)
-    @app_commands.describe(user="User to export (optional)")
     async def export_collection(self, interaction: discord.Interaction):
         target = interaction.user
         rows = db_get_collection(self.bot.state, target.id)

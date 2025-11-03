@@ -222,7 +222,7 @@ class GambaConfirmView(discord.ui.View):
         except Exception:
             pass
 
-        await interaction.followup.send(f"Congrats you won {prize_text}!")
+        await interaction.followup.send(f"Congrats! {interaction.user.mention} won {prize_text}!")
         self.stop()
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
