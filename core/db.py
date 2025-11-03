@@ -1375,6 +1375,21 @@ def db_stats_get(state, user_id: int) -> dict:
         return {"wins": 0, "losses": 0, "games": 0}
     return {"wins": int(row[0] or 0), "losses": int(row[1] or 0), "games": int(row[2] or 0)}
 
+
+def db_stats_reset(state, user_id: int) -> dict[str, int]:
+    """Delete aggregated stats and match history for ``user_id``."""
+    with sqlite3.connect(state.db_path) as conn, conn:
+        stats_deleted = conn.execute(
+            "DELETE FROM user_stats WHERE user_id=?",
+            (str(user_id),),
+        ).rowcount
+        match_deleted = conn.execute(
+            "DELETE FROM match_log WHERE winner_id=? OR loser_id=?",
+            (str(user_id), str(user_id)),
+        ).rowcount
+    return {"stats_rows": int(stats_deleted or 0), "match_rows": int(match_deleted or 0)}
+
+
 def db_stats_record_loss(state, loser_id: int, winner_id: int) -> tuple[dict, dict]:
     """
     Record a single match where `loser_id` lost to `winner_id`.
@@ -1696,6 +1711,19 @@ def db_team_points_for_user(state, guild_id: int, user_id: int) -> dict[str, int
             results[str(team_name)] = int(points or 0)
     return results
 
+
+def db_team_points_clear(state, guild_id: int, user_id: int) -> int:
+    """Remove any stored team points for ``user_id`` within ``guild_id``."""
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute(
+            "DELETE FROM team_points WHERE guild_id=? AND user_id=?",
+            (str(guild_id), str(user_id)),
+        )
+        return int(cur.rowcount)
+
+
 def db_team_tracker_store(state, guild_id: int, channel_id: int, message_id: int):
     import sqlite3, time
 
@@ -1813,3 +1841,19 @@ def db_wheel_tokens_grant_daily(state, user_id: int, day_key: str) -> tuple[int,
         """, (day_key, now, str(user_id), day_key))
         granted = (cur.rowcount > 0)
     return (db_wheel_tokens_get(state, user_id), granted)
+
+
+def db_wheel_tokens_clear(state, user_id: int) -> int:
+    """Remove any stored wheel tokens for ``user_id``. Returns tokens cleared."""
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute(
+            "SELECT tokens FROM wheel_tokens WHERE user_id=?",
+            (str(user_id),),
+        )
+        row = cur.fetchone()
+        tokens = int(row[0]) if row and row[0] is not None else 0
+        conn.execute(
+            "DELETE FROM wheel_tokens WHERE user_id=?",
+            (str(user_id),),
+        )
+    return tokens

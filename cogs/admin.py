@@ -4,11 +4,23 @@ from discord import app_commands
 from typing import List, Literal, Optional
 
 from core.db import (
-    db_admin_add_card, db_admin_remove_card, db_collection_clear,
-    db_wallet_set, db_wallet_add, db_wallet_get,
-    db_shards_get, db_shards_add, db_shard_override_set,
-    db_shard_override_clear, db_shard_override_clear, db_shard_override_list_active
+    db_admin_add_card,
+    db_admin_remove_card,
+    db_collection_clear,
+    db_wallet_set,
+    db_wallet_add,
+    db_wallet_get,
+    db_shards_get,
+    db_shards_add,
+    db_shard_override_set,
+    db_shard_override_clear,
+    db_shard_override_list_active,
+    db_stats_reset,
+    db_team_points_clear,
+    db_wheel_tokens_clear,
+    db_wishlist_clear,
 )
+from core.quests.schema import db_reset_all_user_quests
 from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
@@ -204,17 +216,33 @@ class Admin(commands.Cog):
             await interaction.response.send_message("You can’t reset a bot account.", ephemeral=True)
             return
 
-        # Clear collection
+        # Clear collection & wishlist data
         deleted = db_collection_clear(self.state, user.id)
+        wishlist_removed = db_wishlist_clear(self.state, user.id)
 
-        # Empty wallet balances (mambucks & legacy fitzcoin)
+        # Remove quest progress (weekly/daily/etc.)
+        quest_rows = await db_reset_all_user_quests(self.state, user.id)
+
+        # Reset wallet balances (capture previous values for messaging)
+        wallet_before = db_wallet_get(self.state, user.id)
         db_wallet_set(self.state, user.id, fitzcoin=0, mambucks=0)
 
-        # NEW: zero shards across all known sets
+        # Zero shards across all known sets
+        shard_clears: list[str] = []
         for sid in sorted(PACKS_BY_SET.keys() or [1]):
             before = db_shards_get(self.state, user.id, sid)
             if before:
                 db_shards_add(self.state, user.id, sid, -before)
+                shard_clears.append(f"{shard_set_name(sid)} ({before})")
+
+        # Reset wheel tokens & win/loss stats
+        wheel_tokens_removed = db_wheel_tokens_clear(self.state, user.id)
+        stats_reset = db_stats_reset(self.state, user.id)
+
+        # Clear stored team points within this guild (if any)
+        team_points_removed = 0
+        if interaction.guild:
+            team_points_removed = db_team_points_clear(self.state, interaction.guild.id, user.id)
 
         # Remove team roles (if present)
         removed_roles: list[str] = []
@@ -230,7 +258,36 @@ class Admin(commands.Cog):
                 except discord.Forbidden:
                     failed_roles.append(role_name)
 
-        lines = [f"✅ Cleared **{deleted}** row(s) for {user.mention}."]
+        lines = [f"✅ Cleared **{deleted}** collection row(s) for {user.mention}."]
+        if wishlist_removed:
+            lines.append(f"✅ Cleared wishlist entries (**{wishlist_removed}** removed).")
+        if quest_rows:
+            lines.append(f"✅ Removed **{quest_rows}** quest progress row(s).")
+        if wallet_before:
+            mb_before = int(wallet_before.get("mambucks", 0) or 0)
+            fz_before = int(wallet_before.get("fitzcoin", 0) or 0)
+            if mb_before or fz_before:
+                lines.append(
+                    "✅ Reset wallet balances ("
+                    f"Mambucks {mb_before} → 0; Fitzcoin {fz_before} → 0)."
+                )
+            else:
+                lines.append("ℹ️ Wallet balances were already zero.")
+        if shard_clears:
+            lines.append("✅ Cleared shards: " + ", ".join(shard_clears))
+        else:
+            lines.append("ℹ️ No shards to clear.")
+        if stats_reset.get("stats_rows") or stats_reset.get("match_rows"):
+            lines.append(
+                "✅ Reset win/loss record"
+                f" (stats rows cleared: {stats_reset['stats_rows']}, matches removed: {stats_reset['match_rows']})."
+            )
+        else:
+            lines.append("ℹ️ No win/loss history found to clear.")
+        if wheel_tokens_removed:
+            lines.append(f"✅ Removed **{wheel_tokens_removed}** stored wheel token(s).")
+        if interaction.guild and team_points_removed:
+            lines.append(f"✅ Cleared team points entries ({team_points_removed} row(s)).")
         if removed_roles:
             lines.append("✅ Removed team role(s): " + ", ".join(sorted(removed_roles)))
         missing_roles = [name for name in TEAM_ROLE_NAMES if name not in removed_roles and name not in failed_roles]
