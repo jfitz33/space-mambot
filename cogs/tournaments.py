@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlparse
 from collections import Counter
 from dataclasses import dataclass
 from html import unescape
+from datetime import datetime
 
 import discord
 from discord import app_commands
@@ -21,7 +22,7 @@ import requests
 from core.banlist import load_banlist
 from core.cards_shop import fetch_card_details_by_id, find_card_name_by_id
 from core.deck_render import DeckCardEntry, render_deck_section_image
-from core.db import db_get_collection, db_stats_record_loss
+from core.db import db_get_collection, db_stats_record_loss, db_stats_revert_result
 from core.state import AppState
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -42,6 +43,29 @@ DROP_ELIGIBLE_TOURNAMENT_STATES = {"pending", "checking_in"}
 DROP_DISCOVERY_TOURNAMENT_STATES = (
     ACTIVE_TOURNAMENT_STATES | DROP_ELIGIBLE_TOURNAMENT_STATES
 )
+
+
+def _parse_challonge_timestamp(value: object) -> float:
+    """Return a comparable timestamp value from Challonge API fields."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+
+        normalized = text.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            try:
+                return float(text)
+            except ValueError:
+                return 0.0
+
+    return 0.0
 
 def _normalize_card_id(value: str | int | None) -> str | None:
     if value is None:
@@ -208,6 +232,12 @@ class Tournaments(commands.Cog):
         self.bot = bot
         self.state: AppState = bot.state
         self.logger = logging.getLogger(__name__)
+
+    @staticmethod
+    def _win_pct(stats: dict) -> float:
+        games = int(stats.get("games", 0) or 0)
+        wins = int(stats.get("wins", 0) or 0)
+        return (wins / games * 100.0) if games else 0.0
 
     @staticmethod
     def _summarize_error(detail: str, *, max_length: int = 400) -> str:
@@ -494,6 +524,149 @@ class Tournaments(commands.Cog):
                     return entry
 
         return None
+
+    async def _resolve_open_match_context(
+        self,
+        tournaments: list[dict],
+        *,
+        loser: discord.Member,
+        winner: discord.Member,
+    ) -> tuple[str, str, str, str, str] | None:
+        """Locate an open Challonge match between ``loser`` and ``winner``."""
+
+        for tournament in tournaments:
+            identifier = self._resolve_tournament_identifier(tournament)
+            if not identifier:
+                continue
+
+            try:
+                detailed = await self._fetch_challonge_tournament(
+                    identifier, include_participants=True
+                )
+            except RuntimeError:
+                continue
+
+            participants = self._extract_tournament_participants(detailed)
+            if not participants:
+                continue
+
+            loser_participant = self._find_matching_participant(participants, loser)
+            winner_participant = self._find_matching_participant(participants, winner)
+            if loser_participant is None or winner_participant is None:
+                continue
+
+            loser_participant_id = loser_participant.get("id")
+            winner_participant_id = winner_participant.get("id")
+            if loser_participant_id is None or winner_participant_id is None:
+                continue
+
+            loser_id_str = str(loser_participant_id)
+            winner_id_str = str(winner_participant_id)
+
+            try:
+                matches = await self._fetch_challonge_matches(identifier)
+            except RuntimeError:
+                continue
+
+            for match in matches:
+                match_state = (match.get("state") or "").strip().lower()
+                if match_state != "open":
+                    continue
+
+                player1_id = match.get("player1_id")
+                player2_id = match.get("player2_id")
+                if player1_id is None or player2_id is None:
+                    continue
+
+                player_ids = {str(player1_id), str(player2_id)}
+                if player_ids != {loser_id_str, winner_id_str}:
+                    continue
+
+                match_id = match.get("id")
+                if match_id is None:
+                    continue
+
+                tournament_name = (
+                    detailed.get("name")
+                    or tournament.get("name")
+                    or str(identifier)
+                )
+
+                return (
+                    str(identifier),
+                    str(match_id),
+                    winner_id_str,
+                    loser_id_str,
+                    str(tournament_name),
+                )
+
+        return None
+
+    async def _finalize_tournament_loss(
+        self,
+        interaction: discord.Interaction,
+        *,
+        tournament_identifier: str,
+        match_id: str,
+        winner_id_str: str,
+        loser_id_str: str,
+        loser: discord.Member,
+        winner: discord.Member,
+        quest_context: str,
+        reporter: discord.abc.User | None,
+        tournament_name: str | None = None,
+        announce_publicly: bool = True,
+    ) -> bool:
+        try:
+            await self._challonge_request(
+                "PUT",
+                f"/tournaments/{tournament_identifier}/matches/{match_id}.json",
+                data={
+                    "match[scores_csv]": "0-1",
+                    "match[winner_id]": winner_id_str,
+                    "match[loser_id]": loser_id_str,
+                },
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to update Challonge match: {exc}",
+                ephemeral=not announce_publicly,
+            )
+            return False
+
+        db_stats_record_loss(
+            self.state,
+            loser_id=loser.id,
+            winner_id=winner.id,
+        )
+
+        quests = interaction.client.get_cog("Quests")
+        try:
+            if quests and getattr(quests, "qm", None):
+                await quests.qm.increment(winner.id, "win_3_matches", 1)
+                await quests.qm.increment(loser.id, "matches_played", 1)
+                await quests.qm.increment(winner.id, "matches_played", 1)
+        except Exception:
+            self.logger.exception(
+                f"[tournaments] quest tick error during {quest_context}"
+            )
+
+        tournament_fragment = (
+            f" in **{tournament_name}**" if tournament_name else ""
+        )
+        reporter_note = ""
+        if reporter and reporter.id not in {loser.id, winner.id}:
+            reporter_note = f" (reported by {getattr(reporter, 'display_name', 'an admin')})"
+
+        await interaction.followup.send(
+            (
+                f"Tournament result of {loser.display_name}'s loss to {winner.display_name} "
+                f"has been recorded{tournament_fragment}.{reporter_note}"
+            ).strip(),
+            ephemeral=not announce_publicly,
+        )
+
+        return True
 
     async def _find_existing_challonge_participant(
         self,
@@ -924,7 +1097,159 @@ class Tournaments(commands.Cog):
             )
             return
 
-        match_context: tuple[str, str, str, str] | None = None
+        match_context = await self._resolve_open_match_context(
+            tournaments,
+            loser=caller,
+            winner=opponent,
+        )
+
+        if match_context is None:
+            await interaction.followup.send(
+                f"no active tournament match between {caller.display_name} and {opponent.display_name}",
+                ephemeral=False,
+            )
+            return
+
+        tournament_identifier, match_id, winner_id_str, loser_id_str, tournament_name = (
+            match_context
+        )
+
+        await self._finalize_tournament_loss(
+            interaction,
+            tournament_identifier=tournament_identifier,
+            match_id=match_id,
+            winner_id_str=winner_id_str,
+            loser_id_str=loser_id_str,
+            loser=caller,
+            winner=opponent,
+            quest_context="tournament_loss",
+            reporter=caller,
+            tournament_name=tournament_name,
+            announce_publicly=True,
+        )
+
+    @app_commands.command(
+        name="tournament_admin_loss",
+        description="(Admin) Report a Challonge tournament loss between two players.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        loser="Player who lost the match",
+        winner="Player who won the match",
+    )
+    async def tournament_admin_loss(
+        self,
+        interaction: discord.Interaction,
+        loser: discord.Member,
+        winner: discord.Member,
+    ) -> None:
+        if loser.id == winner.id:
+            await interaction.response.send_message(
+                "You must choose two different players.",
+                ephemeral=True,
+            )
+            return
+        if loser.bot or winner.bot:
+            await interaction.response.send_message(
+                "Bots cannot play matches.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=False, thinking=True)
+
+        try:
+            tournaments = await self._fetch_active_tournaments()
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to retrieve active tournaments: {exc}",
+                ephemeral=False,
+            )
+            return
+
+        match_context = await self._resolve_open_match_context(
+            tournaments,
+            loser=loser,
+            winner=winner,
+        )
+
+        if match_context is None:
+            await interaction.followup.send(
+                f"no active tournament match between {loser.display_name} and {winner.display_name}",
+                ephemeral=False,
+            )
+            return
+
+        tournament_identifier, match_id, winner_id_str, loser_id_str, tournament_name = (
+            match_context
+        )
+
+        await self._finalize_tournament_loss(
+            interaction,
+            tournament_identifier=tournament_identifier,
+            match_id=match_id,
+            winner_id_str=winner_id_str,
+            loser_id_str=loser_id_str,
+            loser=loser,
+            winner=winner,
+            quest_context="tournament_admin_loss",
+            reporter=interaction.user,
+            tournament_name=tournament_name,
+            announce_publicly=True,
+        )
+
+    @app_commands.command(
+        name="tournament_revert_result",
+        description="(Admin) Reopen the most recent Challonge result between two players.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        loser="Player originally recorded as the loser",
+        winner="Player originally recorded as the winner",
+    )
+    async def tournament_revert_result(
+        self,
+        interaction: discord.Interaction,
+        loser: discord.Member,
+        winner: discord.Member,
+    ) -> None:
+        if loser.id == winner.id:
+            await interaction.response.send_message(
+                "You must choose two different players.",
+                ephemeral=True,
+            )
+            return
+        if loser.bot or winner.bot:
+            await interaction.response.send_message(
+                "Bots cannot play matches.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            tournaments = await self._fetch_active_tournaments()
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to retrieve active tournaments: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        best_match: tuple[
+            float,
+            str,
+            str,
+            str,
+            str,
+            str,
+        ] | None = None
+
         for tournament in tournaments:
             identifier = self._resolve_tournament_identifier(tournament)
             if not identifier:
@@ -941,8 +1266,8 @@ class Tournaments(commands.Cog):
             if not participants:
                 continue
 
-            loser_participant = self._find_matching_participant(participants, caller)
-            winner_participant = self._find_matching_participant(participants, opponent)
+            loser_participant = self._find_matching_participant(participants, loser)
+            winner_participant = self._find_matching_participant(participants, winner)
             if loser_participant is None or winner_participant is None:
                 continue
 
@@ -961,80 +1286,156 @@ class Tournaments(commands.Cog):
 
             for match in matches:
                 match_state = (match.get("state") or "").strip().lower()
-                if match_state != "open":
+                if match_state not in {"complete", "awaiting_review"}:
                     continue
 
-                player1_id = match.get("player1_id")
-                player2_id = match.get("player2_id")
-                if player1_id is None or player2_id is None:
+                match_winner = match.get("winner_id")
+                match_loser = match.get("loser_id")
+                if match_winner is None or match_loser is None:
                     continue
 
-                player_ids = {str(player1_id), str(player2_id)}
-                if player_ids != {loser_id_str, winner_id_str}:
+                if str(match_winner) != winner_id_str or str(match_loser) != loser_id_str:
                     continue
 
                 match_id = match.get("id")
                 if match_id is None:
                     continue
 
-                match_context = (
+                timestamp = max(
+                    _parse_challonge_timestamp(match.get("completed_at")),
+                    _parse_challonge_timestamp(match.get("updated_at")),
+                    _parse_challonge_timestamp(match.get("started_at")),
+                    _parse_challonge_timestamp(match.get("created_at")),
+                )
+
+                tournament_name = (
+                    detailed.get("name")
+                    or tournament.get("name")
+                    or str(identifier)
+                )
+
+                context = (
+                    timestamp,
                     str(identifier),
                     str(match_id),
                     winner_id_str,
                     loser_id_str,
+                    str(tournament_name),
                 )
-                break
 
-            if match_context is not None:
-                break
+                if best_match is None or timestamp > best_match[0]:
+                    best_match = context
 
-        if match_context is None:
+        if best_match is None:
             await interaction.followup.send(
-                f"no active tournament match between {caller.display_name} and {opponent.display_name}",
-                ephemeral=False,
+                f"❌ No completed Challonge match found between {loser.display_name} and {winner.display_name}.",
+                ephemeral=True,
             )
             return
 
-        tournament_identifier, match_id, winner_id_str, loser_id_str = match_context
+        _, tournament_identifier, match_id, winner_id_str, loser_id_str, tournament_name = best_match
 
+        loser_after, winner_after = db_stats_revert_result(
+            self.state,
+            loser_id=loser.id,
+            winner_id=winner.id,
+        )
+
+        if loser_after is None or winner_after is None:
+            await interaction.followup.send(
+                "❌ No recorded result found for that matchup to revert.",
+                ephemeral=True,
+            )
+            return
+
+        reopen_error: RuntimeError | None = None
         try:
             await self._challonge_request(
-                "PUT",
-                f"/tournaments/{tournament_identifier}/matches/{match_id}.json",
-                data={
-                    "match[scores_csv]": "0-1",
-                    "match[winner_id]": winner_id_str,
-                    "match[loser_id]": loser_id_str,
-                },
+                "POST",
+                f"/tournaments/{tournament_identifier}/matches/{match_id}/reopen.json",
             )
         except RuntimeError as exc:
-            await interaction.followup.send(
-                f"Failed to update Challonge match: {exc}",
-                ephemeral=False,
-            )
-            return
+            reopen_error = exc
 
-        db_stats_record_loss(
-            self.state,
-            loser_id=caller.id,
-            winner_id=opponent.id,
-        )
+        if reopen_error is not None:
+            try:
+                await self._challonge_request(
+                    "POST",
+                    f"/tournaments/{tournament_identifier}/matches/{match_id}/reset.json",
+                )
+            except RuntimeError as reset_exc:
+                db_stats_record_loss(
+                    self.state,
+                    loser_id=loser.id,
+                    winner_id=winner.id,
+                )
+
+                message = (
+                    "Failed to reopen Challonge match and restored the local result. "
+                    f"Challonge error: {reset_exc}"
+                )
+                if reopen_error is not None:
+                    message += f" (Reopen error: {reopen_error})"
+
+                await interaction.followup.send(message, ephemeral=True)
+                return
+
+            self.logger.warning(
+                "Challonge reopen failed for %s (match %s); used reset endpoint instead: %s",
+                tournament_identifier,
+                match_id,
+                reopen_error,
+            )
 
         quests = interaction.client.get_cog("Quests")
         try:
             if quests and getattr(quests, "qm", None):
-                await quests.qm.increment(opponent.id, "win_3_matches", 1)
-                await quests.qm.increment(caller.id, "matches_played", 1)
-                await quests.qm.increment(opponent.id, "matches_played", 1)
+                await quests.qm.increment(winner.id, "win_3_matches", -1)
+                await quests.qm.increment(loser.id, "matches_played", -1)
+                await quests.qm.increment(winner.id, "matches_played", -1)
         except Exception:
             self.logger.exception(
-                "[tournaments] quest tick error during tournament_loss"
+                "[tournaments] quest tick error during tournament_revert_result"
             )
 
-        await interaction.followup.send(
-            f"Tournament result of {caller.display_name}'s loss to {opponent.display_name} has been recorded.",
-            ephemeral=False,
+        loser_pct = self._win_pct(loser_after)
+        winner_pct = self._win_pct(winner_after)
+
+        embed = discord.Embed(
+            title="Tournament Result Reverted",
+            description=(
+                f"Reopened the Challonge result in **{tournament_name}** where "
+                f"**{loser.display_name}** lost to **{winner.display_name}**."
+            ),
+            color=0x2F855A,
         )
+        embed.add_field(
+            name=f"{loser.display_name} — Record",
+            value=(
+                f"W: **{loser_after['wins']}**\n"
+                f"L: **{loser_after['losses']}**\n"
+                f"Win%: **{loser_pct:.1f}%**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{winner.display_name} — Record",
+            value=(
+                f"W: **{winner_after['wins']}**\n"
+                f"L: **{winner_after['losses']}**\n"
+                f"Win%: **{winner_pct:.1f}%**"
+            ),
+            inline=True,
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        if interaction.channel:
+            await interaction.channel.send(
+                "↩️ Admin reopened a Challonge result"
+                f" ({tournament_name}): removed the loss for "
+                f"**{loser.display_name}** vs **{winner.display_name}**."
+            )
 
     @app_commands.command(
         name="tournament_add_participant",

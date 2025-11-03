@@ -16,6 +16,8 @@ from core.db import (
     db_shard_override_clear,
     db_shard_override_list_active,
     db_stats_reset,
+    db_stats_record_loss,
+    db_stats_revert_result,
     db_team_points_clear,
     db_wheel_tokens_clear,
     db_wishlist_clear,
@@ -96,6 +98,12 @@ class Admin(commands.Cog):
     @staticmethod
     def _card_id(card: dict) -> str:
         return (card.get("id") or card.get("cardid") or "").strip()
+
+    @staticmethod
+    def _win_pct(stats: dict) -> float:
+        games = int(stats.get("games", 0) or 0)
+        wins = int(stats.get("wins", 0) or 0)
+        return (wins / games * 100.0) if games else 0.0
 
     @app_commands.command(name="admin_add_card", description="(Admin) Add a card to a user's collection (rarity from pack)")
     @app_commands.guilds(GUILD)
@@ -301,6 +309,161 @@ class Admin(commands.Cog):
             lines.append(f"📝 Reason: {reason}")
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @app_commands.command(
+        name="admin_report_loss",
+        description="(Admin) Record a loss between two players (updates both records).",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        loser="Player who lost the match",
+        winner="Player who won the match",
+    )
+    async def admin_report_loss(
+        self,
+        interaction: discord.Interaction,
+        loser: discord.Member,
+        winner: discord.Member,
+    ) -> None:
+        if loser.id == winner.id:
+            await interaction.response.send_message("You must choose two different players.", ephemeral=True)
+            return
+        if loser.bot or winner.bot:
+            await interaction.response.send_message("Bots cannot play matches.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        loser_after, winner_after = db_stats_record_loss(
+            self.state,
+            loser_id=loser.id,
+            winner_id=winner.id,
+        )
+
+        quests = interaction.client.get_cog("Quests")
+        try:
+            if quests and getattr(quests, "qm", None):
+                await quests.qm.increment(winner.id, "win_3_matches", 1)
+                await quests.qm.increment(loser.id, "matches_played", 1)
+                await quests.qm.increment(winner.id, "matches_played", 1)
+        except Exception as e:
+            print("[admin] quest tick error during admin_report_loss:", e)
+
+        lpct = self._win_pct(loser_after)
+        wpct = self._win_pct(winner_after)
+
+        embed = discord.Embed(
+            title="Admin Match Recorded",
+            description=f"**{loser.display_name}** lost to **{winner.display_name}**.",
+            color=0xCC3333,
+        )
+        embed.add_field(
+            name=f"{loser.display_name} — Record",
+            value=(
+                f"W: **{loser_after['wins']}**\n"
+                f"L: **{loser_after['losses']}**\n"
+                f"Win%: **{lpct:.1f}%**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{winner.display_name} — Record",
+            value=(
+                f"W: **{winner_after['wins']}**\n"
+                f"L: **{winner_after['losses']}**\n"
+                f"Win%: **{wpct:.1f}%**"
+            ),
+            inline=True,
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        if interaction.channel:
+            await interaction.channel.send(
+                f"📝 Admin recorded a result: **{loser.display_name}** lost to **{winner.display_name}**."
+            )
+
+    @app_commands.command(
+        name="admin_revert_result",
+        description="(Admin) Revert the most recent recorded result between two players.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        loser="Player originally recorded as the loser",
+        winner="Player originally recorded as the winner",
+    )
+    async def admin_revert_result(
+        self,
+        interaction: discord.Interaction,
+        loser: discord.Member,
+        winner: discord.Member,
+    ) -> None:
+        if loser.id == winner.id:
+            await interaction.response.send_message("You must choose two different players.", ephemeral=True)
+            return
+        if loser.bot or winner.bot:
+            await interaction.response.send_message("Bots cannot play matches.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        loser_after, winner_after = db_stats_revert_result(
+            self.state,
+            loser_id=loser.id,
+            winner_id=winner.id,
+        )
+
+        if loser_after is None or winner_after is None:
+            await interaction.followup.send(
+                "❌ No recorded result found for that matchup to revert.",
+                ephemeral=True,
+            )
+            return
+
+        quests = interaction.client.get_cog("Quests")
+        try:
+            if quests and getattr(quests, "qm", None):
+                await quests.qm.increment(winner.id, "win_3_matches", -1)
+                await quests.qm.increment(loser.id, "matches_played", -1)
+                await quests.qm.increment(winner.id, "matches_played", -1)
+        except Exception as e:
+            print("[admin] quest tick error during admin_revert_result:", e)
+
+        lpct = self._win_pct(loser_after)
+        wpct = self._win_pct(winner_after)
+
+        embed = discord.Embed(
+            title="Match Result Reverted",
+            description=f"Removed the recorded loss of **{loser.display_name}** to **{winner.display_name}**.",
+            color=0x2F855A,
+        )
+        embed.add_field(
+            name=f"{loser.display_name} — Record",
+            value=(
+                f"W: **{loser_after['wins']}**\n"
+                f"L: **{loser_after['losses']}**\n"
+                f"Win%: **{lpct:.1f}%**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{winner.display_name} — Record",
+            value=(
+                f"W: **{winner_after['wins']}**\n"
+                f"L: **{winner_after['losses']}**\n"
+                f"Win%: **{wpct:.1f}%**"
+            ),
+            inline=True,
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        if interaction.channel:
+            await interaction.channel.send(
+                f"↩️ Admin reverted a result: removed the loss for **{loser.display_name}** vs **{winner.display_name}**."
+            )
 
     # ---- Add currency -------------------------------------------------------
     @app_commands.command(name="wallet_add", description="(Admin) Add currency to a user's wallet")
