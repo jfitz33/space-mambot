@@ -1429,6 +1429,73 @@ def db_stats_record_loss(state, loser_id: int, winner_id: int) -> tuple[dict, di
     winner = {"wins": int(wrow[0]), "losses": int(wrow[1]), "games": int(wrow[2])}
     return loser, winner
 
+
+def db_stats_revert_result(state, loser_id: int, winner_id: int) -> tuple[dict, dict] | tuple[None, None]:
+    """Revert the most recent logged result of ``winner_id`` defeating ``loser_id``.
+
+    Returns ``(loser_stats_after, winner_stats_after)`` if a match was reverted,
+    otherwise returns ``(None, None)`` when no prior result exists to undo.
+    """
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        row = conn.execute(
+            "SELECT id FROM match_log WHERE winner_id=? AND loser_id=? ORDER BY id DESC LIMIT 1",
+            (str(winner_id), str(loser_id)),
+        ).fetchone()
+        if not row:
+            return None, None
+
+        match_id = int(row[0])
+
+        # ensure stat rows exist before applying updates
+        conn.execute(
+            "INSERT OR IGNORE INTO user_stats (user_id, updated_ts) VALUES (?, ?)",
+            (str(loser_id), now),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO user_stats (user_id, updated_ts) VALUES (?, ?)",
+            (str(winner_id), now),
+        )
+
+        conn.execute(
+            "DELETE FROM match_log WHERE id=?",
+            (match_id,),
+        )
+
+        conn.execute(
+            """
+            UPDATE user_stats
+               SET losses = CASE WHEN losses > 0 THEN losses - 1 ELSE 0 END,
+                   games  = CASE WHEN games  > 0 THEN games  - 1 ELSE 0 END,
+                   updated_ts = ?
+             WHERE user_id = ?;
+            """,
+            (now, str(loser_id)),
+        )
+        conn.execute(
+            """
+            UPDATE user_stats
+               SET wins   = CASE WHEN wins   > 0 THEN wins   - 1 ELSE 0 END,
+                   games  = CASE WHEN games  > 0 THEN games  - 1 ELSE 0 END,
+                   updated_ts = ?
+             WHERE user_id = ?;
+            """,
+            (now, str(winner_id)),
+        )
+
+        lrow = conn.execute(
+            "SELECT wins, losses, games FROM user_stats WHERE user_id=?",
+            (str(loser_id),),
+        ).fetchone()
+        wrow = conn.execute(
+            "SELECT wins, losses, games FROM user_stats WHERE user_id=?",
+            (str(winner_id),),
+        ).fetchone()
+
+    loser = {"wins": int(lrow[0] or 0), "losses": int(lrow[1] or 0), "games": int(lrow[2] or 0)}
+    winner = {"wins": int(wrow[0] or 0), "losses": int(wrow[1] or 0), "games": int(wrow[2] or 0)}
+    return loser, winner
+
 def db_init_match_log(state):
     with sqlite3.connect(state.db_path) as conn, conn:
         conn.execute("""
