@@ -55,9 +55,9 @@ setattr(bot.state, "live_views", set())
 
 COGS = ["cogs.system", "cogs.packs", "cogs.collection", 
         "cogs.admin", "cogs.trade", "cogs.start", "cogs.wallet", 
-        "cogs.cards_shop", "cogs.wheel", "cogs.quests", 
+        "cogs.cards_shop", "cogs.gamba", "cogs.quests",
         "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales",
-        "cogs.wheel_tokens", "cogs.tournaments", "cogs.teams"]
+        "cogs.gamba_chips", "cogs.tournaments", "cogs.teams"]
 
 @bot.event
 async def on_ready():

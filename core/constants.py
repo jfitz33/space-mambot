@@ -23,6 +23,46 @@ RARITY_ALIASES = {
 }
 FRAGMENTABLE_RARITIES = ["common", "rare", "super", "ultra", "secret"]
 
+# Slots (gamba) configuration
+GAMBA_DEFAULT_SHARD_SET_ID = 1
+GAMBA_PRIZES = [
+    {
+        "key": "card_super_rare",
+        "weight": 0.40,
+        "prize_type": "card",
+        "rarity": "SUPER RARE",
+        "description": "Random Super Rare Card",
+    },
+    {
+        "key": "card_ultra_rare",
+        "weight": 0.15,
+        "prize_type": "card",
+        "rarity": "ULTRA RARE",
+        "description": "Random Ultra Rare Card",
+    },
+    {
+        "key": "card_secret_rare",
+        "weight": 0.05,
+        "prize_type": "card",
+        "rarity": "SECRET RARE",
+        "description": "Random Secret Rare Card",
+    },
+    {
+        "key": "shards_100",
+        "weight": 0.20,
+        "prize_type": "shards",
+        "amount": 100,
+        "description": "100 Shards",
+    },
+    {
+        "key": "mambucks_10",
+        "weight": 0.20,
+        "prize_type": "mambucks",
+        "amount": 10,
+        "description": "10 Mambucks",
+    },
+]
+
 # Starter deck card sets are excluded from crafting/fragmenting.
 STARTER_DECK_SET_NAMES = {
     "Cult of the Mambo",
