@@ -1074,7 +1074,7 @@ async def db_wallet_migrate_to_mambucks_and_shards_per_set(state) -> None:
     """
     One-time migration (idempotent via app_migrations):
       - Create wallet (legacy), wallet_shards (new), app_migrations (marker)
-      - Move legacy wallet.mambucks -> wallet_shards(set_id=1)  [Elemental Shards]
+      - Move legacy wallet.mambucks -> wallet_shards(set_id=1)  [Frostfire Shards]
       - Fold wallet.fitzcoin -> wallet.mambucks                  [mambucks = pack currency]
     """
     def work():

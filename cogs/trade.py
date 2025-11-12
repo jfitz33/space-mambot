@@ -119,7 +119,7 @@ def _parse_shard_type(raw: Optional[str]) -> Optional[int]:
     try:
         return int(s)
     except Exception:
-        # allow passing a name like "Elemental Shards" -> set_id=1 if your helper supports reverse lookup
+        # allow passing a name like "Frostfire Shards" -> set_id=1 if your helper supports reverse lookup
         # simplest: expect numeric set_id in value; names only for display
         return None
 
@@ -275,7 +275,7 @@ class Trade(commands.Cog):
         """
         [(set_id, pretty_name)] for shard types that actually exist now.
         Uses core.currency.SHARD_SET_NAMES so only real types are suggested.
-        Preserves insertion order of the dict (e.g., Elemental first).
+        Preserves insertion order of the dict (e.g., Frostfire first).
         """
         return [(int(sid), name) for sid, name in SHARD_SET_NAMES.items()]
     

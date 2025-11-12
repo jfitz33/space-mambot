@@ -71,7 +71,7 @@ STARTER_DECK_SET_NAMES = {
 
 # Which packs belong to which Set (uppercase pack names)
 PACKS_BY_SET = {
-    1: {"FIRE", "WATER"},  # Set 1 → Elemental Shards
+    1: {"FIRE", "WATER"},  # Set 1 → Frostfire Shards
     2: {"DARK", "LIGHT"}
     # 2: {"...","..."},    # Add future sets here
 }

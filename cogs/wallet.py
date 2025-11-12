@@ -7,7 +7,7 @@ from discord import app_commands
 from core.state import AppState
 from core.db import db_wallet_get, db_shards_get
 from core.constants import PACKS_BY_SET
-from core.currency import shard_set_name  # pretty names like "Elemental Shards"
+from core.currency import shard_set_name  # pretty names like "Frostfire Shards"
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -31,7 +31,7 @@ class Wallet(commands.Cog):
         lines = []
         for sid in set_ids:
             amt = db_shards_get(self.state, target.id, sid)
-            # Show a short label like "Elemental" instead of "Elemental Shards"
+            # Show a short label like "Frostfire" instead of "Frostfire Shards"
             full = shard_set_name(sid)
             label = full.replace(" Shards", "")  # simple trim; adjust if you prefer full names
             lines.append(f"{label}: {amt}")

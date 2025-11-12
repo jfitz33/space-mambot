@@ -378,7 +378,7 @@ class CardsShop(commands.Cog):
         # Reuse your existing confirmation view (performs wallet debit + award)
         view = ConfirmBuyCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_cost=total)
         return await interaction.response.send_message(
-            f"Are you sure you want to **craft** **{amount}× {card_label(c)}** for **{total}** Elemental Shards?",
+            f"Are you sure you want to **craft** **{amount}× {card_label(c)}** for **{total}** Frostfire Shards?",
             view=view,
             ephemeral=True
         )
@@ -422,7 +422,7 @@ class CardsShop(commands.Cog):
         # Reuse your existing confirmation view (performs removal + credit)
         view = ConfirmSellCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_credit=total)
         return await interaction.response.send_message(
-            f"Are you sure you want to **fragment** **{amount}× {card_label(c)}** into **{total}** Elemental Shards?",
+            f"Are you sure you want to **fragment** **{amount}× {card_label(c)}** into **{total}** Frostfire Shards?",
             view=view,
             ephemeral=True
         )
