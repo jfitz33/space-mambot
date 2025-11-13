@@ -13,7 +13,9 @@ from core.constants import (
     BOX_COST,
     PACK_COST,
     PACKS_IN_BOX,
-    NEMESES_BUNDLE_NAME,
+    BUNDLES,
+    BUNDLE_NAME_INDEX,
+    pack_names_for_set,
 )
 from core.views import PacksSelectView
 from core.db import db_add_cards
@@ -48,10 +50,15 @@ MIN_PACKS = 1
 async def ac_pack_name_choices(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     state = interaction.client.state
     names = sorted((state.packs_index or {}).keys())
-    bundle_name = NEMESES_BUNDLE_NAME
-    lowered = bundle_name.lower()
-    if bundle_name and all(name.lower() != lowered for name in names):
-        names.insert(0, bundle_name)
+    existing_lower = {name.casefold() for name in names}
+    for bundle in reversed(BUNDLES):
+        bundle_name = bundle.get("name")
+        if not bundle_name:
+            continue
+        lowered = bundle_name.casefold()
+        if lowered not in existing_lower:
+            names.insert(0, bundle_name)
+            existing_lower.add(lowered)
     cur = (current or "").lower()
     out: List[app_commands.Choice[str]] = []
     for name in names:
@@ -213,7 +220,8 @@ class Packs(commands.Cog):
             return
 
         normalized_input = (pack_name or "").strip()
-        is_bundle = normalized_input.lower() == NEMESES_BUNDLE_NAME.lower()
+        bundle = BUNDLE_NAME_INDEX.get(normalized_input.casefold())
+        is_bundle = bundle is not None
         if not is_bundle and pack_name not in state.packs_index:
             await interaction.response.send_message(
                 "That pack set could not be found.", ephemeral=True
@@ -222,7 +230,7 @@ class Packs(commands.Cog):
 
         if is_bundle and not state.packs_index:
             await interaction.response.send_message(
-                "No packs available for the Nemeses Bundle.",
+                f"No packs available for the {bundle['name']}.",
                 ephemeral=True,
             )
             return
@@ -232,7 +240,13 @@ class Packs(commands.Cog):
         try:
             quests_cog = interaction.client.get_cog("Quests")
             if is_bundle:
-                pack_names = sorted(state.packs_index.keys())
+                pack_names = pack_names_for_set(state, bundle["set_id"])
+                if not pack_names:
+                    await interaction.followup.send(
+                        f"No packs are available for the {bundle['name']}.",
+                        ephemeral=True,
+                    )
+                    return
                 total_packs_opened = 0
                 for _ in range(amount):
                     for bundle_pack in pack_names:
@@ -267,10 +281,10 @@ class Packs(commands.Cog):
             raise
 
         if is_bundle:
-            bundle_suffix = "bundle" if amount == 1 else "bundles"
-            pack_list = ", ".join(sorted(state.packs_index.keys()))
+            bundle_name = bundle["name"]
+            pack_list = ", ".join(pack_names_for_set(state, bundle["set_id"]))
             await interaction.followup.send(
-                f"Opened {amount} quick Nemeses {bundle_suffix}."
+                f"Opened {amount} quick {bundle_name}{'' if amount == 1 else 's'}."
                 f" Each bundle includes one box of: {pack_list}.",
                 ephemeral=True,
             )

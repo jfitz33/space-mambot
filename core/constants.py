@@ -1,8 +1,9 @@
 PACK_COST=10
 BOX_COST=200
 PACKS_IN_BOX=24
-NEMESES_BUNDLE_COST=350
-NEMESES_BUNDLE_NAME="Nemeses Bundle"
+BUNDLE_BOX_COST=350
+FROSTFIRE_BUNDLE_NAME="Frostfire Bundle"
+SANDSTORM_BUNDLE_NAME="Sandstorm Bundle"
 SALE_DISCOUNT_PCT=10
 
 # Daily sale layout: (rarity, number of entries)
@@ -76,6 +77,25 @@ PACKS_BY_SET = {
     # 2: {"...","..."},    # Add future sets here
 }
 
+BUNDLES = (
+    {
+        "id": "frostfire",
+        "name": FROSTFIRE_BUNDLE_NAME,
+        "cost": BUNDLE_BOX_COST,
+        "set_id": 1,
+    },
+    {
+        "id": "sandstorm",
+        "name": SANDSTORM_BUNDLE_NAME,
+        "cost": BUNDLE_BOX_COST,
+        "set_id": 2,
+    },
+)
+
+# Bundles that should be grouped with a set (uppercase bundle names)
+BUNDLES_BY_SET = {bundle["name"].upper(): bundle["set_id"] for bundle in BUNDLES}
+BUNDLE_NAME_INDEX = {bundle["name"].casefold(): bundle for bundle in BUNDLES}
+
 def _normalize_pack_name(pack_name: str) -> str:
     import re
 
@@ -110,7 +130,15 @@ def set_id_for_pack(pack_name: str) -> int | None:
         for base in names:
             if base and (p.startswith(base + " ") or p.endswith(" " + base) or f" {base} " in p):
                 return sid
+    bundle_sid = BUNDLES_BY_SET.get(p)
+    if bundle_sid is not None:
+        return bundle_sid
     return None
+
+def pack_names_for_set(state, set_id: int) -> list[str]:
+    packs_index = getattr(state, "packs_index", None) or {}
+    names = [name for name in packs_index.keys() if set_id_for_pack(name) == set_id]
+    return sorted(names, key=str.casefold)
 
 # Shard economy
 CRAFT_COST_BY_RARITY = {

@@ -1,5 +1,6 @@
 from __future__ import annotations
-from collections import Counter
+from collections import Counter, defaultdict
+from functools import partial
 
 import discord, asyncio
 from discord.ui import View, Select, button, Button
@@ -14,13 +15,51 @@ from core.constants import (
     PACK_COST,
     PACKS_IN_BOX,
     BOX_COST,
-    NEMESES_BUNDLE_COST,
-    NEMESES_BUNDLE_NAME,
+    BUNDLES,
+    set_id_for_pack,
 )
-from typing import List, Tuple, Optional, Literal
+from typing import List, Tuple, Optional, Literal, Any
 
 ORDER = {r: i for i, r in enumerate(RARITY_ORDER)}
-BUNDLE_OPTION_VALUE = "__nemeses_bundle__"
+BUNDLE_VALUE_PREFIX = "__bundle__"
+
+def _coerce_set_id(value) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.isdigit():
+            return int(stripped)
+        lowered = stripped.lower()
+        if lowered.startswith("set "):
+            remainder = lowered[4:]
+            if remainder.isdigit():
+                return int(remainder)
+        if lowered.startswith("set"):
+            remainder = lowered[3:]
+            if remainder.isdigit():
+                return int(remainder)
+        # Fall back to named lookup
+        sid = set_id_for_pack(stripped)
+        if sid is not None:
+            return sid
+    return None
+
+
+def _resolve_pack_set_id(meta: dict, key: str) -> int | None:
+    for candidate in (meta.get("set_id"), meta.get("set"), meta.get("set_number")):
+        sid = _coerce_set_id(candidate)
+        if sid is not None:
+            return sid
+    for name in (meta.get("set_name"), meta.get("display_name"), key):
+        sid = set_id_for_pack(name)
+        if sid is not None:
+            return sid
+    return None
 
 def _rank(r: str) -> int:
     try: return RARITY_ORDER.index((r or "").lower())
@@ -60,27 +99,85 @@ def format_collection_lines(rows):
         lines.append(f"**{name}** — x{qty}{tail}")
     return lines
 
-def _build_pack_options(state, *, include_bundle: bool = False) -> List[discord.SelectOption]:
-    opts: List[discord.SelectOption] = []
+def _build_pack_options(
+    state,
+    *,
+    include_bundle: bool = False,
+    bundle_registry: dict[str, dict] | None = None,
+) -> List[discord.SelectOption]:
     packs_index = state.packs_index or {}
-    if include_bundle and packs_index:
-        opts.append(
-            discord.SelectOption(
-                label=NEMESES_BUNDLE_NAME,
-                value=BUNDLE_OPTION_VALUE,
-                description="One box each of Blazing Genesis and Storm of the Abyss",
-            )
-        )
-    # assume state.packs_index = { pack_key: {"display_name": "...", "desc": "...", ...}, ... }
+    if not packs_index:
+        return [discord.SelectOption(label="No packs available", value="__none__")]
+
+    if bundle_registry is not None:
+        bundle_registry.clear()
+
+    grouped: dict[int | None, list[dict[str, Any]]] = defaultdict(list)
     for key, meta in packs_index.items():
-        label = (meta.get("display_name") or key)[:100]
+        label = (meta.get("display_name") or key).strip()[:100] or key[:100]
         desc = (meta.get("desc") or meta.get("description") or "")[:100] or None
-        opts.append(discord.SelectOption(label=label, value=key, description=desc))
-        if len(opts) >= 25:  # Discord hard limit
+        option = discord.SelectOption(label=label, value=key, description=desc)
+        set_id = _resolve_pack_set_id(meta, key)
+        grouped[set_id].append({"key": key, "label": label, "option": option})
+    
+    for entries in grouped.values():
+        entries.sort(key=lambda item: item["label"].casefold())
+
+    considered_set_ids = set(grouped.keys())
+    if include_bundle:
+        considered_set_ids.update(bundle["set_id"] for bundle in BUNDLES)
+
+    ordered_set_ids = sorted(
+        considered_set_ids,
+        key=lambda sid: sid if sid is not None else 999,
+    )
+
+    options: List[discord.SelectOption] = []
+    LIMIT = 25
+    for set_id in ordered_set_ids:
+        pack_entries = grouped.get(set_id, [])
+        for entry in pack_entries:
+            if len(options) >= LIMIT:
+                break
+            options.append(entry["option"])
+        if len(options) >= LIMIT:
             break
-    if not opts:
-        opts.append(discord.SelectOption(label="No packs available", value="__none__"))
-    return opts
+
+        if include_bundle:
+            for bundle in BUNDLES:
+                if bundle["set_id"] != set_id:
+                    continue
+                if not pack_entries:
+                    continue
+                if len(options) >= LIMIT:
+                    break
+
+                bundle_value = f"{BUNDLE_VALUE_PREFIX}{bundle['id']}"
+                pack_labels = [entry["label"] for entry in pack_entries]
+                pack_pairs = [(entry["key"], entry["label"]) for entry in pack_entries]
+                description = f"Boxes of {', '.join(pack_labels)}"
+                if len(description) > 100:
+                    description = f"{len(pack_labels)} boxes from Set {set_id}"
+
+                option = discord.SelectOption(
+                    label=bundle["name"],
+                    value=bundle_value,
+                    description=description[:100] or None,
+                )
+                options.append(option)
+
+                if bundle_registry is not None:
+                    bundle_registry[bundle_value] = {
+                        "name": bundle["name"],
+                        "cost": bundle["cost"],
+                        "set_id": set_id,
+                        "packs": pack_pairs,
+                    }
+        if len(options) >= LIMIT:
+            break
+    if not options:
+        return [discord.SelectOption(label="No packs available", value="__none__")]
+    return options
 
 def _norm_rarity(r: str) -> str:
     r = (r or "").strip().lower()
@@ -148,7 +245,11 @@ def _pack_embed_for_cards(
 class PacksDropdown(discord.ui.Select):
     def __init__(self, parent_view: "PacksSelectView"):
         self.parent_view = parent_view
-        options = _build_pack_options(parent_view.state, include_bundle=parent_view.include_bundle)
+        options = _build_pack_options(
+            parent_view.state,
+            include_bundle=parent_view.include_bundle,
+            bundle_registry=parent_view.bundle_lookup,
+        )
         super().__init__(
             placeholder="Choose a pack…",
             min_values=1,
@@ -795,42 +896,48 @@ class PacksSelectView(discord.ui.View):
         self.amount = amount
         self.mode = mode
         self.include_bundle = mode == "box"
+        self.bundle_lookup: dict[str, dict] = {}
         self.add_item(PacksDropdown(self))
 
     async def _handle_pack_choice(self, interaction: discord.Interaction, pack_name: str):
-        if pack_name == BUNDLE_OPTION_VALUE:
+        bundle_info = self.bundle_lookup.get(pack_name)
+        if bundle_info:
+            bundle_name = bundle_info.get("name", "Bundle")
             if not self.include_bundle:
                 await interaction.response.send_message(
-                    "The Nemeses Bundle is only available when opening boxes.",
+                    f"The {bundle_name} is only available when opening boxes.",
                     ephemeral=True,
                 )
                 return
 
-            bundle_pack_names = sorted((self.state.packs_index or {}).keys())
-            if not bundle_pack_names:
+            pack_entries = bundle_info.get("packs") or []
+            if not pack_entries:
                 await interaction.response.send_message(
-                    "No packs are available for the Nemeses Bundle.",
+                    f"No packs are available for the {bundle_name}.",
                     ephemeral=True,
                 )
                 return
 
-            preview_names = ", ".join(bundle_pack_names[:10])
-            if len(bundle_pack_names) > 10:
+            pack_labels = [label for _key, label in pack_entries]
+            preview_names = ", ".join(pack_labels[:10])
+            if len(pack_labels) > 10:
                 preview_names += ", …"
 
             confirm_view = ConfirmSpendView(
                 state=self.state,
                 requester=self.requester,
-                pack_name=NEMESES_BUNDLE_NAME,
+                pack_name=bundle_name,
                 amount=1,
-                on_confirm=self._open_nemeses_bundle,
-                total_cost=NEMESES_BUNDLE_COST,
-                display_description="**the Nemeses Bundle**",
+                on_confirm=partial(self._open_bundle, bundle_info=bundle_info),
+                total_cost=bundle_info.get("cost", 0),
+                display_description=f"**the {bundle_name}**",
             )
 
+            set_id = bundle_info.get("set_id")
+            set_text = f"Set {set_id}" if set_id is not None else "this bundle"
             message = (
-                f"Open the **{NEMESES_BUNDLE_NAME}** for **{NEMESES_BUNDLE_COST}** Mambucks?\n"
-                f"This grants one box ({PACKS_IN_BOX} packs) of each available pack ({len(bundle_pack_names)} total)."
+                f"Open the **{bundle_name}** for **{bundle_info.get('cost', 0)}** Mambucks?\n"
+                f"This grants one box ({PACKS_IN_BOX} packs) of each available pack in {set_text} ({len(pack_entries)} total)."
             )
             if preview_names:
                 message += f"\nIncludes: {preview_names}"
@@ -997,33 +1104,51 @@ class PacksSelectView(discord.ui.View):
                 await dm.send(**send_kwargs)
                 await asyncio.sleep(0.25)
 
-    async def _open_nemeses_bundle(
+    async def _open_bundle(
         self,
         interaction: discord.Interaction,
         state,
         requester,
         pack_name: str,
         amount: int | None = None,
+        *,
+        bundle_info: dict,
     ):
-        bundle_pack_names = sorted((state.packs_index or {}).keys())
-        per_pack_results: list[tuple[str, list[list[dict]]]] = []
+        pack_entries: list[tuple[str, str]] = bundle_info.get("packs", [])
+        bundle_name = bundle_info.get("name", pack_name)
+
+        if not pack_entries:
+            try:
+                await interaction.edit_original_response(
+                    content=f"No packs are configured for the {bundle_name}.",
+                    view=None,
+                )
+            except Exception:
+                pass
+            await interaction.followup.send(
+                f"No packs are available for the {bundle_name}.",
+                ephemeral=True,
+            )
+            return
+
+        per_pack_results: list[tuple[str, list[list[dict]], str]] = []
         total_packs_opened = 0
 
-        for bundle_pack in bundle_pack_names:
-            per_pack = open_box_from_csv(state, bundle_pack)
-            per_pack_results.append((bundle_pack, per_pack))
+        for pack_key, display_name in pack_entries:
+            per_pack = open_box_from_csv(state, pack_key)
+            per_pack_results.append((display_name, per_pack, pack_key))
             total_packs_opened += len(per_pack)
             flat = [card for pack_cards in per_pack for card in pack_cards]
-            db_add_cards(state, requester.id, flat, bundle_pack)
+            db_add_cards(state, requester.id, flat, pack_key)
 
         dm_sent = False
         try:
             dm = await requester.create_dm()
-            for bundle_pack, per_pack in per_pack_results:
+            for display_name, per_pack, _pack_key in per_pack_results:
                 for i, cards in enumerate(per_pack, start=1):
                     content, embeds, files = _pack_embed_for_cards(
                         interaction.client,
-                        bundle_pack,
+                        display_name,
                         cards,
                         i,
                         len(per_pack),
@@ -1051,26 +1176,26 @@ class PacksSelectView(discord.ui.View):
                 amount=total_packs_opened,
             )
 
-        pack_list = ", ".join(bundle_pack_names)
-        pack_count = len(bundle_pack_names)
+        pack_labels = [label for _key, label in pack_entries]
+        pack_count = len(pack_labels)
         pack_word = "pack" if pack_count == 1 else "packs"
         summary = (
-            f"{requester.mention} opened the **{NEMESES_BUNDLE_NAME}** "
+            f"{requester.mention} opened the **{bundle_name}** "
             f"(one box each of {pack_count} {pack_word})."
             f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
         )
-        if pack_list:
-            summary += f"\nIncludes: {pack_list}"
+        if pack_labels:
+            summary += f"\nIncludes: {', '.join(pack_labels)}"
 
         if interaction.channel:
             await interaction.channel.send(summary)
 
         if not dm_sent and interaction.channel:
-            for bundle_pack, per_pack in per_pack_results:
+            for display_name, per_pack, _pack_key in per_pack_results:
                 for i, cards in enumerate(per_pack, start=1):
                     content, embeds, files = _pack_embed_for_cards(
                         interaction.client,
-                        bundle_pack,
+                        display_name,
                         cards,
                         i,
                         len(per_pack),
