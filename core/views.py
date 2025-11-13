@@ -851,9 +851,9 @@ class PacksSelectView(discord.ui.View):
                 content=(
                     f"Open a **box** of **{pack_name}** for **{BOX_COST}** Mambucks?\n"
                     f"That’s **{PACKS_IN_BOX}** packs with guarantees:\n"
-                    f"• Packs 1–18: Super Rare top\n"
-                    f"• Packs 19–23: Ultra Rare top\n"
-                    f"• Pack 24: Secret Rare top"
+                    f"• Packs 1–18: Super Rare\n"
+                    f"• Packs 19–23: Ultra Rare\n"
+                    f"• Pack 24: Secret Rare"
                 ),
                 view=confirm_view
             )

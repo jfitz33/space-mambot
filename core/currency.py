@@ -1,6 +1,4 @@
 import os
-from typing import Optional
-from core.constants import PACKS_BY_SET
 
 # Configure shard display names (you can add emoji, short names, etc.)
 SHARD_SET_NAMES = {
@@ -21,15 +19,6 @@ def shards_label(amount: int, set_id: int) -> str:
 def mambucks_label(amount: int) -> str:
     return f"{amount} Mambucks"
 
-# Resolve a card/set name → set_id (uses your constants)
-def set_id_for_pack(pack_name: Optional[str]) -> Optional[int]:
-    if not pack_name:
-        return None
-    p = (pack_name or "").strip().upper()
-    for sid, names in (PACKS_BY_SET or {}).items():
-        if p in names:
-            return sid
-    return None
 
 def get_shard_exchange_rate() -> tuple[int, int]:
     """

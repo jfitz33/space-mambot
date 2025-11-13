@@ -166,12 +166,6 @@ class StarterDeckSelectView(View):
                 if START_PACKS > 5:
                     await asyncio.sleep(0.2)
 
-        # 4) Assign the user's starting currency
-        cur_mb = get_mambucks(self.state, self.member.id)
-        delta_mb = 100 - cur_mb
-        if delta_mb != 0:
-            credit_mambucks(self.state, self.member.id, delta_mb)
-
         # 5) Assign the appropriate team role only after success
         team_role_name = TEAM_ROLE_MAPPING.get(deck_name)
         if team_role_name:

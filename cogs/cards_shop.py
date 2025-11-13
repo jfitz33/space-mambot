@@ -22,7 +22,7 @@ from core.views import (
     ConfirmBuyCardView,
     ConfirmSellCardView,
 )
-from core.currency import SHARD_SET_NAMES, get_shard_exchange_rate
+from core.currency import SHARD_SET_NAMES, get_shard_exchange_rate, shard_set_name
 from core.db import (
     db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
     db_shards_add, db_collection_remove_exact_print, db_fragment_yield_for_card,
@@ -182,7 +182,7 @@ def _choices_for_shards(current: str):
     return out
 
 def _pretty(set_id: int) -> str:
-    return SHARD_SET_NAMES.get(set_id, f"Shards (Set {set_id})")
+    return shard_set_name(set_id)
 
 class ConfirmShardExchangeView(discord.ui.View):
     def __init__(self, state: AppState, user: discord.Member,
@@ -272,7 +272,7 @@ class BulkFragmentConfirmView(discord.ui.View):
 
     def shard_label(self) -> str:
         sid = set_id_for_pack(self.pack_name) or 1
-        return SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+        return shard_set_name(sid)
 
     async def finalize(self, interaction: discord.Interaction, content: str | None = None):
         self.stop()
@@ -377,8 +377,9 @@ class CardsShop(commands.Cog):
         total = price_each * amount
         # Reuse your existing confirmation view (performs wallet debit + award)
         view = ConfirmBuyCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_cost=total)
+        shard_pretty = shard_set_name(set_id_for_pack(set_present) or 1)
         return await interaction.response.send_message(
-            f"Are you sure you want to **craft** **{amount}× {card_label(c)}** for **{total}** Frostfire Shards?",
+            f"Are you sure you want to **craft** **{amount}× {card_label(c)}** for **{total}** {shard_pretty}?",
             view=view,
             ephemeral=True
         )
@@ -421,8 +422,9 @@ class CardsShop(commands.Cog):
         total = price_each * amount
         # Reuse your existing confirmation view (performs removal + credit)
         view = ConfirmSellCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_credit=total)
+        shard_pretty = shard_set_name(set_id_for_pack(set_present) or 1)
         return await interaction.response.send_message(
-            f"Are you sure you want to **fragment** **{amount}× {card_label(c)}** into **{total}** Frostfire Shards?",
+            f"Are you sure you want to **fragment** **{amount}× {card_label(c)}** into **{total}** {shard_pretty}?",
             view=view,
             ephemeral=True
         )
@@ -461,7 +463,7 @@ class CardsShop(commands.Cog):
 
         # --- compute per-print yield (with overrides) and grand total ---
         sid = set_id_for_pack(pack_name) or 1
-        pretty = SHARD_SET_NAMES.get(sid, f"Shards (Set {sid})")
+        pretty = shard_set_name(sid)
         total_yield = 0
         preview_lines = []
         keep_floor = int(keep)

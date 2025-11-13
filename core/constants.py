@@ -71,10 +71,25 @@ STARTER_DECK_SET_NAMES = {
 
 # Which packs belong to which Set (uppercase pack names)
 PACKS_BY_SET = {
-    1: {"FIRE", "WATER"},  # Set 1 → Frostfire Shards
-    2: {"DARK", "LIGHT"}
+    1: {"Blazing Genesis", "Storm of the Abyss"},  # Set 1 → Frostfire Shards
+    2: {"Obsidian Empire", "Evolving Maelstrom"},   # Set 2 -> Sandstorm Shards
     # 2: {"...","..."},    # Add future sets here
 }
+
+def _normalize_pack_name(pack_name: str) -> str:
+    import re
+
+    # Uppercase, strip whitespace, collapse runs, remove punctuation variations.
+    cleaned = re.sub(r"[^A-Z0-9 ]+", " ", (pack_name or "").upper())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+_PACKS_BY_SET_NORMALIZED = {
+    sid: {_normalize_pack_name(name) for name in names}
+    for sid, names in PACKS_BY_SET.items()
+}
+
 # Team roles
 TEAM_ROLE_MAPPING = {
     "Cult of the Mambo": "Water",
@@ -85,10 +100,16 @@ TEAM_ROLE_NAMES = frozenset(TEAM_ROLE_MAPPING.values())
 def set_id_for_pack(pack_name: str) -> int | None:
     if not pack_name:
         return None
-    p = (pack_name or "").strip().upper()
-    for sid, names in PACKS_BY_SET.items():
+    p = _normalize_pack_name(pack_name)
+    if not p:
+        return None
+    for sid, names in _PACKS_BY_SET_NORMALIZED.items():
         if p in names:
             return sid
+        # Allow pack names that append qualifiers like "(1st Edition)" or suffixes.
+        for base in names:
+            if base and (p.startswith(base + " ") or p.endswith(" " + base) or f" {base} " in p):
+                return sid
     return None
 
 # Shard economy
