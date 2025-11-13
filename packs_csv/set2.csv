@@ -1,19 +1,19 @@
 cardname,cardq,cardrarity,card_edition,cardset,cardcode,cardid,print_id
-Battlewasp - Rapier the Onslaught,1,Secret Rare,1st Edition,Evolving Maelstrom,ROTA-EN009,56146300,56146300
+Battlewasp - Rapier the Onslaught,1,Ultra Rare,1st Edition,Evolving Maelstrom,ROTA-EN009,56146300,56146300
 Crystron Thystvern,1,Secret Rare,1st Edition,Evolving Maelstrom,MP17-EN139,29838323,29838323
 Dragunity Guisarme,1,Secret Rare,1st Edition,Evolving Maelstrom,HAC1-EN172,69975751,69975751
 Floodgate Trap Hole,1,Secret Rare,1st Edition,Evolving Maelstrom,MP17-EN114,69599136,69599136
 Harpie Harpist,1,Ultra Rare,1st Edition,Evolving Maelstrom,CROS-EN099,56585883,56585883
 Scrap Recycler,1,Ultra Rare,1st Edition,Evolving Maelstrom,FIGA-EN051,4334811,4334811
 Red-Eyes Black Dragon,1,Ultra Rare,1st Edition,Evolving Maelstrom,MP24-EN054,74677422,74677422
-Foolish Burial,1,Ultra Rare,1st Edition,Evolving Maelstrom,RA02-EN049,81439173,81439173
+Foolish Burial,1,Super Rare,1st Edition,Evolving Maelstrom,RA02-EN049,81439173,81439173
 Pot of Duality,1,Ultra Rare,1st Edition,Evolving Maelstrom,RA02-EN057,98645731,98645731
 Disappear,1,Ultra Rare,1st Edition,Evolving Maelstrom,DB2-EN198,24623598,24623598
 E.M.R.,1,Ultra Rare,1st Edition,Evolving Maelstrom,MP22-EN043,17427333,17427333
 Speedroid Dupligate,1,Ultra Rare,1st Edition,Evolving Maelstrom,LED8-EN008,58543073,58543073
 Battlewasp - Ballista the Armageddon,1,Ultra Rare,1st Edition,Evolving Maelstrom,BLHR-EN039,26443791,26443791
 Dragunity Knight - Gae Dearg,1,Ultra Rare,1st Edition,Evolving Maelstrom,BLLR-EN059,34116027,34116027
-Kuibelt the Blade Dragon,1,Ultra Rare,1st Edition,Evolving Maelstrom,MP24-EN226,87837090,87837090
+Kuibelt the Blade Dragon,1,Secret Rare,1st Edition,Evolving Maelstrom,MP24-EN226,87837090,87837090
 Crystron Prasiortle,1,Super Rare,1st Edition,Evolving Maelstrom,MP17-EN137,56049970,56049970
 Crystron Rion,1,Super Rare,1st Edition,Evolving Maelstrom,MP17-EN187,66938505,66938505
 Dragunity Dux,1,Super Rare,1st Edition,Evolving Maelstrom,SDDL-EN004,28183605,28183605
@@ -37,7 +37,7 @@ Battlewasp - Sachi the Ceremonial Bow,1,Super Rare,1st Edition,Evolving Maelstro
 Crystron Ametrix,1,Super Rare,1st Edition,Evolving Maelstrom,INOV-EN045,76359406,76359406
 Dragunity Knight - Gae Bulg,1,Super Rare,1st Edition,Evolving Maelstrom,DT03-EN087,900787,900787
 "Karakuri Shogun mdl 00 ""Burei""",1,Super Rare,1st Edition,Evolving Maelstrom,CT10-EN009,23874409,23874409
-Vermillion Dragon Mech,1,Super Rare,1st Edition,Evolving Maelstrom,DUDE-EN015,66698383,66698383
+Vermillion Dragon Mech,1,Ultra Rare,1st Edition,Evolving Maelstrom,DUDE-EN015,66698383,66698383
 Aspischool,1,Rare,1st Edition,Evolving Maelstrom,ALIN-EN084,12888461,12888461
 Battlewasp - Pin the Bullseye,1,Rare,1st Edition,Evolving Maelstrom,BLHR-EN031,65899613,65899613
 Crystron Rosenix,1,Rare,1st Edition,Evolving Maelstrom,MP17-EN140,55326322,55326322
@@ -201,7 +201,7 @@ Arcanite Magician,1,Rare,1st Edition,Obsidian Empire,CRMS-EN043,31924889,3192488
 Giganticastle,1,Rare,1st Edition,Obsidian Empire,SHSP-EN058,63422098,63422098
 Red Nova Dragon,1,Rare,1st Edition,Obsidian Empire,CT07-EN005,97489701,97489701
 Aussa the Earth Channeler,1,Super Rare,1st Edition,Obsidian Empire,MP24-EN061,62803464,62803464
-Beetron,1,Super Rare,1st Edition,Obsidian Empire,GAOV-EN092,30587695,30587695
+Beetron,1,Ultra Rare,1st Edition,Obsidian Empire,GAOV-EN092,30587695,30587695
 Beta The Electromagnet Warrior,1,Super Rare,1st Edition,Obsidian Empire,SDMY-EN002,79418928,79418928
 Brushfire Knight,1,Super Rare,1st Edition,Obsidian Empire,CBLZ-EN037,36569343,36569343
 Dark Magician of Chaos,1,Super Rare,1st Edition,Obsidian Empire,BP02-EN023,40737112,40737112
@@ -214,7 +214,7 @@ Hiita the Fire Channeler,1,Super Rare,1st Edition,Obsidian Empire,MP24-EN094,766
 Resonance Insect,1,Super Rare,1st Edition,Obsidian Empire,DUEA-EN039,96938986,96938986
 Shaddoll Hound,1,Super Rare,1st Edition,Obsidian Empire,MP15-EN149,52551211,52551211
 Shaddoll Squamata,1,Super Rare,1st Edition,Obsidian Empire,MP15-EN080,30328508,30328508
-Shiranui Spectralsword,1,Super Rare,1st Edition,Obsidian Empire,MP16-EN199,36630403,36630403
+Shiranui Spectralsword,1,Ultra Rare,1st Edition,Obsidian Empire,MP16-EN199,36630403,36630403
 Tenyi Spirit - Suruya,1,Super Rare,1st Edition,Obsidian Empire,SUDA-EN021,52854600,52854600
 WAKE CUP! Mocha,1,Super Rare,1st Edition,Obsidian Empire,DUAD-EN028,91818544,91818544
 Adamancipator Friends,1,Super Rare,1st Edition,Obsidian Empire,MP21-EN142,99927991,99927991
@@ -226,7 +226,7 @@ Revived King Ha Des,1,Super Rare,1st Edition,Obsidian Empire,BLCR-EN082,5309481,
 Star Eater,1,Super Rare,1st Edition,Obsidian Empire,MP14-EN096,41517789,41517789
 Adamancipator Seeker,1,Ultra Rare,1st Edition,Obsidian Empire,MP21-EN224,48519867,48519867
 Dragonbite,1,Ultra Rare,1st Edition,Obsidian Empire,BACH-EN081,84462118,84462118
-Infernoble Knight Turpin,1,Ultra Rare,1st Edition,Obsidian Empire,MP24-EN212,89809665,89809665
+Infernoble Knight Turpin,1,Super Rare,1st Edition,Obsidian Empire,MP24-EN212,89809665,89809665
 Megarock Dragon,1,Ultra Rare,1st Edition,Obsidian Empire,DR3-EN195,71544954,71544954
 Shaddoll Dragon,1,Ultra Rare,1st Edition,Obsidian Empire,MP15-EN081,77723643,77723643
 Spirit of the Fall Wind,1,Ultra Rare,1st Edition,Obsidian Empire,MP17-EN021,26517393,26517393
@@ -234,7 +234,7 @@ Tsukuyomi,1,Ultra Rare,1st Edition,Obsidian Empire,AP01-EN001,34853266,34853266
 Fiendish Chain,1,Ultra Rare,1st Edition,Obsidian Empire,ABPF-EN064,50078509,50078509
 Hero's Rule 2,1,Ultra Rare,1st Edition,Obsidian Empire,DP06-EN025,85854214,85854214
 Trap Stun,1,Ultra Rare,1st Edition,Obsidian Empire,AP02-EN013,59616123,59616123
-Gold Pride - Eradicator,1,Ultra Rare,1st Edition,Obsidian Empire,LEDE-EN041,45464587,45464587
+Gold Pride - Eradicator,1,Super Rare,1st Edition,Obsidian Empire,LEDE-EN041,45464587,45464587
 Adamancipator Researcher,1,Secret Rare,1st Edition,Obsidian Empire,MP21-EN225,85914562,85914562
 Shaddoll Beast,1,Secret Rare,1st Edition,Obsidian Empire,MP15-EN082,3717252,3717252
 Destructive Daruma Karma Cannon,1,Secret Rare,1st Edition,Obsidian Empire,MP23-EN217,30748475,30748475
