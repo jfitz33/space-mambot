@@ -1814,11 +1814,21 @@ class Tournaments(commands.Cog):
     ) -> tuple[dict[str, CardMetadata], set[str]]:
         metadata: dict[str, CardMetadata] = {}
 
+        tin_promos_by_id: dict[str, str] = {}
+        for tin in (getattr(self.state, "tins_index", {}) or {}).values():
+            for card in tin.get("promo_cards") or []:
+                name = (card.get("name") or card.get("cardname") or "").strip()
+                cid = _normalize_card_id(card.get("id") or card.get("cardid"))
+                if cid and name:
+                    tin_promos_by_id.setdefault(cid, name)
+
         for cid in card_ids:
             meta = CardMetadata()
             local_name = find_card_name_by_id(self.state, cid)
             if not local_name:
                 local_name = owned_name_by_id.get(cid)
+            if not local_name:
+                local_name = tin_promos_by_id.get(cid)
             if local_name:
                 meta.name = local_name
                 meta.from_state = True

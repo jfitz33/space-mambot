@@ -35,10 +35,10 @@ def collect_cardpool_from_state(state) -> Tuple[Dict[int, str], List[str]]:
     ensure_shop_index(state)
     ids_map: Dict[int, str] = {}
     names_no_id: set[str] = set()
-    for card in getattr(state, "_shop_print_by_key", {}).values():
+    def add_card(card: dict) -> None:
         name = (card.get("name") or card.get("cardname") or "").strip()
         if not name:
-            continue
+            return
 
         raw_id = (
             card.get("id")
@@ -51,6 +51,13 @@ def collect_cardpool_from_state(state) -> Tuple[Dict[int, str], List[str]]:
             ids_map.setdefault(int(sid), name)
         else:
             names_no_id.add(name)
+
+    for card in getattr(state, "_shop_print_by_key", {}).values():
+        add_card(card)
+
+    for tin in (getattr(state, "tins_index", {}) or {}).values():
+        for promo in tin.get("promo_cards") or []:
+            add_card(promo)
     # ensure we don't redundantly try to resolve names already covered via ID
     resolved_names = set(ids_map.values())
     names_without_id = [n for n in names_no_id if n not in resolved_names]

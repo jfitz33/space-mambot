@@ -20,6 +20,7 @@ from core.constants import (
     pack_names_for_set,
 )
 from core.views import PacksSelectView, ConfirmSpendView, _pack_embed_for_cards
+from core.images import card_art_path_for_card
 from core.db import db_add_cards
 from core.packs import open_box_from_csv, open_pack_from_csv
 
@@ -324,7 +325,23 @@ class Packs(commands.Cog):
         dm_sent = False
         try:
             dm = await requester.create_dm()
-            await dm.send(f"Promo from **{tin_name}**: **{promo_name}**")
+            promo_embed = discord.Embed(
+                title=f"Promo from {tin_name}",
+                description=f"**{promo_name}**",
+                color=0x2b6cb0,
+            )
+            promo_files: list[discord.File] = []
+            art_path = card_art_path_for_card(promo)
+            if art_path:
+                art_file = discord.File(art_path, filename=art_path.name)
+                promo_embed.set_image(url=f"attachment://{art_file.filename}")
+                promo_files.append(art_file)
+
+            await dm.send(
+                content=f"Promo from **{tin_name}**:",
+                embeds=[promo_embed],
+                files=promo_files or None,
+            )
             for i, cards in enumerate(per_pack, start=1):
                 content, embeds, files = _pack_embed_for_cards(interaction.client, pack_choice, cards, i, packs_in_tin)
                 send_kwargs: dict = {"embeds": embeds}
