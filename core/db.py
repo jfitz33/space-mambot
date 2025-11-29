@@ -1070,6 +1070,197 @@ def db_wallet_try_spend_mambucks(state, user_id: int, amount: int) -> dict | Non
 
     return db_wallet_get(state, user_id)
 
+# --- Daily mambucks grants -----------------------------------------
+
+def db_init_starter_daily_rewards(state):
+    """Ensure tables used for starter daily rewards exist."""
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS starter_daily_rewards_config (
+            id         INTEGER PRIMARY KEY CHECK(id=1),
+            amount     INTEGER NOT NULL DEFAULT 100,
+            updated_ts INTEGER NOT NULL
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS starter_daily_totals (
+            id         INTEGER PRIMARY KEY CHECK(id=1),
+            last_day   TEXT,
+            total      INTEGER NOT NULL DEFAULT 0,
+            updated_ts INTEGER NOT NULL
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS starter_daily_grants (
+            user_id        TEXT PRIMARY KEY,
+            last_grant_day TEXT,                 -- 'YYYYMMDD' (America/New_York)
+            updated_ts     INTEGER NOT NULL
+        );
+        """)
+        conn.execute(
+            """
+            INSERT INTO starter_daily_rewards_config (id, amount, updated_ts)
+            VALUES (1, 100, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (now,),
+        )
+        conn.execute(
+            """
+            INSERT INTO starter_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (now,),
+        )
+
+
+def db_starter_daily_get_amount(state) -> int:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_rewards_config (id, amount, updated_ts)
+            VALUES (1, 100, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (int(time.time()),),
+        )
+        cur = conn.execute(
+            "SELECT amount FROM starter_daily_rewards_config WHERE id=1"
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+
+def db_starter_daily_set_amount(state, amount: int) -> int:
+    now = int(time.time())
+    amt = max(0, int(amount))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_rewards_config (id, amount, updated_ts)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                amount = excluded.amount,
+                updated_ts = excluded.updated_ts;
+            """,
+            (amt, now),
+        )
+    return amt
+
+
+def db_starter_daily_increment_total(
+    state, day_key: str, amount: int
+) -> tuple[int, bool]:
+    """Add ``amount`` to the running total once per ``day_key``.
+
+    Returns (new_total, did_increment).
+    """
+
+    now = int(time.time())
+    amt = max(0, int(amount))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (now,),
+        )
+        cur = conn.execute(
+            """
+            UPDATE starter_daily_totals
+               SET total = total + ?,
+                   last_day = ?,
+                   updated_ts = ?
+             WHERE id = 1
+               AND (last_day IS NULL OR last_day <> ?);
+            """,
+            (amt, day_key, now, day_key),
+        )
+        did = cur.rowcount > 0 and amt > 0
+        total_row = conn.execute(
+            "SELECT total FROM starter_daily_totals WHERE id=1",
+        ).fetchone()
+    total_val = int(total_row[0]) if total_row and total_row[0] is not None else 0
+    return total_val, did
+
+
+def db_starter_daily_get_total(state) -> int:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (int(time.time()),),
+        )
+        row = conn.execute(
+            "SELECT total FROM starter_daily_totals WHERE id=1"
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def db_starter_daily_reset_total(state) -> int:
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                total = 0,
+                last_day = NULL,
+                updated_ts = excluded.updated_ts;
+            """,
+            (now,),
+        )
+        row = conn.execute(
+            "SELECT total FROM starter_daily_totals WHERE id=1"
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def db_starter_daily_try_grant(state, user_id: int, day_key: str, amount: int) -> tuple[int, bool]:
+    """Idempotently grant ``amount`` mambucks if ``day_key`` has not been seen."""
+
+    amt = int(amount)
+    if amt <= 0:
+        bal = db_wallet_get(state, user_id)
+        return int(bal.get("mambucks", 0)), False
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_grants (user_id, last_grant_day, updated_ts)
+            VALUES (?, NULL, ?)
+            ON CONFLICT(user_id) DO NOTHING;
+            """,
+            (str(user_id), now),
+        )
+        cur = conn.execute(
+            """
+            UPDATE starter_daily_grants
+               SET last_grant_day = ?,
+                   updated_ts = ?
+             WHERE user_id = ?
+               AND (last_grant_day IS NULL OR last_grant_day <> ?);
+            """,
+            (day_key, now, str(user_id), day_key),
+        )
+        granted = cur.rowcount > 0
+
+    if granted:
+        after = db_wallet_add(state, user_id, d_mambucks=amt)
+    else:
+        after = db_wallet_get(state, user_id)
+
+    return int(after.get("mambucks", 0)), granted
+
 async def db_wallet_migrate_to_mambucks_and_shards_per_set(state) -> None:
     """
     One-time migration (idempotent via app_migrations):

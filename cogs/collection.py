@@ -6,9 +6,15 @@ from discord.ext import commands
 from discord import app_commands
 
 from core.db import db_get_collection
+from core.constants import PACKS_BY_SET, set_id_for_pack
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+
+SET_CHOICES: List[app_commands.Choice[int]] = [
+    app_commands.Choice(name=f"Set {set_id}", value=set_id)
+    for set_id in sorted(PACKS_BY_SET)
+]
 
 # ---------- Rarity (trimmed + Starlight) ----------
 RARITY_ORDER = ["COMMON", "RARE", "SUPER RARE", "ULTRA RARE", "SECRET RARE", "STARLIGHT RARE"]
@@ -156,7 +162,14 @@ class Collection(commands.Cog):
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(user="User to view (optional)")
-    async def collection(self, interaction: discord.Interaction, user: discord.User = None):
+    @app_commands.describe(set_number="Restrict results to a specific set (optional)")
+    @app_commands.choices(set_number=SET_CHOICES)
+    async def collection(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User = None,
+        set_number: app_commands.Choice[int] = None,
+    ):
         await interaction.response.defer(ephemeral=True)
 
         target = user or interaction.user
@@ -171,6 +184,15 @@ class Collection(commands.Cog):
         if not rows:
             await interaction.edit_original_response(content=f"{target.mention} has no cards.")
             return
+        
+        selected_set_id = set_number.value if set_number else None
+        if selected_set_id is not None:
+            rows = [row for row in rows if set_id_for_pack(row[3]) == selected_set_id]
+            if not rows:
+                await interaction.edit_original_response(
+                    content=f"{target.mention} has no cards in Set {selected_set_id}."
+                )
+                return
 
         try:
             # 2) Build rarity badge tokens from IDs cached by ensure_rarity_emojis(...)
