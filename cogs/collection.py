@@ -16,6 +16,35 @@ SET_CHOICES: List[app_commands.Choice[int]] = [
     for set_id in sorted(PACKS_BY_SET)
 ]
 
+def set_id_for_source(state: Any, set_name: str) -> int | None:
+    """Return the set ID for a pack/tin name."""
+
+    sid = set_id_for_pack(set_name)
+    if sid is not None:
+        return sid
+
+    tins_index = getattr(state, "tins_index", None) or {}
+    tin = tins_index.get(set_name)
+    if isinstance(tin, dict):
+        pack_set_ids = {set_id_for_pack(pack) for pack in tin.get("packs") or []}
+        pack_set_ids.discard(None)
+        if len(pack_set_ids) == 1:
+            return pack_set_ids.pop()
+
+    return None
+
+
+def section_kind(state: Any, set_name: str) -> str:
+    tins_index = getattr(state, "tins_index", None) or {}
+    starters_index = getattr(state, "starters_index", None) or {}
+    if set_name in starters_index:
+        return "starter"
+    if set_name in tins_index:
+        return "tin"
+    if set_id_for_pack(set_name) is not None:
+        return "pack"
+    return "other"
+
 # ---------- Rarity (trimmed + Starlight) ----------
 RARITY_ORDER = ["COMMON", "RARE", "SUPER RARE", "ULTRA RARE", "SECRET RARE", "STARLIGHT RARE"]
 RARITY_ALIASES = {
@@ -95,14 +124,30 @@ def group_and_format_rows(
     rows: (name, qty, rarity, cset, code, cid)
     -> [(header, ["<badge> <qty>x - <card_name>", ...]), ...]
     """
-    groups: Dict[str, List[Tuple[str, int, str]]] = defaultdict(list)
+    groups: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"cards": []})
     for (name, qty, rarity, cset, _code, _cid) in rows:
         header = resolve_set_header(state, cset)
-        groups[header].append((str(name or "").strip(), int(qty or 0), str(rarity or "").strip()))
+        group = groups[header]
+        group.setdefault("set_id", set_id_for_source(state, cset))
+        group.setdefault("kind", section_kind(state, cset))
+        group["cards"].append((str(name or "").strip(), int(qty or 0), str(rarity or "").strip()))
+
+    def sort_key(item: Tuple[str, Dict[str, Any]]):
+        header, meta = item
+        set_id = meta.get("set_id")
+        kind = meta.get("kind")
+        set_rank = -1 if kind == "starter" else set_id if set_id is not None else float("inf")
+        kind_rank = (
+            0 if kind == "starter"
+            else 1 if kind == "pack"
+            else 2 if kind == "tin"
+            else 3
+        )
+        return (set_rank, kind_rank, header.lower())
 
     sections: List[Tuple[str, List[str]]] = []
-    for header in sorted(groups.keys(), key=lambda s: s.lower()):
-        cards = groups[header]
+    for header, meta in sorted(groups.items(), key=sort_key):
+        cards = meta["cards"]
         cards.sort(key=lambda t: (rarity_bucket_index(t[2]), t[0].lower()))
         lines: List[str] = []
         for name, qty, rarity in cards:
@@ -161,18 +206,16 @@ class Collection(commands.Cog):
         description="DMs you a grouped list of a user's collection by pack/starter."
     )
     @app_commands.guilds(GUILD)
-    @app_commands.describe(user="User to view (optional)")
     @app_commands.describe(set_number="Restrict results to a specific set (optional)")
     @app_commands.choices(set_number=SET_CHOICES)
     async def collection(
         self,
         interaction: discord.Interaction,
-        user: discord.User = None,
         set_number: app_commands.Choice[int] = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
-        target = user or interaction.user
+        target = interaction.user
 
         # 1) Load rows
         try:
@@ -187,7 +230,7 @@ class Collection(commands.Cog):
         
         selected_set_id = set_number.value if set_number else None
         if selected_set_id is not None:
-            rows = [row for row in rows if set_id_for_pack(row[3]) == selected_set_id]
+            rows = [row for row in rows if set_id_for_source(self.bot.state, row[3]) == selected_set_id]
             if not rows:
                 await interaction.edit_original_response(
                     content=f"{target.mention} has no cards in Set {selected_set_id}."
