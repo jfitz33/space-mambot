@@ -32,6 +32,10 @@ def _today_key_et() -> str:
     return datetime.now(ET).strftime("%Y%m%d")
 
 
+def _day_key_for(dt: datetime) -> str:
+    return dt.astimezone(ET).strftime("%Y%m%d")
+
+
 def _seconds_until_next_et_midnight() -> float:
     now = datetime.now(ET)
     tomorrow = (now + timedelta(days=1)).date()
@@ -58,8 +62,8 @@ class DailyRewards(commands.Cog):
             except Exception:
                 pass
 
-    async def _grant_once(self):
-        day_key = _today_key_et()
+    async def _grant_once(self, *, day_key: str | None = None):
+        day_key = day_key or _today_key_et()
         amount = db_starter_daily_get_amount(self.bot.state)
         if amount <= 0:
             print(
@@ -92,6 +96,13 @@ class DailyRewards(commands.Cog):
             print(
                 f"[daily-rewards] {day_key}: total mambucks awarded now {mambucks_label(total_after)}."
             )
+
+    async def run_midnight_grant(self, *, day_key: str | None = None):
+        """Run the midnight grant once, optionally using a custom ET day key."""
+        try:
+            await self._grant_once(day_key=day_key)
+        except Exception as e:
+            print(f"[daily-rewards] manual grant error: {e}")
 
     async def _grant_loop(self):
         try:

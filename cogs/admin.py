@@ -1,4 +1,6 @@
 import discord, os, time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from discord.ext import commands
 from discord import app_commands
 from typing import List, Literal, Optional
@@ -23,6 +25,7 @@ from core.db import (
     db_wishlist_clear,
 )
 from core.quests.schema import db_reset_all_user_quests
+from core.quests.timekeys import daily_key
 from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
@@ -51,6 +54,10 @@ class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state = bot.state
+
+    @property
+    def _et(self):
+        return ZoneInfo("America/New_York")
 
     async def ac_shard_set(self, interaction: discord.Interaction, current: str):
         # We can optionally filter by `current` if user types a digit; otherwise show all
@@ -664,6 +671,56 @@ class Admin(commands.Cog):
                 tgt += " (exact print)"
             lines.append(f"• **{tgt}** → **{r['yield_override']}** shards/copy · until **{until}**")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    # --- Admin: simulate next-day midnight rollover -------------------------
+    @app_commands.command(
+        name="admin_simulate_next_day",
+        description="(Admin) Run midnight ET grants/rollovers early for testing.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def admin_simulate_next_day(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        target_date = (datetime.now(self._et) + timedelta(days=1)).date()
+        day_key = target_date.strftime("%Y%m%d")
+        quest_day_key = daily_key(target_date)
+
+        results: List[str] = []
+
+        daily_cog = self.bot.get_cog("DailyRewards")
+        if daily_cog:
+            await daily_cog.run_midnight_grant(day_key=day_key)
+            results.append(f"✅ Starter daily rewards granted for **{day_key}**.")
+        else:
+            results.append("⚠️ Starter daily rewards cog not loaded.")
+
+        gamba_cog = self.bot.get_cog("GambaChips")
+        if gamba_cog:
+            await gamba_cog.run_midnight_grant(day_key=day_key)
+            results.append(f"✅ Daily gamba chips granted for **{day_key}**.")
+        else:
+            results.append("⚠️ Gamba chips cog not loaded.")
+
+        sales_cog = self.bot.get_cog("Sales")
+        if sales_cog:
+            await sales_cog.roll_for_day(day_key)
+            results.append(f"✅ Sales rolled for **{day_key}** and banner refreshed.")
+        else:
+            results.append("⚠️ Sales cog not loaded.")
+
+        quests_cog = self.bot.get_cog("Quests")
+        if quests_cog:
+            advanced = await quests_cog.qm.fast_forward_daily_rollovers(target_date)
+            results.append(
+                f"✅ Daily quest rollovers prepared for **{quest_day_key}** "
+                f"({advanced} user/quest slot checks)."
+            )
+        else:
+            results.append("⚠️ Quests cog not loaded.")
+
+        await interaction.followup.send("\n".join(results), ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

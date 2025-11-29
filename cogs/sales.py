@@ -47,6 +47,7 @@ class Sales(commands.Cog):
         self.bot = bot
         self.state = bot.state
         self._task: Optional[asyncio.Task] = None
+        self._last_roll_day_key: Optional[str] = None
 
     # ---------- lifecycle ----------
 
@@ -64,6 +65,7 @@ class Sales(commands.Cog):
             else:
                 total_rows = sum(len(v) for v in today_rows.values())
                 print(f"[sales] Found {total_rows} sale rows for {day_key}.")
+                self._last_roll_day_key = day_key
             await self._refresh_banner()
         except Exception as e:
             print("[sales] initial check failed:", e)
@@ -85,8 +87,7 @@ class Sales(commands.Cog):
         while True:
             try:
                 await asyncio.sleep(_seconds_until_next_et_midnight())
-                await self._roll_and_store_for_day(_today_key_et())
-                await self._refresh_banner()
+                await self.roll_for_day(_today_key_et())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -99,6 +100,15 @@ class Sales(commands.Cog):
         """
         rows = self._pick_sales_rows()
         db.db_sales_replace_for_day(self.state, day_key, rows)
+        self._last_roll_day_key = day_key
+
+    async def roll_for_day(self, day_key: str):
+        """Roll sales for the given ET day and refresh the banner."""
+        if self._last_roll_day_key == day_key:
+            print(f"[sales] roll for {day_key} skipped (already rolled).")
+            return
+        await self._roll_and_store_for_day(day_key)
+        await self._refresh_banner()
 
     def _pick_sales_rows(self) -> List[Dict[str, Any]]:
         """

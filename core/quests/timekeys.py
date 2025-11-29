@@ -23,8 +23,11 @@ ET = get_et_tz()
 def now_et() -> datetime:
     return datetime.now(ET)
 
-def daily_key(dt: datetime | None = None) -> str:
-    d = (dt or now_et()).date()
+def daily_key(dt: datetime | date | None = None) -> str:
+    if isinstance(dt, date) and not isinstance(dt, datetime):
+        d = dt
+    else:
+        d = (dt or now_et()).date()
     return f"D:{d.isoformat()}"
 
 def weekly_key(dt: datetime | None = None) -> str:
