@@ -14,6 +14,7 @@ from core.quests.schema import (
     db_mark_claimed_step,
     db_daily_quest_add_slot,
     db_daily_quest_get_slots,
+    db_daily_quest_list_users,
     db_daily_quest_mark_claimed,
     db_daily_quest_update_progress,
 )
@@ -119,16 +120,16 @@ class QuestManager:
             oldest["auto_granted_at"] = oldest.get("auto_granted_at") or stamp
         return slots
 
-    async def _ensure_daily_rollover_slots(self, user_id: int, q: QuestDef) -> List[dict]:
-        today_key = daily_key()
+    async def _ensure_daily_rollover_slots(self, user_id: int, q: QuestDef, today_date: date | None = None) -> List[dict]:
+        today_key = daily_key(today_date)
         slots = await db_daily_quest_get_slots(self.state, user_id, q.quest_id)
         if not slots:
             slots = [await db_daily_quest_add_slot(self.state, user_id, q, today_key)]
 
         last_date = self._date_from_key(slots[-1]["day_key"])
-        today_date = self._date_from_key(today_key)
+        today_date_obj = self._date_from_key(today_key)
 
-        while last_date < today_date:
+        while last_date < today_date_obj:
             last_date = last_date + timedelta(days=1)
             slots = await self._apply_rollover_limit(user_id, q, slots)
             slots.append(await db_daily_quest_add_slot(self.state, user_id, q, self._day_key_from_date(last_date)))
@@ -177,6 +178,24 @@ class QuestManager:
             return await self._increment_rollover_daily(user_id, q, amount)
         pkey = period_key_for_category(q.category)
         return await db_upsert_progress(self.state, user_id, q.quest_id, pkey, amount, q.target_count)
+
+    async def fast_forward_daily_rollovers(self, target_date: date) -> int:
+        """Ensure rollover-style daily quests have slots up to ``target_date`` for known users."""
+        # Load quest definitions if needed
+        if not self._defs:
+            await self.load_defs()
+
+        daily_rollover_quests = [q for q in self._defs.values() if q.category == "daily" and q.max_rollover_days > 0]
+        if not daily_rollover_quests:
+            return 0
+
+        users = await db_daily_quest_list_users(self.state)
+        advanced = 0
+        for uid in users:
+            for q in daily_rollover_quests:
+                await self._ensure_daily_rollover_slots(uid, q, today_date=target_date)
+                advanced += 1
+        return advanced
 
     async def get_user_view(self, user_id: int) -> List[dict]:
         view = []

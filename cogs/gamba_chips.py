@@ -21,6 +21,10 @@ ET = ZoneInfo("America/New_York")
 def _today_key_et() -> str:
     return datetime.now(ET).strftime("%Y%m%d")
 
+
+def _day_key_for(dt: datetime) -> str:
+    return dt.astimezone(ET).strftime("%Y%m%d")
+
 def _seconds_until_next_et_midnight() -> float:
     now = datetime.now(ET)
     tomorrow = (now + timedelta(days=1)).date()
@@ -46,8 +50,8 @@ class GambaChips(commands.Cog):
             except Exception:
                 pass
 
-    async def _grant_once(self):
-        day_key = _today_key_et()
+    async def _grant_once(self, *, day_key: str | None = None):
+        day_key = day_key or _today_key_et()
         awarded = 0
         for guild in self.bot.guilds:
             role = discord.utils.get(guild.roles, name=STARTER_ROLE_NAME)
@@ -59,6 +63,13 @@ class GambaChips(commands.Cog):
                 if did:
                     awarded += 1
         print(f"[gamba] daily grant {day_key}: granted to {awarded} user(s).")
+
+    async def run_midnight_grant(self, *, day_key: str | None = None):
+        """Run the midnight grant once, optionally using a custom ET day key."""
+        try:
+            await self._grant_once(day_key=day_key)
+        except Exception as e:
+            print(f"[gamba] manual grant error: {e}")
 
     async def _grant_loop(self):
         # On startup, attempt a grant in case we restarted after midnight

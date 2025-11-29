@@ -212,6 +212,18 @@ async def db_daily_quest_get_slots(state, user_id: int, quest_id: str) -> list[d
 
     return await asyncio.to_thread(_work)
 
+
+async def db_daily_quest_list_users(state) -> list[int]:
+    def _work():
+        with _conn(state.db_path) as conn:
+            rows = _query_all(
+                conn,
+                "SELECT DISTINCT user_id FROM user_daily_quest_slots ORDER BY user_id ASC",
+            )
+        return [int(r.get("user_id")) for r in rows if r.get("user_id") is not None]
+
+    return await asyncio.to_thread(_work)
+
 async def db_daily_quest_update_progress(state, user_id: int, quest_id: str, day_key: str, delta: int, target: int):
     delta = int(delta or 0)
     target = max(1, int(target or 1))
