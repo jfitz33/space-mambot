@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Iterable, List, Tuple
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 import asyncio
 
@@ -11,8 +12,12 @@ from core.quests.schema import (
     db_upsert_progress,
     db_mark_claimed,
     db_mark_claimed_step,
+    db_daily_quest_add_slot,
+    db_daily_quest_get_slots,
+    db_daily_quest_mark_claimed,
+    db_daily_quest_update_progress,
 )
-from .timekeys import now_et, period_key_for_category
+from .timekeys import now_et, period_key_for_category, daily_key
 from core.db import db_wallet_add, db_shards_add
 from core.constants import set_id_for_pack
 from core.currency import shard_set_name
@@ -28,6 +33,7 @@ class QuestDef:
     target_count: int
     reward_type: str         # 'mambucks' | 'fitzcoin' | 'shards' | 'pack'
     reward_payload: dict     # e.g., {'amount': 50} or {'amount': 50, 'set_id': 1} or {'pack': 'FIRE', 'qty': 3}
+    max_rollover_days: int = 0
     active: bool = True
 
     @property
@@ -66,6 +72,11 @@ class QuestManager:
                 target_count=int(r["target_count"]),
                 reward_type=r["reward_type"],
                 reward_payload=(r.get("reward_payload") or {}),
+                max_rollover_days=int(
+                    r.get("max_rollover_days")
+                    or (r.get("reward_payload") or {}).get("max_rollover_days", 0)
+                    or 0
+                ),
                 active=bool(r.get("active", True)),
             )
             for r in rows if r.get("active", True)
@@ -75,10 +86,95 @@ class QuestManager:
         ms = q.milestones
         return ms[claimed_steps] if 0 <= claimed_steps < len(ms) else None
 
+    # --- Daily rollover helpers -------------------------------------------------
+    def _date_from_key(self, day_key: str) -> date:
+        try:
+            _, iso = day_key.split(":", 1)
+            return datetime.fromisoformat(iso).date()
+        except Exception:
+            return now_et().date()
+
+    def _day_key_from_date(self, d: date) -> str:
+        return f"D:{d.isoformat()}"
+
+    async def _auto_grant_slot(self, user_id: int, slot: dict):
+        ok = await db_daily_quest_mark_claimed(
+            self.state, user_id, slot["quest_id"], slot["day_key"], auto=True
+        )
+        if ok:
+            payload = slot.get("reward_payload") or {}
+            await give_reward(self.state, user_id, slot.get("reward_type"), payload)
+
+    async def _apply_rollover_limit(self, user_id: int, q: QuestDef, slots: List[dict]) -> List[dict]:
+        if q.max_rollover_days <= 0:
+            return slots
+        pending = [s for s in slots if not s.get("claimed_at")]
+        # If at or above the cap, auto grant the oldest pending slot to keep the queue size stable
+        while len(pending) >= q.max_rollover_days > 0:
+            oldest = pending.pop(0)
+            await self._auto_grant_slot(user_id, oldest)
+            stamp = now_et().isoformat()
+            oldest["claimed_at"] = oldest.get("claimed_at") or stamp
+            oldest["completed_at"] = oldest.get("completed_at") or stamp
+            oldest["auto_granted_at"] = oldest.get("auto_granted_at") or stamp
+        return slots
+
+    async def _ensure_daily_rollover_slots(self, user_id: int, q: QuestDef) -> List[dict]:
+        today_key = daily_key()
+        slots = await db_daily_quest_get_slots(self.state, user_id, q.quest_id)
+        if not slots:
+            slots = [await db_daily_quest_add_slot(self.state, user_id, q, today_key)]
+
+        last_date = self._date_from_key(slots[-1]["day_key"])
+        today_date = self._date_from_key(today_key)
+
+        while last_date < today_date:
+            last_date = last_date + timedelta(days=1)
+            slots = await self._apply_rollover_limit(user_id, q, slots)
+            slots.append(await db_daily_quest_add_slot(self.state, user_id, q, self._day_key_from_date(last_date)))
+
+        slots = await self._apply_rollover_limit(user_id, q, slots)
+        return slots
+
+    async def _increment_rollover_daily(self, user_id: int, q: QuestDef, amount: int) -> Tuple[int, bool]:
+        slots = await self._ensure_daily_rollover_slots(user_id, q)
+        remaining = int(amount or 0)
+        for slot in slots:
+            if slot.get("claimed_at"):
+                continue
+            target = int(slot.get("target_count") or q.target_count)
+            progress = int(slot.get("progress") or 0)
+            if progress >= target:
+                continue
+            delta = min(remaining, target - progress)
+            if delta <= 0:
+                continue
+            row = await db_daily_quest_update_progress(
+                self.state, user_id, q.quest_id, slot["day_key"], delta, target
+            )
+            slot["progress"] = int(row.get("progress", progress + delta))
+            slot["completed_at"] = slot.get("completed_at") or row.get("completed_at")
+            remaining -= delta
+            if remaining <= 0:
+                break
+
+        active_slot = next((s for s in slots if not s.get("claimed_at") and int(s.get("progress", 0)) < int(s.get("target_count") or q.target_count)), None)
+        claimables = [s for s in slots if not s.get("claimed_at") and int(s.get("progress", 0)) >= int(s.get("target_count") or q.target_count)]
+        if active_slot:
+            prog = int(active_slot.get("progress", 0))
+            target = int(active_slot.get("target_count") or q.target_count)
+            return prog, prog >= target
+        if claimables:
+            target = int(claimables[0].get("target_count") or q.target_count)
+            return target, True
+        return 0, False
+
     async def increment(self, user_id: int, quest_id: str, amount: int = 1) -> Tuple[int, bool]:
         q = self._defs.get(quest_id)
         if not q or not q.active:
             return 0, False
+        if q.category == "daily" and q.max_rollover_days > 0:
+            return await self._increment_rollover_daily(user_id, q, amount)
         pkey = period_key_for_category(q.category)
         return await db_upsert_progress(self.state, user_id, q.quest_id, pkey, amount, q.target_count)
 
@@ -86,6 +182,27 @@ class QuestManager:
         view = []
         for q in self._defs.values():
             pkey = period_key_for_category(q.category)
+            if q.category == "daily" and q.max_rollover_days > 0:
+                slots = await self._ensure_daily_rollover_slots(user_id, q)
+                pending = [s for s in slots if not s.get("claimed_at")]
+                claimables = [s for s in pending if int(s.get("progress", 0)) >= int(s.get("target_count") or q.target_count)]
+                active_slot = pending[0] if pending else (slots[0] if slots else {})
+                target = int(active_slot.get("target_count", q.target_count))
+                progress = int(active_slot.get("progress", 0))
+                view.append({
+                    "quest": q,
+                    "progress": min(progress, target),
+                    "target": target,
+                    "completed": bool(claimables),
+                    "claimed": False if claimables else not pending,
+                    "claimed_steps": 0,
+                    "period_key": daily_key(),
+                    "milestone_mode": False,
+                    "rollover_pending": len(pending),
+                    "rollover_claimables": len(claimables),
+                })
+                continue
+
             row = await db_get_user_progress(self.state, user_id, [q.quest_id], pkey)
             r = row.get(q.quest_id) or {}
 
@@ -144,6 +261,20 @@ class QuestManager:
         q = self._defs.get(quest_id)
         if not q:
             return False, "Quest not found."
+        if q.category == "daily" and q.max_rollover_days > 0:
+            slots = await self._ensure_daily_rollover_slots(user_id, q)
+            claimables = [s for s in slots if not s.get("claimed_at") and int(s.get("progress", 0)) >= int(s.get("target_count") or q.target_count)]
+            if not claimables:
+                return False, "Not completed yet."
+            slot = claimables[0]
+            ok = await db_daily_quest_mark_claimed(self.state, user_id, q.quest_id, slot["day_key"], auto=False)
+            if not ok:
+                return False, "Already claimed or race condition; try again."
+            try:
+                ack = await give_reward(self.state, user_id, slot.get("reward_type", q.reward_type), slot.get("reward_payload") or {})
+            except Exception as e:
+                return False, f"Reward error: {e}"
+            return True, f"Reward claimed for {slot['day_key'].split(':')[-1]}! {ack}"
         pkey = period_key_for_category(q.category)
         row = await db_get_user_progress(self.state, user_id, [q.quest_id], pkey)
         r = (row or {}).get(q.quest_id) or {}

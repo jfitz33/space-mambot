@@ -1,8 +1,22 @@
 import asyncio, sqlite3, json, os
 from typing import Iterable, Dict, Any, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, date
 
 ALLOWED_CATS = {"daily", "weekly", "permanent"}
+
+def _parse_day_key(day_key: str):
+    try:
+        _, date_str = day_key.split(":", 1)
+        return datetime.fromisoformat(date_str).date()
+    except Exception:
+        return datetime.now(timezone.utc).date()
+
+def _day_key_from_date(d):
+    return f"D:{d.isoformat()}"
+
+def _next_day_key(day_key: str) -> str:
+    d = _parse_day_key(day_key)
+    return _day_key_from_date(d + timedelta(days=1))
 
 def _conn(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -28,7 +42,7 @@ async def db_fetch_active_quests(state) -> list[dict]:
     def _work():
         with _conn(state.db_path) as conn:
             rows = _query_all(conn,
-                "SELECT quest_id,title,description,category,target_count,reward_type,reward_payload,active "
+                "SELECT quest_id,title,description,category,target_count,reward_type,reward_payload,active,max_rollover_days "
                 "FROM quests WHERE active=1"
             )
         for d in rows:
@@ -38,6 +52,10 @@ async def db_fetch_active_quests(state) -> list[dict]:
                 d["reward_payload"] = {}
             d["active"] = bool(int(d.get("active", 1)))
             d["target_count"] = int(d.get("target_count", 1))
+            try:
+                d["max_rollover_days"] = int(d.get("max_rollover_days") or 0)
+            except Exception:
+                d["max_rollover_days"] = 0
         return rows
     return await asyncio.to_thread(_work)
 
@@ -109,6 +127,132 @@ async def db_mark_claimed(state, user_id: int, quest_id: str, period_key: str) -
             return cur.rowcount > 0
     return await asyncio.to_thread(_work)
 
+# ---------- Daily rollover helpers ----------
+async def db_daily_quest_snapshot_day(state, quest) -> dict:
+    """Persist a snapshot of the quest reward/target for the given day."""
+    day_key = quest.get("day_key") if isinstance(quest, dict) else None
+    if not day_key:
+        day_key = quest.day_key if hasattr(quest, "day_key") else None
+    if not day_key:
+        raise ValueError("day_key is required for daily quest snapshot")
+
+    quest_id = quest.get("quest_id") if isinstance(quest, dict) else getattr(quest, "quest_id")
+    reward_payload = quest.get("reward_payload") if isinstance(quest, dict) else getattr(quest, "reward_payload", {})
+    reward_json = json.dumps(reward_payload or {}, separators=(",", ":"))
+    reward_type = quest.get("reward_type") if isinstance(quest, dict) else getattr(quest, "reward_type", "mambucks")
+    target_count = int(quest.get("target_count") if isinstance(quest, dict) else getattr(quest, "target_count", 1))
+
+    def _work():
+        with _conn(state.db_path) as conn, conn:
+            conn.execute(
+                """
+                INSERT INTO daily_quest_days(quest_id, day_key, reward_type, reward_payload, target_count)
+                VALUES (?,?,?,?,?)
+                ON CONFLICT(quest_id, day_key) DO UPDATE SET
+                    reward_type=excluded.reward_type,
+                    reward_payload=excluded.reward_payload,
+                    target_count=excluded.target_count
+                """,
+                (quest_id, day_key, reward_type, reward_json, target_count),
+            )
+            row = _query_one(
+                conn,
+                "SELECT quest_id, day_key, reward_type, reward_payload, target_count FROM daily_quest_days WHERE quest_id=? AND day_key=?",
+                (quest_id, day_key),
+            )
+        return row or {}
+
+    return await asyncio.to_thread(_work)
+
+async def db_daily_quest_add_slot(state, user_id: int, quest, day_key: str) -> dict:
+    _ = await db_daily_quest_snapshot_day(state, {"quest_id": quest.quest_id, "reward_payload": quest.reward_payload, "reward_type": quest.reward_type, "target_count": quest.target_count, "day_key": day_key})
+    def _work():
+        with _conn(state.db_path) as conn, conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO user_daily_quest_slots(user_id, quest_id, day_key, progress)
+                      VALUES (?,?,?,0)""",
+                (str(user_id), quest.quest_id, day_key),
+            )
+            row = _query_one(
+                conn,
+                """
+                SELECT s.user_id, s.quest_id, s.day_key, s.progress, s.completed_at, s.claimed_at, s.auto_granted_at,
+                       d.reward_type, d.reward_payload, d.target_count
+                  FROM user_daily_quest_slots s
+                  JOIN daily_quest_days d ON d.quest_id = s.quest_id AND d.day_key = s.day_key
+                 WHERE s.user_id=? AND s.quest_id=? AND s.day_key=?
+                """,
+                (str(user_id), quest.quest_id, day_key),
+            )
+        return row or {}
+
+    return await asyncio.to_thread(_work)
+
+async def db_daily_quest_get_slots(state, user_id: int, quest_id: str) -> list[dict]:
+    def _work():
+        with _conn(state.db_path) as conn:
+            rows = _query_all(
+                conn,
+                """
+                SELECT s.user_id, s.quest_id, s.day_key, s.progress, s.completed_at, s.claimed_at, s.auto_granted_at,
+                       d.reward_type, d.reward_payload, d.target_count
+                  FROM user_daily_quest_slots s
+                  JOIN daily_quest_days d ON d.quest_id = s.quest_id AND d.day_key = s.day_key
+                 WHERE s.user_id=? AND s.quest_id=?
+                 ORDER BY s.day_key ASC
+                """,
+                (str(user_id), quest_id),
+            )
+        for r in rows:
+            try:
+                r["reward_payload"] = json.loads(r.get("reward_payload") or "{}")
+            except Exception:
+                r["reward_payload"] = {}
+        return rows
+
+    return await asyncio.to_thread(_work)
+
+async def db_daily_quest_update_progress(state, user_id: int, quest_id: str, day_key: str, delta: int, target: int):
+    delta = int(delta or 0)
+    target = max(1, int(target or 1))
+    now_iso = _now_iso()
+
+    def _work():
+        with _conn(state.db_path) as conn, conn:
+            conn.execute(
+                """UPDATE user_daily_quest_slots
+                      SET progress = MIN(progress + ?, ?),
+                          completed_at = CASE
+                              WHEN (progress + ?) >= ? AND completed_at IS NULL THEN ?
+                              ELSE completed_at
+                          END
+                    WHERE user_id=? AND quest_id=? AND day_key=?""",
+                (delta, target, delta, target, now_iso, str(user_id), quest_id, day_key),
+            )
+            row = _query_one(
+                conn,
+                "SELECT progress, completed_at FROM user_daily_quest_slots WHERE user_id=? AND quest_id=? AND day_key=?",
+                (str(user_id), quest_id, day_key),
+            )
+        return row or {}
+
+    return await asyncio.to_thread(_work)
+
+async def db_daily_quest_mark_claimed(state, user_id: int, quest_id: str, day_key: str, *, auto: bool = False) -> bool:
+    now_iso = _now_iso()
+    def _work():
+        with _conn(state.db_path) as conn, conn:
+            cur = conn.execute(
+                """UPDATE user_daily_quest_slots
+                      SET claimed_at = COALESCE(claimed_at, ?),
+                          completed_at = COALESCE(completed_at, ?),
+                          auto_granted_at = CASE WHEN ? THEN COALESCE(auto_granted_at, ?) ELSE auto_granted_at END
+                    WHERE user_id=? AND quest_id=? AND day_key=? AND claimed_at IS NULL""",
+                (now_iso, now_iso, 1 if auto else 0, now_iso, str(user_id), quest_id, day_key),
+            )
+            return cur.rowcount > 0
+    return await asyncio.to_thread(_work)
+
 # ---------- Initialize Quest Table on startup ----------
 async def db_init_quests(state) -> None:
     def _work():
@@ -122,6 +266,7 @@ async def db_init_quests(state) -> None:
               target_count    INTEGER NOT NULL DEFAULT 1,
               reward_type     TEXT NOT NULL,
               reward_payload  TEXT,
+              max_rollover_days INTEGER NOT NULL DEFAULT 0,
               active          INTEGER NOT NULL DEFAULT 1
             );
 
@@ -143,6 +288,34 @@ async def db_init_quests(state) -> None:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(user_quest_progress)").fetchall()]
             if "claimed_steps" not in cols:
                 conn.execute("ALTER TABLE user_quest_progress ADD COLUMN claimed_steps INTEGER NOT NULL DEFAULT 0")
+            quest_cols = [r[1] for r in conn.execute("PRAGMA table_info(quests)").fetchall()]
+            if "max_rollover_days" not in quest_cols:
+                conn.execute("ALTER TABLE quests ADD COLUMN max_rollover_days INTEGER NOT NULL DEFAULT 0")
+
+            # per-day quest reward snapshots and rollover slots
+            conn.executescript("""
+            CREATE TABLE IF NOT EXISTS daily_quest_days (
+              quest_id       TEXT NOT NULL,
+              day_key        TEXT NOT NULL,
+              reward_type    TEXT NOT NULL,
+              reward_payload TEXT NOT NULL,
+              target_count   INTEGER NOT NULL,
+              PRIMARY KEY (quest_id, day_key),
+              FOREIGN KEY (quest_id) REFERENCES quests(quest_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_daily_quest_slots (
+              user_id        TEXT NOT NULL,
+              quest_id       TEXT NOT NULL,
+              day_key        TEXT NOT NULL,
+              progress       INTEGER NOT NULL DEFAULT 0,
+              completed_at   TEXT,
+              claimed_at     TEXT,
+              auto_granted_at TEXT,
+              PRIMARY KEY (user_id, quest_id, day_key),
+              FOREIGN KEY (quest_id, day_key) REFERENCES daily_quest_days(quest_id, day_key)
+            );
+            """)
     await asyncio.to_thread(_work)
 
 def _ensure_table(state):
@@ -156,7 +329,31 @@ def _ensure_table(state):
             target_count   INTEGER NOT NULL,
             reward_type    TEXT NOT NULL,         -- mambucks|fitzcoin|shards|pack
             reward_payload TEXT NOT NULL,         -- JSON string; milestones or single-step payload
+            max_rollover_days INTEGER NOT NULL DEFAULT 0,
             active         INTEGER NOT NULL       -- 1/0
+        );
+        """)
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS daily_quest_days (
+            quest_id       TEXT NOT NULL,
+            day_key        TEXT NOT NULL,
+            reward_type    TEXT NOT NULL,
+            reward_payload TEXT NOT NULL,
+            target_count   INTEGER NOT NULL,
+            PRIMARY KEY (quest_id, day_key),
+            FOREIGN KEY (quest_id) REFERENCES quests(quest_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS user_daily_quest_slots (
+            user_id        TEXT NOT NULL,
+            quest_id       TEXT NOT NULL,
+            day_key        TEXT NOT NULL,
+            progress       INTEGER NOT NULL DEFAULT 0,
+            completed_at   TEXT,
+            claimed_at     TEXT,
+            auto_granted_at TEXT,
+            PRIMARY KEY (user_id, quest_id, day_key),
+            FOREIGN KEY (quest_id, day_key) REFERENCES daily_quest_days(quest_id, day_key)
         );
         """)
 
@@ -216,11 +413,13 @@ async def db_seed_quests_from_json(state, json_path: str, *, deactivate_missing:
                     target_count = inferred if inferred > 0 else 1
                 target_count = int(target_count)
 
+                max_rollover_days = int(q.get("max_rollover_days") or 0)
+
                 conn.execute(
                     """
                     INSERT INTO quests
-                        (quest_id,title,description,category,target_count,reward_type,reward_payload,active)
-                    VALUES (?,?,?,?,?,?,?,?)
+                        (quest_id,title,description,category,target_count,reward_type,reward_payload,max_rollover_days,active)
+                    VALUES (?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(quest_id) DO UPDATE SET
                         title=excluded.title,
                         description=excluded.description,
@@ -228,9 +427,10 @@ async def db_seed_quests_from_json(state, json_path: str, *, deactivate_missing:
                         target_count=excluded.target_count,
                         reward_type=excluded.reward_type,
                         reward_payload=excluded.reward_payload,
+                        max_rollover_days=excluded.max_rollover_days,
                         active=excluded.active;
                     """,
-                    (quest_id, title, description, category, target_count, reward_type, payload_json, active),
+                    (quest_id, title, description, category, target_count, reward_type, payload_json, max_rollover_days, active),
                 )
                 seen_ids.add(quest_id)
 
@@ -306,6 +506,7 @@ async def db_reset_all_user_quests(state, user_id: int) -> int:
     """Delete ALL quest progress rows for this user (all periods & quests). Returns rows deleted."""
     def _work():
         with _conn(state.db_path) as conn, conn:
+            conn.execute("DELETE FROM user_daily_quest_slots WHERE user_id = ?", (str(user_id),))
             cur = conn.execute("DELETE FROM user_quest_progress WHERE user_id = ?", (user_id,))
             return cur.rowcount or 0
     return await asyncio.to_thread(_work)

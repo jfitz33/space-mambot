@@ -76,6 +76,11 @@ class Quests(commands.Cog):
             else:
                 state = "✅ Claimed" if row["claimed"] else ("🏁 Completed" if row["completed"] else "• In progress")
 
+            if row.get("rollover_pending"):
+                ready = row.get("rollover_claimables", 0)
+                pending = row.get("rollover_pending", 0)
+                state += f" — {ready} claimable / {pending} day(s) queued"
+
             cat = q.category.capitalize()
             lines.append(f"**{q.title}** · *{cat}*\n{q.description}\n{bar} — {state}\n")
         embed.description = "\n".join(lines)

@@ -18,12 +18,13 @@
   },
   {
     "quest_id": "matches_played",
-    "title": "Play Matches",
-    "description": "Play ranked matches this week.",
-    "category": "weekly",
-    "target_count": 20,
+    "title": "Daily Duelist",
+    "description": "Play two ranked matches today (wins count double).",
+    "category": "daily",
+    "target_count": 2,
     "reward_type": "mambucks",
-    "reward_payload": { "amount": 100 },
+    "reward_payload": { "amount": 75, "max_rollover_days": 3 },
+    "max_rollover_days": 3,
     "active": true
   },
   {
