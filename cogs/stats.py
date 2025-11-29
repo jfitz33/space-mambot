@@ -47,7 +47,7 @@ class Stats(commands.Cog):
             if quests and getattr(quests, "qm", None):
                 await quests.qm.increment(opponent.id, "win_3_matches", 1)
                 await quests.qm.increment(caller.id,   "matches_played", 1)
-                await quests.qm.increment(opponent.id, "matches_played", 1)
+                await quests.qm.increment(opponent.id, "matches_played", 2)
         except Exception as e:
             print("[stats] quest tick error:", e)
 
