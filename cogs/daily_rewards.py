@@ -47,6 +47,7 @@ class DailyRewards(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._task: asyncio.Task | None = None
+        self._last_grant_day_key: str | None = None
 
     async def cog_load(self):
         db_init_starter_daily_rewards(self.bot.state)
@@ -64,6 +65,7 @@ class DailyRewards(commands.Cog):
 
     async def _grant_once(self, *, day_key: str | None = None):
         day_key = day_key or _today_key_et()
+        self._last_grant_day_key = day_key
         amount = db_starter_daily_get_amount(self.bot.state)
         if amount <= 0:
             print(
@@ -76,12 +78,14 @@ class DailyRewards(commands.Cog):
         )
 
         awarded = 0
+        seen_members = 0
         for guild in self.bot.guilds:
             members = set()
             for role_name in TEAM_ROLE_NAMES:
                 role = discord.utils.get(guild.roles, name=role_name)
                 if role:
                     members.update(role.members)
+            seen_members += len(members)
             for member in members:
                 _, did = db_starter_daily_try_grant(
                     self.bot.state, member.id, day_key, amount
@@ -92,6 +96,11 @@ class DailyRewards(commands.Cog):
         print(
             f"[daily-rewards] {day_key}: granted {mambucks_label(amount)} to {awarded} user(s)."
         )
+        if awarded == 0 and seen_members == 0:
+            print(
+                "[daily-rewards] warning: no Fire/Water members seen in cache; "
+                "grants will be skipped until role membership is available."
+            )
         if did_total:
             print(
                 f"[daily-rewards] {day_key}: total mambucks awarded now {mambucks_label(total_after)}."

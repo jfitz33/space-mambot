@@ -5,6 +5,7 @@ from discord import app_commands
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from core.constants import TEAM_ROLE_NAMES
 from core.db import (
     db_init_wheel_tokens,
     db_wheel_tokens_grant_daily,
@@ -14,7 +15,6 @@ from core.db import (
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
-STARTER_ROLE_NAME = os.getenv("STARTER_ROLE_NAME", "starter")  # rename any time
 
 ET = ZoneInfo("America/New_York")
 
@@ -35,6 +35,7 @@ class GambaChips(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._task: asyncio.Task | None = None
+        self._last_grant_day_key: str | None = None
 
     async def cog_load(self):
         # Ensure table exists
@@ -52,17 +53,27 @@ class GambaChips(commands.Cog):
 
     async def _grant_once(self, *, day_key: str | None = None):
         day_key = day_key or _today_key_et()
+        self._last_grant_day_key = day_key
         awarded = 0
+        seen_members = 0
         for guild in self.bot.guilds:
-            role = discord.utils.get(guild.roles, name=STARTER_ROLE_NAME)
-            if not role:
-                continue
+            members = set()
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if role:
+                    members.update(role.members)
             # NOTE: requires Server Members Intent to have role.members populated
-            for m in role.members:
+            seen_members += len(members)
+            for m in members:
                 _, did = db_wheel_tokens_grant_daily(self.bot.state, m.id, day_key)
                 if did:
                     awarded += 1
         print(f"[gamba] daily grant {day_key}: granted to {awarded} user(s).")
+        if awarded == 0 and seen_members == 0:
+            print(
+                "[gamba] warning: no Fire/Water members seen in cache; grants will be "
+                "skipped until role membership is available."
+            )
 
     async def run_midnight_grant(self, *, day_key: str | None = None):
         """Run the midnight grant once, optionally using a custom ET day key."""

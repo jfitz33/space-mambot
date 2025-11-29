@@ -1,5 +1,5 @@
 import discord, os, time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from discord.ext import commands
 from discord import app_commands
@@ -54,6 +54,7 @@ class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state = bot.state
+        self._last_simulated_day: date | None = None
 
     @property
     def _et(self):
@@ -683,27 +684,182 @@ class Admin(commands.Cog):
     async def admin_simulate_next_day(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        target_date = (datetime.now(self._et) + timedelta(days=1)).date()
+        def _as_date(key: str | None) -> date | None:
+            try:
+                return datetime.strptime(key or "", "%Y%m%d").date()
+            except Exception:
+                return None
+
+        def _latest_day_from_db() -> tuple[list[date], list[str]]:
+            """Look up last processed ET days recorded in the DB for rollovers.
+
+            We consult the daily rewards totals (starter_daily_totals.last_day),
+            the wheel_tokens table (max last_grant_day), and the daily_sales table
+            (max day_key). Any missing tables simply yield no candidates.
+            """
+
+            import sqlite3
+
+            candidates: list[date] = []
+            notes: list[str] = []
+            try:
+                with sqlite3.connect(self.bot.state.db_path) as conn:
+                    cur = conn.execute(
+                        "SELECT last_day FROM starter_daily_totals WHERE id = 1"
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        d = _as_date(str(row[0]))
+                        if d:
+                            notes.append(f"daily totals last_day={row[0]}")
+                            candidates.append(d)
+
+                    cur = conn.execute(
+                        "SELECT MAX(last_grant_day) FROM wheel_tokens WHERE last_grant_day IS NOT NULL"
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        d = _as_date(str(row[0]))
+                        if d:
+                            notes.append(f"wheel_tokens last_grant_day={row[0]}")
+                            candidates.append(d)
+
+                    cur = conn.execute(
+                        "SELECT MAX(day_key) FROM daily_sales WHERE day_key IS NOT NULL"
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        d = _as_date(str(row[0]))
+                        if d:
+                            notes.append(f"daily_sales day_key={row[0]}")
+                            candidates.append(d)
+            except Exception as e:
+                notes.append(f"db lookup error: {e}")
+
+            return candidates, notes
+
+        def _load_persisted_last_sim() -> tuple[list[date], list[str]]:
+            """Return the last simulated day stored in sqlite (if any)."""
+
+            import sqlite3
+
+            stored: list[date] = []
+            notes: list[str] = []
+            try:
+                with sqlite3.connect(self.bot.state.db_path) as conn:
+                    cur = conn.execute(
+                        "SELECT last_day FROM admin_sim_state WHERE id = 1"
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        d = _as_date(str(row[0]))
+                        if d:
+                            notes.append(f"admin_sim_state last_day={row[0]}")
+                            stored.append(d)
+            except Exception as e:
+                notes.append(f"persisted sim lookup error: {e}")
+
+            return stored, notes
+
+        def _persist_last_sim(day_key: str):
+            """Persist the most recent simulated day for future invocations."""
+
+            import sqlite3
+
+            try:
+                with sqlite3.connect(self.bot.state.db_path) as conn, conn:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS admin_sim_state (
+                            id INTEGER PRIMARY KEY CHECK (id = 1),
+                            last_day TEXT
+                        );
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO admin_sim_state (id, last_day)
+                        VALUES (1, ?)
+                        ON CONFLICT(id) DO UPDATE SET last_day = excluded.last_day;
+                        """,
+                        (day_key,),
+                    )
+            except Exception:
+                pass
+
+        today_et = datetime.now(self._et).date()
+        candidates: list[date] = []
+        diag_sources: list[str] = []
+
+        # Include previously simulated date (so we move forward from it)
+        if self._last_simulated_day:
+            candidates.append(self._last_simulated_day)
+            diag_sources.append(f"in-memory sim day={self._last_simulated_day:%Y%m%d}")
+
+        # Include the last day processed by each cog so we don't rerun the same day
+        daily_cog = self.bot.get_cog("DailyRewards")
+        if daily_cog:
+            last_daily = _as_date(getattr(daily_cog, "_last_grant_day_key", None))
+            if last_daily:
+                candidates.append(last_daily)
+                diag_sources.append(f"daily cog last_grant_day={last_daily:%Y%m%d}")
+
+        gamba_cog = self.bot.get_cog("GambaChips")
+        if gamba_cog:
+            last_gamba = _as_date(getattr(gamba_cog, "_last_grant_day_key", None))
+            if last_gamba:
+                candidates.append(last_gamba)
+                diag_sources.append(f"gamba cog last_grant_day={last_gamba:%Y%m%d}")
+
+        sales_cog = self.bot.get_cog("Sales")
+        if sales_cog:
+            last_sales = _as_date(getattr(sales_cog, "_last_roll_day_key", None))
+            if last_sales:
+                candidates.append(last_sales)
+                diag_sources.append(f"sales cog last_roll_day={last_sales:%Y%m%d}")
+
+        # Include persisted DB state from the various rollovers for maximum coverage
+        db_candidates, db_notes = _latest_day_from_db()
+        candidates.extend(db_candidates)
+        diag_sources.extend(db_notes)
+
+        # Always include last simulated day stored in sqlite so we advance even after restarts
+        persisted_days, persisted_notes = _load_persisted_last_sim()
+        candidates.extend(persisted_days)
+        diag_sources.extend(persisted_notes)
+
+        base_date = max(candidates) if candidates else today_et
+        target_date = base_date + timedelta(days=1)
+        self._last_simulated_day = target_date
+
+        
         day_key = target_date.strftime("%Y%m%d")
         quest_day_key = daily_key(target_date)
 
+        _persist_last_sim(day_key)
+
         results: List[str] = []
 
-        daily_cog = self.bot.get_cog("DailyRewards")
+        print(
+            "[admin] simulate_next_day baseline:",
+            ", ".join(diag_sources) or "(none)",
+        )
+        print(
+            f"[admin] simulate_next_day advancing from {base_date:%Y%m%d} to {day_key}."
+        )
+
         if daily_cog:
             await daily_cog.run_midnight_grant(day_key=day_key)
             results.append(f"✅ Starter daily rewards granted for **{day_key}**.")
         else:
             results.append("⚠️ Starter daily rewards cog not loaded.")
 
-        gamba_cog = self.bot.get_cog("GambaChips")
         if gamba_cog:
             await gamba_cog.run_midnight_grant(day_key=day_key)
             results.append(f"✅ Daily gamba chips granted for **{day_key}**.")
         else:
             results.append("⚠️ Gamba chips cog not loaded.")
 
-        sales_cog = self.bot.get_cog("Sales")
         if sales_cog:
             await sales_cog.roll_for_day(day_key)
             results.append(f"✅ Sales rolled for **{day_key}** and banner refreshed.")
@@ -721,6 +877,112 @@ class Admin(commands.Cog):
             results.append("⚠️ Quests cog not loaded.")
 
         await interaction.followup.send("\n".join(results), ephemeral=True)
+
+    @app_commands.command(
+        name="admin_reset_simulated_day",
+        description="(Admin) Reset simulate-next-day tracking back to today (ET).",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def admin_reset_simulated_day(self, interaction: discord.Interaction):
+        """Bring the simulate-next-day baseline back to the current ET date."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        def _clear_future_reward_history(today_key: str):
+            """Remove future-dated rollover markers so simulations don't skip days."""
+
+            import sqlite3
+
+            try:
+                with sqlite3.connect(self.bot.state.db_path) as conn, conn:
+                    # Daily mambucks: clear future markers for totals and per-user grants
+                    conn.execute(
+                        """
+                        UPDATE starter_daily_totals
+                           SET last_day = NULL
+                         WHERE id = 1 AND last_day > ?;
+                        """,
+                        (today_key,),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE starter_daily_grants
+                           SET last_grant_day = NULL
+                         WHERE last_grant_day > ?;
+                        """,
+                        (today_key,),
+                    )
+
+                    # Daily gamba chips: clear future markers so next grant applies
+                    conn.execute(
+                        """
+                        UPDATE wheel_tokens
+                           SET last_grant_day = NULL
+                         WHERE last_grant_day > ?;
+                        """,
+                        (today_key,),
+                    )
+
+                    # Sales: drop any pre-rolled future banners
+                    conn.execute(
+                        "DELETE FROM daily_sales WHERE day_key > ?;",
+                        (today_key,),
+                    )
+            except Exception:
+                pass
+
+        def _persist_last_sim(day_key: str):
+            import sqlite3
+
+            try:
+                with sqlite3.connect(self.bot.state.db_path) as conn, conn:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS admin_sim_state (
+                            id INTEGER PRIMARY KEY CHECK (id = 1),
+                            last_day TEXT
+                        );
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO admin_sim_state (id, last_day)
+                        VALUES (1, ?)
+                        ON CONFLICT(id) DO UPDATE SET last_day = excluded.last_day;
+                        """,
+                        (day_key,),
+                    )
+            except Exception:
+                pass
+
+        today_et = datetime.now(self._et).date()
+        today_key = today_et.strftime("%Y%m%d")
+
+        self._last_simulated_day = today_et
+        _clear_future_reward_history(today_key)
+        _persist_last_sim(today_key)
+
+        daily_cog = self.bot.get_cog("DailyRewards")
+        if daily_cog:
+            daily_cog._last_grant_day_key = today_key
+
+        gamba_cog = self.bot.get_cog("GambaChips")
+        if gamba_cog:
+            gamba_cog._last_grant_day_key = today_key
+
+        sales_cog = self.bot.get_cog("Sales")
+        if sales_cog:
+            sales_cog._last_roll_day_key = today_key
+
+        await interaction.followup.send(
+            (
+                "Simulated day reset to today. Next /admin_simulate_next_day will advance from here. "
+                "Any future-dated rewards/rolls have been cleared so upcoming simulations rerun them from tomorrow."
+            ),
+            ephemeral=True,
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

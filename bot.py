@@ -45,6 +45,7 @@ if not os.path.isabs(PACKS_DIR):
 
 # Use default intents (message_content not needed for slash cmds, but default avoids warnings)
 intents = discord.Intents.default()
+intents.members = True           # needed for role.members to populate
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
