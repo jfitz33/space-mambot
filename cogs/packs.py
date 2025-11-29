@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import os
+from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -15,11 +16,12 @@ from core.constants import (
     PACKS_IN_BOX,
     BUNDLES,
     BUNDLE_NAME_INDEX,
+    TIN_COST,
     pack_names_for_set,
 )
-from core.views import PacksSelectView
+from core.views import PacksSelectView, ConfirmSpendView, _pack_embed_for_cards
 from core.db import db_add_cards
-from core.packs import open_box_from_csv
+from core.packs import open_box_from_csv, open_pack_from_csv
 
 # API and pack csv details
 YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -70,10 +72,288 @@ async def ac_pack_name_choices(interaction: discord.Interaction, current: str) -
             break
     return out
 
+class TinSelectionView(discord.ui.View):
+    def __init__(self, state, requester: discord.Member):
+        super().__init__(timeout=120)
+        self.state = state
+        self.requester = requester
+        self.selected_tin: str | None = None
+        self.selected_promo: dict | None = None
+        self.selected_pack: str | None = None
+
+        self.tin_select = TinDropdown(self)
+        self.promo_select = PromoDropdown(self)
+        self.pack_select = TinPackDropdown(self)
+
+        self.add_item(self.tin_select)
+        self.add_item(self.promo_select)
+        self.add_item(self.pack_select)
+
+    def _status_message(self) -> str:
+        parts = ["Select a tin to open."]
+        if self.selected_tin:
+            parts.append(f"Chosen tin: **{self.selected_tin}**")
+        if self.selected_promo:
+            pname = self.selected_promo.get("name") or self.selected_promo.get("cardname")
+            if pname:
+                parts.append(f"Promo: **{pname}**")
+        if self.selected_pack:
+            parts.append(f"Pack selection: **{self.selected_pack}** (x5)")
+        return "\n".join(parts)
+
+    async def _to_confirmation(self, interaction: discord.Interaction):
+        if not (self.selected_tin and self.selected_promo and self.selected_pack):
+            return
+
+        promo_name = (self.selected_promo.get("name") or self.selected_promo.get("cardname") or "promo card").strip()
+        pack_name = self.selected_pack
+        tin_name = self.selected_tin
+
+        confirm_view = ConfirmSpendView(
+            state=self.state,
+            requester=self.requester,
+            pack_name=tin_name,
+            amount=1,
+            on_confirm=partial(
+                Packs._complete_tin_purchase,
+                tin_name=tin_name,
+                promo_card=self.selected_promo,
+                pack_choice=pack_name,
+                packs_in_tin=5,
+            ),
+            total_cost=TIN_COST,
+            display_description=f"**{tin_name}** containing **{promo_name}** and **{pack_name}**",
+        )
+
+        prompt = (
+            f"Are you sure you want to spend {TIN_COST} mambucks on the {tin_name} "
+            f"containing {promo_name} and {pack_name}?"
+        )
+
+        await interaction.response.edit_message(content=prompt, view=confirm_view)
+
+
+class TinDropdown(discord.ui.Select):
+    def __init__(self, parent: TinSelectionView):
+        self.parent_view = parent
+        options: list[discord.SelectOption] = []
+        for name in sorted((parent.state.tins_index or {}).keys(), key=str.casefold):
+            options.append(discord.SelectOption(label=name[:100], value=name))
+        if not options:
+            options.append(discord.SelectOption(label="No tins available", value="__none__", default=True))
+        super().__init__(
+            placeholder="Choose a tin…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.parent_view.requester.id:
+            return await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
+        value = self.values[0]
+        if value == "__none__":
+            return await interaction.response.send_message("No tins configured.", ephemeral=True)
+
+        self.parent_view.selected_tin = value
+        self.parent_view.selected_promo = None
+        self.parent_view.selected_pack = None
+        self._freeze_selection(value)
+        self.parent_view.promo_select.refresh_options()
+        self.parent_view.pack_select.refresh_options()
+
+        await interaction.response.edit_message(content=self.parent_view._status_message(), view=self.parent_view)
+
+    def _freeze_selection(self, value: str):
+        self.disabled = True
+        self.placeholder = value[:100]
+        for opt in self.options:
+            opt.default = opt.value == value
+
+
+class PromoDropdown(discord.ui.Select):
+    def __init__(self, parent: TinSelectionView):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Choose a promo…",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label="Select a tin first", value="__pending__", default=True)],
+            disabled=True,
+        )
+
+    def refresh_options(self):
+        tin_name = self.parent_view.selected_tin
+        tins = self.parent_view.state.tins_index or {}
+        tin_meta = tins.get(tin_name) if tin_name else None
+        options: list[discord.SelectOption] = []
+        if tin_meta:
+            for promo in tin_meta.get("promo_cards") or []:
+                pname = (promo.get("name") or promo.get("cardname") or "Promo").strip()
+                options.append(discord.SelectOption(label=pname[:100], value=pname))
+        if not options:
+            options.append(discord.SelectOption(label="No promos available", value="__none__", default=True))
+            self.disabled = True
+        else:
+            self.disabled = False
+        self.options = options
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.parent_view.requester.id:
+            return await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
+        value = self.values[0]
+        if value in {"__pending__", "__none__"}:
+            return await interaction.response.send_message("No promo available to pick.", ephemeral=True)
+
+        tin_meta = (self.parent_view.state.tins_index or {}).get(self.parent_view.selected_tin, {})
+        promo_entry = None
+        for promo in tin_meta.get("promo_cards") or []:
+            name = (promo.get("name") or promo.get("cardname") or "").strip()
+            if name == value:
+                promo_entry = promo
+                break
+        if not promo_entry:
+            return await interaction.response.send_message("Promo not found for this tin.", ephemeral=True)
+
+        self.parent_view.selected_promo = promo_entry
+        self._freeze_selection(value)
+        if self.parent_view.selected_pack:
+            await self.parent_view._to_confirmation(interaction)
+            return
+
+        await interaction.response.edit_message(content=self.parent_view._status_message(), view=self.parent_view)
+
+    def _freeze_selection(self, value: str):
+        self.disabled = True
+        self.placeholder = value[:100]
+        for opt in self.options:
+            opt.default = opt.value == value
+
+
+class TinPackDropdown(discord.ui.Select):
+    def __init__(self, parent: TinSelectionView):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Choose a pack for the tin…",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label="Select a tin first", value="__pending__", default=True)],
+            disabled=True,
+        )
+
+    def refresh_options(self):
+        tin_name = self.parent_view.selected_tin
+        tins = self.parent_view.state.tins_index or {}
+        tin_meta = tins.get(tin_name) if tin_name else None
+        options: list[discord.SelectOption] = []
+        if tin_meta:
+            for pack_name in tin_meta.get("packs") or []:
+                if pack_name not in (self.parent_view.state.packs_index or {}):
+                    continue
+                options.append(discord.SelectOption(label=pack_name[:100], value=pack_name))
+        if not options:
+            options.append(discord.SelectOption(label="No packs available", value="__none__", default=True))
+            self.disabled = True
+        else:
+            self.disabled = False
+        self.options = options
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.parent_view.requester.id:
+            return await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
+        value = self.values[0]
+        if value in {"__pending__", "__none__"}:
+            return await interaction.response.send_message("No pack available to pick.", ephemeral=True)
+
+        self.parent_view.selected_pack = value
+        self._freeze_selection(value)
+        if self.parent_view.selected_promo:
+            await self.parent_view._to_confirmation(interaction)
+            return
+
+        await interaction.response.edit_message(content=self.parent_view._status_message(), view=self.parent_view)
+
+    def _freeze_selection(self, value: str):
+        self.disabled = True
+        self.placeholder = value[:100]
+        for opt in self.options:
+            opt.default = opt.value == value
+
 class Packs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state = bot.state
+
+    @staticmethod
+    async def _complete_tin_purchase(
+        interaction: discord.Interaction,
+        state,
+        requester: discord.Member,
+        _pack_name: str,
+        _amount: int,
+        *,
+        tin_name: str,
+        promo_card: dict,
+        pack_choice: str,
+        packs_in_tin: int,
+    ):
+        promo = dict(promo_card or {})
+        promo_name = (promo.get("name") or promo.get("cardname") or "Promo").strip() or "Promo"
+        promo.setdefault("set", promo.get("cardset") or tin_name)
+        promo.setdefault("cardset", promo.get("set") or tin_name)
+        promo.setdefault("rarity", promo.get("cardrarity") or "secret")
+        promo.setdefault("cardrarity", promo.get("rarity"))
+
+        per_pack: list[list[dict]] = []
+        for _ in range(packs_in_tin):
+            per_pack.append(open_pack_from_csv(state, pack_choice, 1))
+
+        flat = [card for pack in per_pack for card in pack]
+        db_add_cards(state, requester.id, [promo], promo.get("set") or tin_name)
+        db_add_cards(state, requester.id, flat, pack_choice)
+
+        quests_cog = interaction.client.get_cog("Quests")
+        if quests_cog:
+            await quests_cog.tick_pack_open(user_id=requester.id, amount=packs_in_tin)
+
+        summary = (
+            f"{requester.mention} opened the **{tin_name}** tin, chose promo **{promo_name}**, "
+            f"and received {packs_in_tin} pack{'s' if packs_in_tin != 1 else ''} of **{pack_choice}**."
+        )
+
+        dm_sent = False
+        try:
+            dm = await requester.create_dm()
+            await dm.send(f"Promo from **{tin_name}**: **{promo_name}**")
+            for i, cards in enumerate(per_pack, start=1):
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_choice, cards, i, packs_in_tin)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
+                if packs_in_tin > 5:
+                    await asyncio.sleep(0.2)
+            dm_sent = True
+        except Exception:
+            dm_sent = False
+
+        channel = interaction.channel
+        if channel:
+            await channel.send(
+                summary + (" Results sent via DM." if dm_sent else " I could not DM you; posting results here."),
+                silent=True,
+            )
+            if not dm_sent:
+                for i, cards in enumerate(per_pack, start=1):
+                    content, embeds, files = _pack_embed_for_cards(interaction.client, pack_choice, cards, i, packs_in_tin)
+                    send_kwargs: dict = {"embeds": embeds}
+                    if content:
+                        send_kwargs["content"] = content
+                    if files:
+                        send_kwargs["files"] = files
+                    await channel.send(**send_kwargs, silent=True)
 
     # ------------------------------ utilities ------------------------------
     def _packs_dir(self) -> Path:
@@ -182,6 +462,20 @@ class Packs(commands.Cog):
             await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)
         await interaction.response.send_message("Pick a pack from the dropdown:", view=view, ephemeral=True)
+    
+    @app_commands.command(name="tin", description="Purchase a tin with a promo and 5 packs")
+    @app_commands.guilds(GUILD)
+    async def tin(self, interaction: discord.Interaction):
+        tins = self.bot.state.tins_index or {}
+        if not tins:
+            await interaction.response.send_message("No tins available. Add tins to data/tins.json and /reload_data.", ephemeral=True)
+            return
+        if not (self.bot.state.packs_index or {}):
+            await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True)
+            return
+
+        view = TinSelectionView(self.bot.state, requester=interaction.user)
+        await interaction.response.send_message("Choose a tin to purchase:", view=view, ephemeral=True)
 
     @app_commands.command(name="box", description=f"Open a sealed box or box bundle.")
     @app_commands.guilds(GUILD)

@@ -2,6 +2,8 @@ import discord, os
 from discord.ext import commands
 from discord import app_commands
 from core.packs import load_packs_from_csv
+from core.tins import load_tins_from_json
+from core.cards_shop import reset_shop_index, ensure_shop_index
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -23,6 +25,9 @@ class System(commands.Cog):
     async def reload_data(self, interaction: discord.Interaction):
         try:
             load_packs_from_csv(self.bot.state)
+            load_tins_from_json(self.bot.state, getattr(self.bot.state, "tins_path", "data/tins.json"))
+            reset_shop_index(self.bot.state)
+            ensure_shop_index(self.bot.state)
             await interaction.response.send_message("CSV packs reloaded.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Reload failed: {e}", ephemeral=True)

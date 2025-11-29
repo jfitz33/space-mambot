@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Nemesis Tin Wave 1",
+    "promo_cards": [
+      {
+        "name": "Tidal, Dragon Ruler of Waterfalls",
+        "rarity": "Secret",
+        "cardcode": "TIN-EN001",
+        "cardid": "99999998"
+      },
+      {
+        "name": "Blaster, Dragon Ruler of Infernos",
+        "rarity": "Secret",
+        "cardcode": "TIN-EN001",
+        "cardid": "99999999"
+      }
+    ],
+    "packs": [
+      "Blazing Genesis",
+      "Storm of the Abyss"
+    ]
+  }
+]

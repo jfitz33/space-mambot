@@ -25,6 +25,12 @@ def canonicalize_rarity(raw: str) -> str:
     key = (raw or "").strip().lower()
     return _CANON_RARITY_MAP.get(key, key)
 
+def reset_shop_index(state) -> None:
+    """Clear cached shop index structures so they can be rebuilt."""
+    for attr in ("_shop_print_by_key", "_shop_sig_to_set", "_shop_card_name_by_id"):
+        if hasattr(state, attr):
+            delattr(state, attr)
+
 def _normalize_row(row: dict) -> dict:
     """Normalize a CSV row or packs_index card dict to a common shape."""
     return {
@@ -169,6 +175,11 @@ def ensure_shop_index(state) -> None:
     starters_index = getattr(state, "starters_index", None)
     if isinstance(starters_index, dict):
         _ingest_container(starters_index, "starters_index")
+    
+    tins_index = getattr(state, "tins_index", None)
+    if isinstance(tins_index, dict) and tins_index:
+        promo_container = {name: {"cards": meta.get("promo_cards") or []} for name, meta in tins_index.items()}
+        _ingest_container(promo_container, "tins_index")
 
 def shop_load_csvs_into_index(state, glob_pattern: str) -> int:
     """

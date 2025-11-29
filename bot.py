@@ -14,10 +14,11 @@ from core.db import (db_init, db_init_trades, db_init_wallet,
                      db_init_daily_sales, db_init_wheel_tokens)
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
-from core.cards_shop import ensure_shop_index
+from core.cards_shop import ensure_shop_index, reset_shop_index
 from core.images import ensure_rarity_emojis
 from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_example_quests, db_seed_quests_from_json
+from core.tins import load_tins_from_json
 
 
 logging.basicConfig(
@@ -49,6 +50,7 @@ tree = bot.tree
 
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 bot.state.banlist_path = str((BASE_DIR / "data" / "banlist.json").resolve())
+bot.state.tins_path = str((BASE_DIR / "data" / "tins.json").resolve())
 
 # Set to track live views to properly enforce timeouts
 setattr(bot.state, "live_views", set())
@@ -71,6 +73,7 @@ async def on_ready():
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     load_starters_from_csv(bot.state)
+    load_tins_from_json(bot.state, bot.state.tins_path)
     db_init_wallet(bot.state)
     db_init_wheel_tokens(bot.state)
     await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
@@ -86,9 +89,7 @@ async def on_ready():
         print("[rarity] setup skipped:", e)
 
     # After import of cards, check for improper entries and purge incorrect ones
-    for attr in ("_shop_print_by_key", "_shop_sig_to_set", "_shop_card_name_by_id"):
-        if hasattr(bot.state, attr):
-            delattr(bot.state, attr)
+    reset_shop_index(bot.state)
     ensure_shop_index(bot.state)
 
     # If Art Import env var set to 1, download card images (super and higher)
