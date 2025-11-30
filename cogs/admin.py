@@ -890,7 +890,7 @@ class Admin(commands.Cog):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        def _clear_future_reward_history(today_key: str):
+        def _clear_future_reward_history(today_key: str, quest_day_key: str):
             """Remove future-dated rollover markers so simulations don't skip days."""
 
             import sqlite3
@@ -930,6 +930,16 @@ class Admin(commands.Cog):
                         "DELETE FROM daily_sales WHERE day_key > ?;",
                         (today_key,),
                     )
+
+                    # Quest rollovers: drop any future-dated quest snapshots/slots
+                    conn.execute(
+                        "DELETE FROM daily_quest_days WHERE day_key >= ?;",
+                        (quest_day_key,),
+                    )
+                    conn.execute(
+                        "DELETE FROM user_daily_quest_slots WHERE day_key >= ?;",
+                        (quest_day_key,),
+                    )
             except Exception:
                 pass
 
@@ -959,9 +969,10 @@ class Admin(commands.Cog):
 
         today_et = datetime.now(self._et).date()
         today_key = today_et.strftime("%Y%m%d")
+        quest_day_key = daily_key(today_et)
 
         self._last_simulated_day = today_et
-        _clear_future_reward_history(today_key)
+        _clear_future_reward_history(today_key, quest_day_key)
         _persist_last_sim(today_key)
 
         daily_cog = self.bot.get_cog("DailyRewards")

@@ -69,7 +69,9 @@ async def on_ready():
     db_init(bot.state)
     db_init_trades(bot.state)
     await db_init_quests(bot.state)
-    await db_seed_quests_from_json(bot.state, "data/quests.json", deactivate_missing=True)
+    quests_json_path = (BASE_DIR / "data" / "quests.json").resolve()
+    bot.state.quests_json_path = str(quests_json_path)
+    await db_seed_quests_from_json(bot.state, str(quests_json_path), deactivate_missing=True)
     db_init_user_stats(bot.state)
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here

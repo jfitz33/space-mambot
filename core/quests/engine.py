@@ -14,9 +14,11 @@ from core.quests.schema import (
     db_mark_claimed_step,
     db_daily_quest_add_slot,
     db_daily_quest_get_slots,
+    db_daily_quest_snapshot_day,
     db_daily_quest_list_users,
     db_daily_quest_mark_claimed,
     db_daily_quest_update_progress,
+    db_seed_quests_from_json,
 )
 from .timekeys import now_et, period_key_for_category, daily_key
 from core.db import db_wallet_add, db_shards_add
@@ -61,10 +63,15 @@ class QuestManager:
     def __init__(self, state: Any):
         self.state = state
         self._defs: dict[str, QuestDef] = {}
+        self._last_defs_refresh_date: date | None = None
 
     async def load_defs(self) -> None:
         rows = await db_fetch_active_quests(self.state)
-        self._defs = {
+        self._defs = self._build_defs(rows)
+        self._last_defs_refresh_date = self._last_defs_refresh_date or now_et().date()
+
+    def _build_defs(self, rows: Iterable[dict]) -> dict[str, QuestDef]:
+        return {
             r["quest_id"]: QuestDef(
                 quest_id=r["quest_id"],
                 title=r["title"],
@@ -82,6 +89,49 @@ class QuestManager:
             )
             for r in rows if r.get("active", True)
         }
+    
+    async def _load_defs_for_date(self, target_date: date, mutate: bool = True) -> dict[str, QuestDef]:
+        """Load quest defs for the given date, optionally updating live state."""
+
+        json_path = getattr(self.state, "quests_json_path", None)
+        if json_path:
+            try:
+                await db_seed_quests_from_json(self.state, json_path, deactivate_missing=True)
+            except FileNotFoundError:
+                pass
+
+        rows = await db_fetch_active_quests(self.state)
+        defs = self._build_defs(rows)
+        if mutate:
+            self._defs = defs
+            self._last_defs_refresh_date = target_date
+        return defs
+
+    async def _refresh_defs_if_needed(self, target_date: date | None = None) -> None:
+        target_date = target_date or now_et().date()
+        if self._last_defs_refresh_date == target_date and self._defs:
+            return
+
+        await self._load_defs_for_date(target_date, mutate=True)
+
+    async def ensure_today_daily_snapshots(self) -> None:
+        today = now_et().date()
+        await self._refresh_defs_if_needed(today)
+        await self._ensure_day_snapshots(self._defs, daily_key(today))
+
+    async def _ensure_day_snapshots(self, defs: dict[str, QuestDef], day_key: str) -> None:
+        daily_rollover_quests = [q for q in defs.values() if q.category == "daily" and q.max_rollover_days > 0]
+        for q in daily_rollover_quests:
+            await db_daily_quest_snapshot_day(
+                self.state,
+                {
+                    "quest_id": q.quest_id,
+                    "reward_payload": q.reward_payload,
+                    "reward_type": q.reward_type,
+                    "target_count": q.target_count,
+                    "day_key": day_key,
+                },
+            )
 
     def next_milestone(self, q: QuestDef, claimed_steps: int) -> Optional[dict]:
         ms = q.milestones
@@ -111,7 +161,7 @@ class QuestManager:
             return slots
         pending = [s for s in slots if not s.get("claimed_at")]
         # If at or above the cap, auto grant the oldest pending slot to keep the queue size stable
-        while len(pending) >= q.max_rollover_days > 0:
+        while len(pending) > q.max_rollover_days > 0:
             oldest = pending.pop(0)
             await self._auto_grant_slot(user_id, oldest)
             stamp = now_et().isoformat()
@@ -171,6 +221,7 @@ class QuestManager:
         return 0, False
 
     async def increment(self, user_id: int, quest_id: str, amount: int = 1) -> Tuple[int, bool]:
+        await self._refresh_defs_if_needed(now_et().date())
         q = self._defs.get(quest_id)
         if not q or not q.active:
             return 0, False
@@ -181,18 +232,37 @@ class QuestManager:
 
     async def fast_forward_daily_rollovers(self, target_date: date) -> int:
         """Ensure rollover-style daily quests have slots up to ``target_date`` for known users."""
-        # Load quest definitions if needed
-        if not self._defs:
-            await self.load_defs()
+        # First, lock in today's snapshot/slots using the already loaded defs so
+        # mid-day quest.json edits don't rewrite the current day's rewards.
+        today = now_et().date()
+        
+        # Use the defs already loaded for today (refreshing if needed) to stamp today's snapshot.
+        await self._refresh_defs_if_needed(today)
+        await self._ensure_day_snapshots(self._defs, daily_key(today))
 
-        daily_rollover_quests = [q for q in self._defs.values() if q.category == "daily" and q.max_rollover_days > 0]
-        if not daily_rollover_quests:
+        daily_rollover_quests_today = [q for q in self._defs.values() if q.category == "daily" and q.max_rollover_days > 0]
+        if not daily_rollover_quests_today:
             return 0
 
         users = await db_daily_quest_list_users(self.state)
         advanced = 0
+
+        # Ensure up through today with the current snapshot (pre-refresh values)
         for uid in users:
-            for q in daily_rollover_quests:
+            for q in daily_rollover_quests_today:
+                await self._ensure_daily_rollover_slots(uid, q, today_date=today)
+                advanced += 1
+
+        # Load (but do not persist as "current") the defs for the target rollover day so future slots
+        # use the latest quests.json without changing today's in-memory defs.
+        future_defs = (
+            self._defs if target_date <= today else await self._load_defs_for_date(target_date, mutate=False)
+        )
+        await self._ensure_day_snapshots(future_defs, daily_key(target_date))
+        daily_rollover_quests_future = [q for q in future_defs.values() if q.category == "daily" and q.max_rollover_days > 0]
+
+        for uid in users:
+            for q in daily_rollover_quests_future:
                 await self._ensure_daily_rollover_slots(uid, q, today_date=target_date)
                 advanced += 1
         return advanced

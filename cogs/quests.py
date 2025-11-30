@@ -64,7 +64,8 @@ class Quests(commands.Cog):
         for row in viewdata:
             q = row["quest"]
             target = row.get("target", q.target_count)
-            bar = fmt_bar(row["progress"], target)
+            show_bar = not (row.get("claimed") and not row.get("rollover_pending"))
+            bar = fmt_bar(row["progress"], target) if show_bar else ""
             if row.get("milestone_mode", False):
                 if row["claimed"] and row["completed"]:
                     state = "✅ All rewards claimed"
@@ -76,13 +77,16 @@ class Quests(commands.Cog):
             else:
                 state = "✅ Claimed" if row["claimed"] else ("🏁 Completed" if row["completed"] else "• In progress")
 
-            if row.get("rollover_pending"):
+            if row.get("rollover_pending", 0) > 1:
                 ready = row.get("rollover_claimables", 0)
                 pending = row.get("rollover_pending", 0)
-                state += f" — {ready} claimable / {pending} day(s) queued"
+                queued_days = max(pending - 1, 0)
+                state += f" — {ready} claimable / {queued_days} day(s) queued"
 
             cat = q.category.capitalize()
-            lines.append(f"**{q.title}** · *{cat}*\n{q.description}\n{bar} — {state}\n")
+            progress_line = f"{bar} — {state}" if show_bar else state
+
+            lines.append(f"**{q.title}** · *{cat}*\n{q.description}\n{progress_line}\n")
         embed.description = "\n".join(lines)
 
         # Claim buttons for anything completed & unclaimed (next milestone)
@@ -113,6 +117,10 @@ class Quests(commands.Cog):
                     #     return
                     ok, msg = await self.outer.qm.claim(inter.user.id, qid)
                     await inter.response.send_message(msg, ephemeral=True)
+                    try:
+                        await inter.message.delete()
+                    except Exception:
+                        pass
 
                 btn.callback = _on_click
                 return btn
