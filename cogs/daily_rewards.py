@@ -13,6 +13,7 @@ from discord.ext import commands
 from core.constants import TEAM_ROLE_NAMES
 from core.currency import mambucks_label
 from core.db import (
+    db_daily_quest_mambuck_reward_for_day,
     db_init_starter_daily_rewards,
     db_starter_daily_get_amount,
     db_starter_daily_get_total,
@@ -42,6 +43,12 @@ def _seconds_until_next_et_midnight() -> float:
     target = datetime.combine(tomorrow, datetime.min.time(), tzinfo=ET)
     return max(1.0, (target - now).total_seconds())
 
+def _quest_day_key_for_previous(day_key: str) -> str | None:
+    try:
+        prev_day = datetime.strptime(day_key, "%Y%m%d").date() - timedelta(days=1)
+    except Exception:
+        return None
+    return f"D:{prev_day.isoformat()}"
 
 class DailyRewards(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -67,14 +74,14 @@ class DailyRewards(commands.Cog):
         day_key = day_key or _today_key_et()
         self._last_grant_day_key = day_key
         amount = db_starter_daily_get_amount(self.bot.state)
-        if amount <= 0:
-            print(
-                f"[daily-rewards] skipped {day_key}: configured amount is {amount} mambucks."
-            )
-            return
+        prev_quest_day_key = _quest_day_key_for_previous(day_key)
+        quest_bonus = db_daily_quest_mambuck_reward_for_day(
+            self.bot.state, prev_quest_day_key
+        ) if prev_quest_day_key else 0
+        total_increment = amount + quest_bonus
 
         total_after, did_total = db_starter_daily_increment_total(
-            self.bot.state, day_key, amount
+            self.bot.state, day_key, total_increment
         )
 
         awarded = 0
@@ -86,24 +93,36 @@ class DailyRewards(commands.Cog):
                 if role:
                     members.update(role.members)
             seen_members += len(members)
-            for member in members:
-                _, did = db_starter_daily_try_grant(
-                    self.bot.state, member.id, day_key, amount
-                )
-                if did:
-                    awarded += 1
+            if amount > 0:
+                for member in members:
+                    _, did = db_starter_daily_try_grant(
+                        self.bot.state, member.id, day_key, amount
+                    )
+                    if did:
+                        awarded += 1
 
-        print(
-            f"[daily-rewards] {day_key}: granted {mambucks_label(amount)} to {awarded} user(s)."
-        )
-        if awarded == 0 and seen_members == 0:
+        if amount > 0:
             print(
-                "[daily-rewards] warning: no Fire/Water members seen in cache; "
-                "grants will be skipped until role membership is available."
+                f"[daily-rewards] {day_key}: granted {mambucks_label(amount)} to {awarded} user(s)."
             )
+            if awarded == 0 and seen_members == 0:
+                print(
+                    "[daily-rewards] warning: no Fire/Water members seen in cache; "
+                    "grants will be skipped until role membership is available."
+                )
+            else:
+                print(
+                    f"[daily-rewards] {day_key}: skipped member grants; configured amount is {amount} mambucks."
+                )
         if did_total:
+            quest_note = (
+                f" (+{mambucks_label(quest_bonus)} from prior daily quests)"
+                if quest_bonus > 0
+                else ""
+            )
             print(
                 f"[daily-rewards] {day_key}: total mambucks awarded now {mambucks_label(total_after)}."
+                f"[daily-rewards] {day_key}: total daily earnable now {mambucks_label(total_after)}{quest_note}."
             )
 
     async def run_midnight_grant(self, *, day_key: str | None = None):
@@ -167,7 +186,7 @@ class DailyRewards(commands.Cog):
     # --- Admin: totals ------------------------------------------------------
     @app_commands.command(
         name="daily_mambucks_total",
-        description="(Admin) View the running total of daily mambucks awarded",
+        description="(Admin) View the running total of daily mambucks earnable per user",
     )
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
@@ -177,13 +196,13 @@ class DailyRewards(commands.Cog):
 
         total = db_starter_daily_get_total(self.bot.state)
         await interaction.followup.send(
-            f"Total daily mambucks awarded: **{mambucks_label(total)}**.",
+            f"Total daily mambucks earnable per user: **{mambucks_label(total)}**.",
             ephemeral=True,
         )
 
     @app_commands.command(
         name="daily_mambucks_reset_total",
-        description="(Admin) Reset the running total of daily mambucks awarded",
+        description="(Admin) Reset the running total of daily mambucks earnable per user",
     )
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)
@@ -193,7 +212,7 @@ class DailyRewards(commands.Cog):
 
         db_starter_daily_reset_total(self.bot.state)
         await interaction.followup.send(
-            "Daily mambucks awarded total has been reset to 0.",
+            "Daily mambucks earnable total has been reset to 0.",
             ephemeral=True,
         )
 

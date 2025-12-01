@@ -1204,6 +1204,56 @@ def db_starter_daily_get_total(state) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
+def db_daily_quest_mambuck_reward_for_day(state, day_key: str) -> int:
+    """Return the total mambucks earnable from daily quest rewards for ``day_key``.
+
+    This sums mambuck amounts from the per-day quest snapshots in ``daily_quest_days``
+    for the provided ``day_key`` (e.g., ``"D:2024-01-01"``). Milestone-style quests
+    add all mambuck milestone rewards; single-step quests add the payload ``amount``
+    when the reward type is ``mambucks``. Any malformed payloads simply contribute 0.
+    """
+
+    if not day_key:
+        return 0
+
+    def _sum_row(row: tuple[str | None, str | None]) -> int:
+        reward_type, payload_json = row
+        try:
+            payload = json.loads(payload_json or "{}")
+        except Exception:
+            payload = {}
+
+        milestones = payload.get("milestones") if isinstance(payload, dict) else None
+        total = 0
+
+        if isinstance(milestones, list) and milestones:
+            for ms in milestones:
+                reward = ms.get("reward") if isinstance(ms, dict) else None
+                if isinstance(reward, dict) and (reward.get("type") or "").lower() == "mambucks":
+                    try:
+                        total += int(reward.get("amount", 0) or 0)
+                    except Exception:
+                        continue
+            return total
+
+        if (reward_type or "").lower() == "mambucks" and isinstance(payload, dict):
+            try:
+                total += int(payload.get("amount", 0) or 0)
+            except Exception:
+                pass
+        return total
+
+    try:
+        with sqlite3.connect(state.db_path) as conn:
+            rows = conn.execute(
+                "SELECT reward_type, reward_payload FROM daily_quest_days WHERE day_key=?",
+                (day_key,),
+            ).fetchall()
+    except Exception:
+        return 0
+
+    return sum(_sum_row(r) for r in rows)
+
 def db_starter_daily_reset_total(state) -> int:
     now = int(time.time())
     with sqlite3.connect(state.db_path) as conn, conn:
