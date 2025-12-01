@@ -111,16 +111,18 @@ class Quests(commands.Cog):
 
                 # capture quest_id via default arg to avoid late-binding bug
                 async def _on_click(inter: discord.Interaction, qid=quest_id):
+                    await inter.response.defer(ephemeral=True)
                     # optional: restrict to the original requester
                     # if inter.user.id != interaction.user.id:
                     #     await inter.response.send_message("This panel isn’t for you.", ephemeral=True)
                     #     return
                     ok, msg = await self.outer.qm.claim(inter.user.id, qid)
-                    await inter.response.send_message(msg, ephemeral=True)
                     try:
-                        await inter.message.delete()
-                    except Exception:
-                        pass
+                        await inter.delete_original_response()
+                    except discord.HTTPException:
+                        # Fallback in case the message cannot be deleted (e.g., ephemeral deletion unsupported)
+                        await inter.edit_original_response(content=None, embed=None, view=None)
+                    await inter.followup.send(msg, ephemeral=True)
 
                 btn.callback = _on_click
                 return btn
