@@ -320,17 +320,66 @@ class ConfirmSpendView(discord.ui.View):
             button.callback = partial(self._handle_payment, option)
             self.add_item(button)
 
+    async def _edit_interaction_message(
+        self,
+        interaction: discord.Interaction,
+        *,
+        content: str | None = None,
+        view: discord.ui.View | None = None,
+    ) -> None:
+        """Safely edit the original interaction message.
 
-    async def remove_ui(self, interaction: discord.Interaction, content: str | None = None):
+        The view callbacks may have already deferred the response, so we attempt
+        to edit via the response first and then fall back to editing the
+        original message. Errors are intentionally suppressed to avoid
+        triggering the refund path in the caller.
+        """
+
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(content=content, view=view)
+            else:
+                await interaction.edit_original_response(content=content, view=view)
+        except Exception:
+            try:
+                if interaction.message:
+                    await interaction.message.edit(content=content, view=view)
+            except Exception:
+                pass
+
+    async def _delete_interaction_message(self, interaction: discord.Interaction) -> bool:
+        """Best-effort deletion of the interaction's original message."""
+
+        try:
+            await interaction.delete_original_response()
+            return True
+        except Exception:
+            pass
+
+        try:
+            if interaction.message:
+                await interaction.message.delete()
+                return True
+        except Exception:
+            pass
+
+        return False
+    
+    async def remove_ui(
+        self,
+        interaction: discord.Interaction,
+        content: str | None = None,
+        *,
+        delete_message: bool = False,
+    ):
         self.stop()
         for item in self.children:
             item.disabled = True
-        try:
-            await interaction.response.edit_message(content=content, view=None)
-        except discord.InteractionResponded:
-            await interaction.message.edit(content=content, view=None)
-        except Exception:
-            pass
+        deleted = False
+        if delete_message:
+            deleted = await self._delete_interaction_message(interaction)
+        if not deleted:
+            await self._edit_interaction_message(interaction, content=content, view=None)
 
     async def _handle_payment(self, option: PaymentOption, interaction: discord.Interaction):
         if interaction.user.id != self.requester.id:
@@ -351,6 +400,17 @@ class ConfirmSpendView(discord.ui.View):
                 pass
 
         desc = self.display_description or f"**{self.amount}** pack(s) of **{self.pack_name}**"
+
+        # Disable buttons and show the processing state on the message so that
+        # repeated clicks do not trigger refunds.
+        for item in self.children:
+            item.disabled = True
+        await self._edit_interaction_message(
+            interaction,
+            content=f"Processing your purchase of {desc}…",
+            view=self,
+        )
+
         balance_after: str | None = None
         spent = False
 
@@ -384,7 +444,7 @@ class ConfirmSpendView(discord.ui.View):
                 await interaction.channel.send(
                     f"💰 Remaining balance → **{balance_after}**."
                 )
-            await self.remove_ui(interaction)
+            await self.remove_ui(interaction, delete_message=True)
         except Exception:
             # refund Mambucks on failure
             if spent:
