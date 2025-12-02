@@ -1,8 +1,14 @@
-PACK_COST=10
-BOX_COST=200
+import os
+
+PACK_COST=int(os.getenv("PACK_MAMBUCK_COST","10"))
+PACK_SHARD_COST=int(os.getenv("PACK_SHARD_COST", "100"))
+BOX_COST=int(os.getenv("BOX_MAMBUCK_COST","200"))
+BOX_SHARD_COST=int(os.getenv("BOX_SHARD_COST", "2000"))
 PACKS_IN_BOX=24
-BUNDLE_BOX_COST=350
-TIN_COST=80
+BUNDLE_BOX_COST=int(os.getenv("BUNDLE_MAMBUCK_COST","350"))
+BUNDLE_BOX_SHARD_COST=int(os.getenv("BUNDLE_SHARD_COST", "3500"))
+TIN_COST=int(os.getenv("TIN_MAMBUCK_COST","80"))
+TIN_SHARD_COST=int(os.getenv("TIN_SHARD_COST", "800"))
 FROSTFIRE_BUNDLE_NAME="Frostfire Bundle"
 SANDSTORM_BUNDLE_NAME="Sandstorm Bundle"
 SALE_DISCOUNT_PCT=10
@@ -83,12 +89,14 @@ BUNDLES = (
         "id": "frostfire",
         "name": FROSTFIRE_BUNDLE_NAME,
         "cost": BUNDLE_BOX_COST,
+        "shard_cost": BUNDLE_BOX_SHARD_COST,
         "set_id": 1,
     },
     {
         "id": "sandstorm",
         "name": SANDSTORM_BUNDLE_NAME,
         "cost": BUNDLE_BOX_COST,
+        "shard_cost": BUNDLE_BOX_SHARD_COST,
         "set_id": 2,
     },
 )

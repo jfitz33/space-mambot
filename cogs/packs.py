@@ -12,17 +12,22 @@ from discord.ext import commands
 
 from core.constants import (
     BOX_COST,
+    BOX_SHARD_COST,
     PACK_COST,
+    PACK_SHARD_COST,
     PACKS_IN_BOX,
     BUNDLES,
     BUNDLE_NAME_INDEX,
     TIN_COST,
+    TIN_SHARD_COST,
     pack_names_for_set,
+    set_id_for_pack,
 )
 from core.views import PacksSelectView, ConfirmSpendView, _pack_embed_for_cards
 from core.images import card_art_path_for_card
 from core.db import db_add_cards
 from core.packs import open_box_from_csv, open_pack_from_csv
+from core.purchase_options import format_payment_options, payment_options_for_set
 
 # API and pack csv details
 YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -110,6 +115,14 @@ class TinSelectionView(discord.ui.View):
         pack_name = self.selected_pack
         tin_name = self.selected_tin
 
+        set_id = set_id_for_pack(pack_name)
+        payment_options = payment_options_for_set(
+            set_id,
+            mambuck_cost=TIN_COST,
+            shard_cost=TIN_SHARD_COST,
+        )
+        payment_text = format_payment_options(payment_options)
+
         confirm_view = ConfirmSpendView(
             state=self.state,
             requester=self.requester,
@@ -122,13 +135,13 @@ class TinSelectionView(discord.ui.View):
                 pack_choice=pack_name,
                 packs_in_tin=5,
             ),
-            total_cost=TIN_COST,
+            payment_options=payment_options,
             display_description=f"**{tin_name}** containing **{promo_name}** and **{pack_name}**",
         )
 
         prompt = (
-            f"Are you sure you want to spend {TIN_COST} mambucks on the {tin_name} "
-            f"containing {promo_name} and {pack_name}?"
+            f"Purchase the **{tin_name}** containing {promo_name} and {pack_name}?\n"
+            f"Payment options:\n{payment_text}"
         )
 
         await interaction.response.edit_message(content=prompt, view=confirm_view)

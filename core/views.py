@@ -5,18 +5,34 @@ from functools import partial
 import discord, asyncio
 from discord.ui import View, Select, button, Button
 from core.packs import RARITY_ORDER, open_pack_from_csv, open_box_from_csv, normalize_rarity
-from core.db import (db_add_cards, db_wallet_add, db_wallet_try_spend_mambucks,
-                     db_collection_remove_exact_print, _blank_to_none,
-                     db_collection_debug_dump, db_shards_add, db_fragment_yield_for_card)
+from core.db import (
+    db_add_cards,
+    db_wallet_add,
+    db_wallet_try_spend_mambucks,
+    db_collection_remove_exact_print,
+    _blank_to_none,
+    db_collection_debug_dump,
+    db_shards_add,
+    db_shards_try_spend,
+    db_fragment_yield_for_card,
+)
 from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
 from core.pricing import craft_cost_for_card
 from core.images import compose_pack_strip_image, rarity_badge
 from core.constants import (
     PACK_COST,
+    PACK_SHARD_COST,
     PACKS_IN_BOX,
     BOX_COST,
+    BOX_SHARD_COST,
     BUNDLES,
     set_id_for_pack,
+)
+from core.currency import shards_label
+from core.purchase_options import (
+    PaymentOption,
+    format_payment_options,
+    payment_options_for_set,
 )
 from typing import List, Tuple, Optional, Literal, Any
 
@@ -275,6 +291,7 @@ class ConfirmSpendView(discord.ui.View):
         amount,
         on_confirm,
         total_cost: int | None = None,
+        payment_options: list[PaymentOption] | None = None,
         *,
         timeout: float = 90,
         display_description: str | None = None,
@@ -286,8 +303,23 @@ class ConfirmSpendView(discord.ui.View):
         self.amount = amount
         self.on_confirm = on_confirm
         self.total_cost = total_cost
+        self.payment_options: list[PaymentOption] = list(payment_options or [])
         self.display_description = display_description
         self._processing = False
+
+        if not self.payment_options:
+            # fallback if you still use PACK_COST * amount pattern elsewhere
+            from core.constants import PACK_COST
+
+            fallback_cost = int(total_cost or (self.amount * PACK_COST))
+            self.payment_options = [PaymentOption(currency="mambucks", amount=fallback_cost)]
+
+        for idx, option in enumerate(self.payment_options):
+            style = discord.ButtonStyle.success if idx == 0 else discord.ButtonStyle.primary
+            button = discord.ui.Button(label=option.button_label[:80], style=style)
+            button.callback = partial(self._handle_payment, option)
+            self.add_item(button)
+
 
     async def remove_ui(self, interaction: discord.Interaction, content: str | None = None):
         self.stop()
@@ -300,9 +332,7 @@ class ConfirmSpendView(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
-    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from core.db import db_wallet_try_spend_mambucks, db_wallet_add
+    async def _handle_payment(self, option: PaymentOption, interaction: discord.Interaction):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
 
@@ -314,44 +344,60 @@ class ConfirmSpendView(discord.ui.View):
             return
         self._processing = True
 
-        await self.remove_ui(interaction, content="Processing…")
-        try:
-            await interaction.followup.defer(ephemeral=True)
-        except Exception:
-            pass
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
 
-        total_cost = int(self.total_cost or 0)
-        if total_cost <= 0:
-            # fallback if you still use PACK_COST * amount pattern elsewhere
-            from core.constants import PACK_COST
-            total_cost = self.amount * PACK_COST
-
-        after_spend = db_wallet_try_spend_mambucks(self.state, self.requester.id, total_cost)
-        if after_spend is None:
-            self._processing = False
-            desc = self.display_description or f"**{self.amount}** pack(s) of **{self.pack_name}**"
-            return await interaction.followup.send(
-                f"❌ Not enough **Mambucks** to open {desc}.\n"
-                f"Cost: **{total_cost}**.",
-                ephemeral=True
-            )
+        desc = self.display_description or f"**{self.amount}** pack(s) of **{self.pack_name}**"
+        balance_after: str | None = None
+        spent = False
 
         try:
+            if option.currency == "shards":
+                after_spend = db_shards_try_spend(
+                    self.state, self.requester.id, int(option.set_id or 0), int(option.amount)
+                )
+                if after_spend is None:
+                    self._processing = False
+                    return await interaction.followup.send(
+                        f"❌ Not enough **{option.cost_label}** to open {desc}.",
+                        ephemeral=True,
+                    )
+                balance_after = shards_label(int(after_spend.get("shards", 0)), int(option.set_id or 0))
+                spent = True
+            else:
+                after_spend = db_wallet_try_spend_mambucks(self.state, self.requester.id, int(option.amount))
+                if after_spend is None:
+                    self._processing = False
+                    return await interaction.followup.send(
+                        f"❌ Not enough **Mambucks** to open {desc}.\n"
+                        f"Cost: **{option.amount}**.",
+                        ephemeral=True,
+                    )
+                balance_after = f"{after_spend['mambucks']} Mambucks"
+                spent = True
             await self.on_confirm(interaction, self.state, self.requester, self.pack_name, self.amount)
             # (channel could be None for DMs)
-            if interaction.channel:
+            if interaction.channel and balance_after:
                 await interaction.channel.send(
-                    f"💰 Remaining balance → **{after_spend['mambucks']}** Mambucks."
+                    f"💰 Remaining balance → **{balance_after}**."
                 )
+            await self.remove_ui(interaction)
         except Exception:
             # refund Mambucks on failure
-            db_wallet_add(self.state, self.requester.id, d_mambucks=total_cost)
+            if spent:
+                if option.currency == "shards":
+                    db_shards_add(self.state, self.requester.id, int(option.set_id or 0), int(option.amount))
+                else:
+                    db_wallet_add(self.state, self.requester.id, d_mambucks=int(option.amount))
             await interaction.followup.send("⚠️ Something went wrong opening packs. You were not charged.", ephemeral=True)
             raise
         finally:
             self._processing = False
 
-    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
@@ -922,6 +968,16 @@ class PacksSelectView(discord.ui.View):
             preview_names = ", ".join(pack_labels[:10])
             if len(pack_labels) > 10:
                 preview_names += ", …"
+            
+            set_id = bundle_info.get("set_id")
+            bundle_cost = int(bundle_info.get("cost", 0))
+            bundle_shard_cost = int(bundle_info.get("shard_cost", bundle_cost))
+            payment_opts = payment_options_for_set(
+                set_id,
+                mambuck_cost=bundle_cost,
+                shard_cost=bundle_shard_cost,
+            )
+            payment_text = format_payment_options(payment_opts)
 
             confirm_view = ConfirmSpendView(
                 state=self.state,
@@ -929,14 +985,14 @@ class PacksSelectView(discord.ui.View):
                 pack_name=bundle_name,
                 amount=1,
                 on_confirm=partial(self._open_bundle, bundle_info=bundle_info),
-                total_cost=bundle_info.get("cost", 0),
+                payment_options=payment_opts,
                 display_description=f"**the {bundle_name}**",
             )
 
-            set_id = bundle_info.get("set_id")
             set_text = f"Set {set_id}" if set_id is not None else "this bundle"
             message = (
-                f"Open the **{bundle_name}** for **{bundle_info.get('cost', 0)}** Mambucks?\n"
+                f"Open the **{bundle_name}**?\n"
+                f"Payment options:\n{payment_text}\n"
                 f"This grants one box ({PACKS_IN_BOX} packs) of each available pack in {set_text} ({len(pack_entries)} total)."
             )
             if preview_names:
@@ -946,17 +1002,26 @@ class PacksSelectView(discord.ui.View):
             return
 
         if self.mode == "box":
+            set_id = set_id_for_pack(pack_name)
+            payment_opts = payment_options_for_set(
+                set_id,
+                mambuck_cost=BOX_COST,
+                shard_cost=BOX_SHARD_COST,
+            )
+            payment_text = format_payment_options(payment_opts)
+
             confirm_view = ConfirmSpendView(
                 state=self.state,
                 requester=self.requester,
                 pack_name=pack_name,
                 amount=PACKS_IN_BOX,
                 on_confirm=self._open_box_and_render,
-                total_cost=BOX_COST,
+                payment_options=payment_opts,
             )
             await interaction.response.edit_message(
                 content=(
-                    f"Open a **box** of **{pack_name}** for **{BOX_COST}** Mambucks?\n"
+                    f"Open a **box** of **{pack_name}**?\n"
+                    f"Payment options:\n{payment_text}\n"
                     f"That’s **{PACKS_IN_BOX}** packs with guarantees:\n"
                     f"• Packs 1–18: Super Rare\n"
                     f"• Packs 19–23: Ultra Rare\n"
@@ -965,22 +1030,33 @@ class PacksSelectView(discord.ui.View):
                 view=confirm_view
             )
         else:
-            total_cost = self.amount * PACK_COST
+            set_id = set_id_for_pack(pack_name)
+            total_cost_mambucks = self.amount * PACK_COST
+            total_cost_shards = self.amount * PACK_SHARD_COST
+            payment_opts = payment_options_for_set(
+                set_id,
+                mambuck_cost=total_cost_mambucks,
+                shard_cost=total_cost_shards,
+            )
+            payment_text = format_payment_options(payment_opts)
             confirm_view = ConfirmSpendView(
                 state=self.state,
                 requester=self.requester,
                 pack_name=pack_name,
                 amount=self.amount,
-                on_confirm=self._open_and_render
+                on_confirm=self._open_and_render,
+                payment_options=payment_opts,
             )
             await interaction.response.edit_message(
-                content=(f"Are you sure you want to spend **{total_cost}** Mambucks on "
-                         f"**{self.amount}** pack(s) of **{pack_name}**?"),
+                content=(
+                    f"Open **{self.amount}** pack(s) of **{pack_name}**?\n"
+                    f"Payment options:\n{payment_text}"
+                ),
                 view=confirm_view
             )
 
     async def _open_and_render(self, interaction: discord.Interaction, state, requester, pack_name: str, amount: int):
-        # ConfirmSpendView has already charged Mambucks and will refund on exceptions.
+        # ConfirmSpendView has already charged the user and will refund on exceptions.
         per_pack: list[list[dict]] = []
         for _ in range(amount):
             per_pack.append(open_pack_from_csv(state, pack_name, 1))
@@ -1050,7 +1126,7 @@ class PacksSelectView(discord.ui.View):
         pack_name: str,
         amount: int | None = None,   # not used; ConfirmSpendView passes PACKS_IN_BOX in .amount
     ):
-        # ConfirmSpendView has already charged Mambucks and will refund on exceptions.
+        # ConfirmSpendView has already charged the user and will refund on exceptions.
         per_pack = open_box_from_csv(state, pack_name)
 
         # persist the cards

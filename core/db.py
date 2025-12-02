@@ -1504,6 +1504,39 @@ def db_shards_add(state, user_id: int, set_id: int, d_shards: int) -> None:
             (d, str(user_id), int(set_id))
         )
 
+def db_shards_try_spend(state, user_id: int, set_id: int, amount: int) -> dict | None:
+    """Atomically spend ``amount`` shards for ``set_id`` if the user has enough.
+
+    Returns ``{"shards": int}`` with the new balance for the given set, or ``None``
+    if the user lacks sufficient shards.
+    """
+    amt = int(amount or 0)
+    if amt <= 0:
+        return {"shards": db_shards_get(state, user_id, set_id)}
+
+    with conn(state.db_path) as c, c:
+        c.execute(
+            "INSERT OR IGNORE INTO wallet_shards(user_id,set_id,shards) VALUES (?,?,0)",
+            (str(user_id), int(set_id))
+        )
+        cur = c.execute(
+            """
+            UPDATE wallet_shards
+               SET shards = shards - ?
+             WHERE user_id = ?
+               AND set_id  = ?
+               AND shards  >= ?;
+            """,
+            (amt, str(user_id), int(set_id), amt),
+        )
+        if cur.rowcount == 0:
+            return None
+        new_row = c.execute(
+            "SELECT shards FROM wallet_shards WHERE user_id=? AND set_id=?",
+            (str(user_id), int(set_id))
+        ).fetchone()
+        return {"shards": int(new_row[0] or 0)} if new_row else None
+
 def db_collection_list_for_bulk_fragment(
     state,
     user_id: int,
