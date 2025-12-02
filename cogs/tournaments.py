@@ -49,7 +49,7 @@ DROP_ELIGIBLE_TOURNAMENT_STATES = {"pending", "checking_in"}
 DROP_DISCOVERY_TOURNAMENT_STATES = (
     ACTIVE_TOURNAMENT_STATES | DROP_ELIGIBLE_TOURNAMENT_STATES
 )
-
+DECKLIST_ELIGIBLE_TOURNAMENT_STATES = ACTIVE_TOURNAMENT_STATES | {"complete"}
 
 def _parse_challonge_timestamp(value: object) -> float:
     """Return a comparable timestamp value from Challonge API fields."""
@@ -2135,6 +2135,40 @@ class Tournaments(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        try:
+            tournaments = await self._fetch_active_tournaments(
+                allowed_states=DECKLIST_ELIGIBLE_TOURNAMENT_STATES
+            )
+        except RuntimeError:
+            tournaments = []
+            self.logger.exception("Failed to fetch tournaments for decklist retrieval")
+
+        if tournaments:
+            active_identifiers = {
+                identifier
+                for tournament in tournaments
+                for identifier in [self._resolve_tournament_identifier(tournament)]
+                if identifier
+            }
+
+            filtered_entries = [
+                entry
+                for entry in entries
+                if str(entry.get("tournament_id") or "") in active_identifiers
+            ]
+
+            if not filtered_entries:
+                await interaction.response.send_message(
+                    (
+                        "No saved decklists for pending, active, or completed"
+                        " tournaments could be found."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            entries = filtered_entries
 
         if len(entries) == 1:
             await interaction.response.send_message(

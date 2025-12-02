@@ -294,7 +294,6 @@ def db_list_user_tournament_decklists(
             FROM tournament_decklists
             WHERE user_id = ?
             ORDER BY updated_ts DESC
-            LIMIT 25
             """,
             (str(user_id),),
         )
