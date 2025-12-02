@@ -21,6 +21,7 @@ import core.db as db
 # Craft costs + rarity helper
 from core.constants import CRAFT_COST_BY_RARITY, SALE_DISCOUNT_PCT, SALE_LAYOUT
 from core.cards_shop import get_card_rarity  # normalizes rarity across your data
+from core.tins import is_tin_promo_print
 
 ET = ZoneInfo("America/New_York")
 DISCOUNT_PCT = SALE_DISCOUNT_PCT
@@ -129,6 +130,8 @@ class Sales(commands.Cog):
                         # Only include craftable rarities (must have base cost)
                         base_cost = CRAFT_COST_BY_RARITY.get(rarity)
                         if base_cost:
+                            if is_tin_promo_print(self.state, card, set_name=pack_name):
+                                continue
                             # stash minimal info + where it came from
                             buckets[rarity].append({
                                 "card": card,

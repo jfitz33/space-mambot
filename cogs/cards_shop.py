@@ -14,6 +14,7 @@ from core.cards_shop import (
     is_starter_card,
     is_starter_set,
 )
+from core.tins import is_tin_promo_print
 from core.constants import (
     CRAFT_COST_BY_RARITY, SHARD_YIELD_BY_RARITY, set_id_for_pack, 
     RARITY_ORDER, RARITY_ALIASES, FRAGMENTABLE_RARITIES
@@ -52,6 +53,8 @@ def suggest_prints_with_set(state, query: str, limit: int = 25):
             continue
         if is_starter_set(set_):
             continue
+        if is_tin_promo_print(state, card, set_name=set_):
+            continue
         sig = _sig_for_resolution(name, rarity, code, cid)
 
         # scoring: prefer has_set, then has_code, then has_id
@@ -67,6 +70,8 @@ def suggest_prints_with_set(state, query: str, limit: int = 25):
         if not set_present:
             continue
         if is_starter_set(set_present):
+            continue
+        if is_tin_promo_print(state, card, set_name=set_present):
             continue
         out.append(app_commands.Choice(name=card_label(card), value=k))
         if len(out) >= limit:
@@ -369,10 +374,12 @@ class CardsShop(commands.Cog):
             return await interaction.response.send_message("This printing is missing a set and can’t be crafted.", ephemeral=True)
         if is_starter_set(set_present):
             return await interaction.response.send_message("❌ Starter deck cards cannot be crafted.", ephemeral=True)
+        if is_tin_promo_print(self.state, c, set_name=set_present):
+            return await interaction.response.send_message("❌ Tin promo cards cannot be crafted.", ephemeral=True)
 
         rarity = get_card_rarity(c)
         price_each, sale_row = craft_cost_for_card(self.state, c, set_present)
-        if rarity == "starlight" or price_each is None:
+        if rarity == "starlight" or not price_each:
             return await interaction.response.send_message("❌ This printing cannot be crafted.", ephemeral=True)
         total = price_each * amount
         # Reuse your existing confirmation view (performs wallet debit + award)
