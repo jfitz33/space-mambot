@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 from datetime import datetime
 from core.db import db_sales_get_for_day
+from core.tins import is_tin_promo_print
 from core.constants import CRAFT_COST_BY_RARITY, SALE_DISCOUNT_PCT
 
 ET = ZoneInfo("America/New_York")
@@ -18,6 +19,9 @@ def _norm(s: Optional[str]) -> str:
 
 def craft_cost_for_card(state, card: dict, set_name: str, *, on_day: Optional[str] = None) -> Tuple[int, Optional[dict]]:
     """Return (cost_each_shards, sale_row_or_None) honoring today's sale if this card matches."""
+    if is_tin_promo_print(state, card, set_name=set_name):
+        return (0, None)
+
     rarity = _norm(card.get("rarity") or card.get("cardrarity")).lower()
     base = int(CRAFT_COST_BY_RARITY.get(rarity, 0))
     if base <= 0:
