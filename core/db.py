@@ -63,6 +63,18 @@ def db_init(state: AppState):
             updated_ts REAL NOT NULL DEFAULT (strftime('%s','now'))
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS tournament_decklists (
+            tournament_id   TEXT NOT NULL,
+            user_id         TEXT NOT NULL,
+            tournament_name TEXT,
+            deck_main       TEXT NOT NULL,
+            deck_extra      TEXT NOT NULL,
+            deck_side       TEXT NOT NULL,
+            updated_ts      REAL NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (tournament_id, user_id)
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
 
@@ -196,6 +208,112 @@ def db_admin_remove_card(state: AppState, user_id: int, *, name: str, rarity: st
         if removed > 0:
             _binder_reduce_with_conn(conn, user_id, name, rarity, card_set, code_norm, id_norm, removed)
         return (removed, new_qty)
+
+def _dump_section(cards: List[str]) -> str:
+    return json.dumps(cards or [])
+
+
+def _load_section(raw: str) -> List[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except Exception:
+        return []
+    return value if isinstance(value, list) else []
+
+
+def db_save_tournament_decklist(
+    state: AppState,
+    tournament_id: str,
+    user_id: int,
+    *,
+    tournament_name: str | None,
+    deck_sections: Dict[str, List[str]],
+) -> None:
+    main = _dump_section(deck_sections.get("main", []))
+    extra = _dump_section(deck_sections.get("extra", []))
+    side = _dump_section(deck_sections.get("side", []))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO tournament_decklists (
+                tournament_id, user_id, tournament_name, deck_main, deck_extra, deck_side
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tournament_id, user_id) DO UPDATE SET
+                tournament_name=excluded.tournament_name,
+                deck_main=excluded.deck_main,
+                deck_extra=excluded.deck_extra,
+                deck_side=excluded.deck_side,
+                updated_ts=strftime('%s','now');
+            """,
+            (
+                tournament_id,
+                str(user_id),
+                tournament_name,
+                main,
+                extra,
+                side,
+            ),
+        )
+
+
+def db_get_tournament_decklist(
+    state: AppState, tournament_id: str, user_id: int
+) -> Optional[Dict[str, List[str]]]:
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT tournament_name, deck_main, deck_extra, deck_side
+            FROM tournament_decklists
+            WHERE tournament_id = ? AND user_id = ?
+            """,
+            (tournament_id, str(user_id)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        tournament_name, main_raw, extra_raw, side_raw = row
+        return {
+            "tournament_id": tournament_id,
+            "tournament_name": tournament_name,
+            "deck_sections": {
+                "main": _load_section(main_raw),
+                "extra": _load_section(extra_raw),
+                "side": _load_section(side_raw),
+            },
+        }
+
+
+def db_list_user_tournament_decklists(
+    state: AppState, user_id: int
+) -> List[Dict[str, Any]]:
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT tournament_id, tournament_name, deck_main, deck_extra, deck_side
+            FROM tournament_decklists
+            WHERE user_id = ?
+            ORDER BY updated_ts DESC
+            LIMIT 25
+            """,
+            (str(user_id),),
+        )
+        rows = cur.fetchall() or []
+
+    entries: List[Dict[str, Any]] = []
+    for tournament_id, tournament_name, main_raw, extra_raw, side_raw in rows:
+        entries.append(
+            {
+                "tournament_id": tournament_id,
+                "tournament_name": tournament_name,
+                "deck_sections": {
+                    "main": _load_section(main_raw),
+                    "extra": _load_section(extra_raw),
+                    "side": _load_section(side_raw),
+                },
+            }
+        )
+    return entries
 
 # --- Helper functions for selling to shop ---
 

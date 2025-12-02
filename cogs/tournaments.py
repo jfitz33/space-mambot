@@ -22,7 +22,13 @@ import requests
 from core.banlist import load_banlist
 from core.cards_shop import fetch_card_details_by_id, find_card_name_by_id
 from core.deck_render import DeckCardEntry, render_deck_section_image
-from core.db import db_get_collection, db_stats_record_loss, db_stats_revert_result
+from core.db import (
+    db_get_collection,
+    db_list_user_tournament_decklists,
+    db_save_tournament_decklist,
+    db_stats_record_loss,
+    db_stats_revert_result,
+)
 from core.state import AppState
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -2040,6 +2046,21 @@ class Tournaments(commands.Cog):
             )
             return
         
+        try:
+            db_save_tournament_decklist(
+                self.state,
+                identifier,
+                interaction.user.id,
+                tournament_name=tournament_name,
+                deck_sections=deck_sections,
+            )
+        except Exception:
+            self.logger.exception("Failed to store tournament decklist")
+            await dm_channel.send(
+                "I couldn't record your decklist due to a database error. Please try again later."
+            )
+            return
+
         if is_resubmission:
             await dm_channel.send(
                 f"Thanks for resubmitting your deck for **{tournament_name}**. I've recorded this updated list."
@@ -2087,6 +2108,60 @@ class Tournaments(commands.Cog):
                 invalid_lines,
                 deck_sections,
             )
+
+    @app_commands.command(
+        name="get_decklist",
+        description="(Admin) Retrieve a saved tournament decklist for a player.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(player="Player whose decklist should be posted")
+    async def get_decklist(
+        self, interaction: discord.Interaction, player: discord.Member
+    ) -> None:
+        channel = interaction.channel
+        if channel is None:
+            await interaction.response.send_message(
+                "I couldn't find a channel to post that decklist.",
+                ephemeral=True,
+            )
+            return
+
+        entries = db_list_user_tournament_decklists(self.state, player.id)
+        if not entries:
+            await interaction.response.send_message(
+                f"No saved decklists were found for {player.display_name}.",
+                ephemeral=True,
+            )
+            return
+
+        if len(entries) == 1:
+            await interaction.response.send_message(
+                f"Posting the saved decklist for {player.display_name} in this channel…",
+                ephemeral=True,
+            )
+            try:
+                await self._send_saved_decklist(
+                    channel=channel, member=player, deck_entry=entries[0]
+                )
+            except Exception:
+                self.logger.exception("Failed to post saved decklist")
+                await interaction.followup.send(
+                    "I couldn't post that decklist due to an error.", ephemeral=True
+                )
+            return
+
+        view = TournamentDecklistSelectView(self, player, entries, channel)
+        await interaction.response.send_message(
+            f"Select which decklist for {player.display_name} to post:",
+            view=view,
+            ephemeral=True,
+        )
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            self.logger.exception("Failed to capture decklist selection message")
 
     async def _send_deck_results(
         self,
@@ -2184,6 +2259,31 @@ class Tournaments(commands.Cog):
         await self._send_deck_images(channel, deck_sections, metadata)
 
         return True
+
+    async def _send_saved_decklist(
+        self,
+        *,
+        channel: discord.abc.Messageable,
+        member: discord.Member | discord.User,
+        deck_entry: dict,
+    ) -> None:
+        deck_sections = deck_entry.get("deck_sections") or {}
+        card_ids: list[str] = []
+        for section_cards in deck_sections.values():
+            card_ids.extend(section_cards or [])
+
+        metadata, _invalid = await self._resolve_card_metadata(card_ids, {})
+        tournament_label = (
+            deck_entry.get("tournament_name")
+            or deck_entry.get("tournament_id")
+            or "Tournament"
+        )
+
+        await channel.send(
+            f"Decklist for {member.mention} in **{tournament_label}**",
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        await self._send_deck_images(channel, deck_sections, metadata)
 
 
 class TournamentDropSelect(discord.ui.Select):
@@ -2465,6 +2565,132 @@ class TournamentJoinSelectView(discord.ui.View):
             )
         except Exception:
             self.cog.logger.exception("Failed to update tournament selection message on timeout")
+
+class TournamentDecklistSelect(discord.ui.Select):
+    def __init__(self, view: "TournamentDecklistSelectView", options: list[discord.SelectOption]):
+        super().__init__(
+            placeholder="Select a tournament…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.parent_view = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_value = self.values[0]
+        entry = self.parent_view.entry_map.get(selected_value)
+        if not entry:
+            await interaction.response.send_message(
+                "The selected decklist is no longer available.",
+                ephemeral=True,
+            )
+            return
+
+        self.parent_view.disable_all_items()
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception:
+            self.parent_view.cog.logger.exception("Failed to defer decklist selection response")
+            return
+
+        try:
+            await self.parent_view.cog._send_saved_decklist(
+                channel=self.parent_view.channel,
+                member=self.parent_view.player,
+                deck_entry=entry,
+            )
+        except Exception:
+            self.parent_view.cog.logger.exception("Failed to post saved decklist")
+            await interaction.followup.send(
+                "I couldn't post that decklist due to an error.",
+                ephemeral=True,
+            )
+            await self.parent_view.finalize_message(
+                "Posting decklist failed. Please try again.", include_notes=False
+            )
+            self.parent_view.stop()
+            return
+
+        await interaction.followup.send(
+            f"Posted the decklist for {self.parent_view.player.display_name} in this channel.",
+            ephemeral=True,
+        )
+        await self.parent_view.finalize_message(
+            f"Posted the decklist for {self.parent_view.player.display_name}."
+        )
+        self.parent_view.stop()
+
+
+class TournamentDecklistSelectView(discord.ui.View):
+    def __init__(
+        self,
+        cog: Tournaments,
+        player: discord.Member,
+        entries: list[dict],
+        channel: discord.abc.Messageable,
+    ):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.player = player
+        self.channel = channel
+        self.message: discord.Message | None = None
+        self.entry_map: dict[str, dict] = {}
+        self.notes = None
+
+        options: list[discord.SelectOption] = []
+        for entry in entries:
+            tournament_id = entry.get("tournament_id")
+            if not tournament_id or tournament_id in self.entry_map:
+                continue
+
+            name = entry.get("tournament_name") or tournament_id
+            options.append(
+                discord.SelectOption(
+                    label=str(name)[:100],
+                    description=str(tournament_id)[:100],
+                    value=tournament_id,
+                )
+            )
+            self.entry_map[tournament_id] = entry
+
+            if len(options) >= 25:
+                break
+
+        self.select: TournamentDecklistSelect | None = None
+        if options:
+            self.select = TournamentDecklistSelect(self, options)
+            self.add_item(self.select)
+
+    def disable_all_items(self) -> None:
+        for child in self.children:
+            if hasattr(child, "disabled"):
+                child.disabled = True
+
+    async def finalize_message(
+        self, content: str | None, *, include_notes: bool = True
+    ) -> bool:
+        if not self.message:
+            return False
+
+        self.disable_all_items()
+        content_to_send = content or (self.message.content if self.message else "")
+        if include_notes and self.notes:
+            if content_to_send:
+                content_to_send = f"{content_to_send}\n\n{self.notes}"
+            else:
+                content_to_send = self.notes
+        try:
+            await self.message.edit(content=content_to_send, view=self)
+            return True
+        except Exception:
+            self.cog.logger.exception("Failed to update decklist selection message")
+            return False
+
+    async def on_timeout(self) -> None:
+        if not self.message:
+            return
+        self.disable_all_items()
+        await self.finalize_message("Decklist selection timed out.", include_notes=False)
 
 class TournamentStandingsSelect(discord.ui.Select):
     def __init__(
