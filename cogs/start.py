@@ -99,7 +99,7 @@ class StarterDeckSelectView(View):
         if deck_name.lower().__contains__("mambo"):
             await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
         elif deck_name.lower().__contains__("fire"):
-            await interaction.channel.send(f"Thats Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
+            await interaction.channel.send(f"That's Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
         else:
             await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
 
@@ -143,9 +143,12 @@ class StarterDeckSelectView(View):
 
         # (D) Post a succinct summary; if DMs failed, fall back with embeds in-channel
         summary = (
-            f"{interaction.user.mention} opened **{START_PACKS}** "
-            f"pack{'s' if START_PACKS != 1 else ''} of **{pack_name}**."
+            f"Welcome to the **{TEAM_ROLE_MAPPING.get(deck_name)}** team {interaction.user.mention}!"
+            f" I sent you **{START_PACKS}** "
+            f"pack{'s' if START_PACKS != 1 else ''} of **{pack_name}** to get started!"
             f"{' Results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
+            f" You can view your collection with the /collection command, or use the /collection_export command to get a csv version "
+            f"to upload to ygoprodeck. Happy dueling!"
         )
         # Update packs opened counter for quests
         quests_cog = interaction.client.get_cog("Quests")  # same as self.bot
