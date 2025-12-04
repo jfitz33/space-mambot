@@ -392,6 +392,14 @@ class Admin(commands.Cog):
                 f"📝 Admin recorded a result: **{loser.display_name}** lost to **{winner.display_name}**."
             )
 
+        # Remove the user(s) from the queue if there is an actively paired match
+        queue = interaction.client.get_cog("DuelQueue")
+        try:
+            if queue and hasattr(queue, "clear_pairing"):
+                await queue.clear_pairing(loser.id, winner.id)
+        except Exception as e:
+            print("[admin] failed to clear duel pairing:", e)
+
     @app_commands.command(
         name="admin_revert_result",
         description="(Admin) Revert the most recent recorded result between two players.",

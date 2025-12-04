@@ -76,6 +76,14 @@ class Stats(commands.Cog):
 
         await interaction.followup.send(embed=embed)
 
+        # Remove the user(s) from the queue if paired
+        queue = interaction.client.get_cog("DuelQueue")
+        try:
+            if queue and hasattr(queue, "clear_pairing"):
+                await queue.clear_pairing(caller.id, opponent.id)
+        except Exception as e:
+            print("[stats] failed to clear duel pairing:", e)
+
     @app_commands.command(name="stats", description="View a player's win/loss record and win%.")
     @app_commands.guilds(GUILD)
     @app_commands.describe(user="(Optional) Whose stats to view; defaults to you")
