@@ -51,27 +51,15 @@ from core.packs import open_pack_from_csv
 from core.views import PackResultsPaginator
 
 class StarterDeckSelectView(View):
-    def __init__(self, state, member: discord.Member, timeout: float = 180, on_complete=None):
+    def __init__(self, state, member: discord.Member, timeout: float = 180):
         super().__init__(timeout=timeout)
         self.state = state
         self.member = member
-        self._on_complete = on_complete
-        self._completed = False
         self._options = []
         for deck in sorted((state.starters_index or {}).keys(), key=str.lower):
             self._options.append(discord.SelectOption(label=deck[:100], value=deck[:100], description="Starter deck"))
         if not self._options:
             self._options = [discord.SelectOption(label="No starters found", value="__none__", description="Load CSVs")]
-
-    def _complete(self):
-        if self._completed:
-            return
-        self._completed = True
-        if self._on_complete:
-            try:
-                self._on_complete()
-            except Exception:
-                pass
 
     @discord.ui.select(
         placeholder="Choose your starter deck…",
@@ -88,139 +76,123 @@ class StarterDeckSelectView(View):
         deck_name = select.values[0] if select.values else "__none__"
         if deck_name == "__none__":
             await interaction.response.send_message("No starter decks are loaded.", ephemeral=True)
-            self._complete()
             return
 
+        # 1) Grant the starter deck (DB upsert). If nothing granted, bail.
+        granted = grant_starter_to_user(self.state, self.member.id, deck_name)
+        if not granted:
+            await interaction.response.send_message("That starter deck appears to be empty.", ephemeral=True)
+            return
+
+        # Acknowledge component interaction to avoid it expiring
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        # Immediately disable the dropdown so the user cannot make additional selections
+        # while we process their starter choice.
+        for child in self.children:
+            child.disabled = True
         try:
-            # 1) Grant the starter deck (DB upsert). If nothing granted, bail.
-            granted = grant_starter_to_user(self.state, self.member.id, deck_name)
-            if not granted:
-                await interaction.response.send_message("That starter deck appears to be empty.", ephemeral=True)
-                self._complete()
-                return
+            await interaction.followup.edit_message(message_id=interaction.message.id, view=self)
+        except Exception:
+            pass
 
-            # Acknowledge component interaction to avoid it expiring
-            await interaction.response.defer(ephemeral=True, thinking=False)
+        if deck_name.lower().__contains__("mambo"):
+            await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
+        elif deck_name.lower().__contains__("fire"):
+            await interaction.channel.send(f"That's Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
+        else:
+            await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
 
-            # Assign the appropriate team role immediately to prevent users from
-            # repeatedly invoking /start before role gating kicks in.
-            team_role_name = TEAM_ROLE_MAPPING.get(deck_name)
-            if team_role_name:
-                try:
-                    role = discord.utils.get(interaction.guild.roles, name=team_role_name)
-                    if role is None:
-                        role = await interaction.guild.create_role(name=team_role_name, reason="Starter gate")
-                    await self.member.add_roles(role, reason="Claimed starter deck")
-                except discord.Forbidden:
-                    await interaction.followup.send(
-                        "I couldn't assign your team role due to permissions. "
-                        "Please grant me **Manage Roles** and ensure my top role is above the team roles, then try again.",
-                        ephemeral=True
-                    )
-                    self._complete()
-                    return
-                except Exception:
-                    await interaction.followup.send(
-                        "Something went wrong while assigning your team role. Please try again shortly.",
-                        ephemeral=True
-                    )
-                    self._complete()
-                    return
+        # 2) Open starter packs with guaranteed rarity progression
+        pack_name = STARTER_TO_PACK.get(deck_name, deck_name)
 
-            # Immediately disable the dropdown so the user cannot make additional selections
-            # while we process their starter choice.
-            for child in self.children:
-                child.disabled = True
+        # How many packs to open as part of /start
+        START_PACKS = 12
+        guaranteed_tops = ["super"] * 8 + ["ultra"] * 3 + ["secret"]
+
+        # (A) Open packs in memory
+        per_pack: list[list[dict]] = []
+        for top_rarity in guaranteed_tops:
             try:
-                    await interaction.followup.edit_message(message_id=interaction.message.id, view=self)
-            except Exception:
-                pass
+                cards = open_pack_with_guaranteed_top_from_csv(self.state, pack_name, top_rarity)
+            except ValueError:
+                cards = open_pack_from_csv(self.state, pack_name, 1)
+            per_pack.append(cards)  # pack_name = the pack you want for /start
 
-            if deck_name.lower().__contains__("mambo"):
-                await interaction.channel.send(f"Sploosh! {self.member.mention} selected the **{deck_name}** starter deck!")
-            elif deck_name.lower().__contains__("fire"):
-                await interaction.channel.send(f"That's Hot! {self.member.mention} selected the **{deck_name}** starter deck!")
-            else:
-                await interaction.channel.send(f"{self.member.mention} selected the **{deck_name}** starter deck!")
+        # (B) Persist pulled cards to the player's collection
+        flat = [c for cards in per_pack for c in cards]
+        db_add_cards(self.state, interaction.user.id, flat, pack_name)
 
-            # 2) Open starter packs with guaranteed rarity progression
-            pack_name = STARTER_TO_PACK.get(deck_name, deck_name)
-
-            # How many packs to open as part of /start
-            START_PACKS = 12
-            guaranteed_tops = ["super"] * 8 + ["ultra"] * 3 + ["secret"]
-
-            # (A) Open packs in memory
-            per_pack: list[list[dict]] = []
-            for top_rarity in guaranteed_tops:
-                try:
-                    cards = open_pack_with_guaranteed_top_from_csv(self.state, pack_name, top_rarity)
-                except ValueError:
-                    cards = open_pack_from_csv(self.state, pack_name, 1)
-                per_pack.append(cards)  # pack_name = the pack you want for /start
-
-            # (B) Persist pulled cards to the player's collection
-            flat = [c for cards in per_pack for c in cards]
-            db_add_cards(self.state, interaction.user.id, flat, pack_name)
-
-            # (C) Try to DM one message per pack
+        # (C) Try to DM one message per pack
+        dm_sent = False
+        try:
+            dm = await interaction.user.create_dm()
+            for i, cards in enumerate(per_pack, start=1):
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
+                if START_PACKS > 5:
+                    await asyncio.sleep(0.2)  # gentle rate limiting safety
+            dm_sent = True
+        except Exception:
             dm_sent = False
+
+        # (D) Post a succinct summary; if DMs failed, fall back with embeds in-channel
+        summary = (
+            f"Welcome to the **{TEAM_ROLE_MAPPING.get(deck_name)}** team {interaction.user.mention}!"
+            f" I sent you **{START_PACKS}** "
+            f"pack{'s' if START_PACKS != 1 else ''} of **{pack_name}** to get started!"
+            f"{' Results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
+            f" You can view your collection with the /collection command, or use the /collection_export command to get a csv version "
+            f"to upload to ygoprodeck. Happy dueling!"
+        )
+        # Update packs opened counter for quests
+        quests_cog = interaction.client.get_cog("Quests")  # same as self.bot
+        if quests_cog:
+            await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=START_PACKS)
+
+        await interaction.channel.send(summary)
+
+        if not dm_sent:
+            for i, cards in enumerate(per_pack, start=1):
+                content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
+                if START_PACKS > 5:
+                    await asyncio.sleep(0.2)
+
+        # 5) Assign the appropriate team role only after success
+        team_role_name = TEAM_ROLE_MAPPING.get(deck_name)
+        if team_role_name:
             try:
-                dm = await interaction.user.create_dm()
-                for i, cards in enumerate(per_pack, start=1):
-                    content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
-                    send_kwargs: dict = {"embeds": embeds}
-                    if content:
-                        send_kwargs["content"] = content
-                    if files:
-                        send_kwargs["files"] = files
-                    await dm.send(**send_kwargs)
-                    if START_PACKS > 5:
-                        await asyncio.sleep(0.2)  # gentle rate limiting safety
-                dm_sent = True
-            except Exception:
-                dm_sent = False
-
-            # (D) Post a succinct summary; if DMs failed, fall back with embeds in-channel
-            summary = (
-                f"Welcome to the **{TEAM_ROLE_MAPPING.get(deck_name)}** team {interaction.user.mention}!"
-                f" I sent you **{START_PACKS}** "
-                f"pack{'s' if START_PACKS != 1 else ''} of **{pack_name}** to get started!"
-                f"{' Results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
-                f" You can view your collection with the /collection command, or use the /collection_export command to get a csv version "
-                f"to upload to ygoprodeck. Happy dueling!"
-            )
-            # Update packs opened counter for quests
-            quests_cog = interaction.client.get_cog("Quests")  # same as self.bot
-            if quests_cog:
-                await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=START_PACKS)
-
-            await interaction.channel.send(summary)
-
-            if not dm_sent:
-                for i, cards in enumerate(per_pack, start=1):
-                    content, embeds, files = _pack_embed_for_cards(interaction.client, pack_name, cards, i, START_PACKS)
-                    send_kwargs: dict = {"embeds": embeds}
-                    if content:
-                        send_kwargs["content"] = content
-                    if files:
-                        send_kwargs["files"] = files
-                    await dm.send(**send_kwargs)
-                    if START_PACKS > 5:
-                        await asyncio.sleep(0.2)
-
-            # 5) Delete the original message upon completion
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-        finally:
-            self._complete()
+                role = discord.utils.get(interaction.guild.roles, name=team_role_name)
+                if role is None:
+                    role = await interaction.guild.create_role(name=team_role_name, reason="Starter gate")
+                await self.member.add_roles(role, reason="Completed starter flow")
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "Packs opened, but I couldn’t assign your team role. "
+                    "Please grant me **Manage Roles** and ensure my top role is above the team roles.",
+                    ephemeral=True
+                )
+        
+        # 6) Delete the original message upon completion
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            pass
 
     async def on_timeout(self):
         for child in self.children:
             child.disabled = True
-        self._complete()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # Optional: block others from interacting with the view entirely
@@ -240,7 +212,6 @@ class Start(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state: AppState = self.bot.state
-        self._active_starters: set[int] = set()
 
     @app_commands.command(name="start", description="Claim your starter deck and receive your matching starter packs")
     @app_commands.guilds(GUILD)
@@ -270,27 +241,14 @@ class Start(commands.Cog):
             await interaction.response.send_message(f"{member.mention} already has their starter cards.", ephemeral=True)
             return
 
-        # Prevent concurrent /start flows for the same user so the starter can only be claimed once
-        if member.id in self._active_starters:
-            await interaction.response.send_message(
-                "You already have an active starter selection in progress. Please finish that one first.",
-                ephemeral=True,
-            )
-            return
-        self._active_starters.add(member.id)
-
         # Prompt with dropdown (ephemeral)
-        view = StarterDeckSelectView(self.state, member, on_complete=lambda: self._active_starters.discard(member.id))
+        view = StarterDeckSelectView(self.state, member)
         await view.setup()
-        try:
-            await interaction.response.send_message(
-                content=f"{member.mention}, choose your starter deck:",
-                view=view,
-                ephemeral=True
-            )
-        except Exception:
-            self._active_starters.discard(member.id)
-            raise
+        await interaction.response.send_message(
+            content=f"{member.mention}, choose your starter deck:",
+            view=view,
+            ephemeral=True
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Start(bot))
