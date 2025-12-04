@@ -296,7 +296,13 @@ class DuelQueue(commands.Cog):
                 self.active_pairs.pop(user_b_id, None)
                 changed = True
         return changed
-
+    
+    async def is_active_pair(self, user_a_id: int, user_b_id: int) -> bool:
+        async with self.lock:
+            return (
+                self.active_pairs.get(user_a_id) == user_b_id
+                and self.active_pairs.get(user_b_id) == user_a_id
+            )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DuelQueue(bot))

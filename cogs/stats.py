@@ -36,6 +36,20 @@ class Stats(commands.Cog):
         if opponent.bot:
             return await interaction.response.send_message("You can’t record a loss to a bot.", ephemeral=True)
 
+        queue = interaction.client.get_cog("DuelQueue")
+        is_paired = False
+        try:
+            if queue and hasattr(queue, "is_active_pair"):
+                is_paired = await queue.is_active_pair(caller.id, opponent.id)
+        except Exception as e:
+            print("[stats] failed to verify duel pairing:", e)
+
+        if not is_paired:
+            return await interaction.response.send_message(
+                f"no active duel between users {caller.display_name} and {opponent.display_name}",
+                ephemeral=True,
+            )
+
         await interaction.response.defer(ephemeral=False, thinking=True)
 
         # Atomically update stats + log match
