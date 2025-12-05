@@ -7,6 +7,9 @@ from discord import app_commands
 from dotenv import load_dotenv
 from pathlib import Path
 
+# Load .env before importing modules that read env vars at import time.
+load_dotenv()
+
 from core.state import AppState
 from core.db import (db_init, db_init_trades, db_init_wallet, 
                      db_wallet_migrate_to_mambucks_and_shards_per_set, 
@@ -19,6 +22,7 @@ from core.images import ensure_rarity_emojis
 from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_example_quests, db_seed_quests_from_json
 from core.tins import load_tins_from_json
+from cogs.collection import build_badge_tokens_from_state
 
 
 logging.basicConfig(
@@ -27,7 +31,6 @@ logging.basicConfig(
 )
 logging.getLogger("cogs.tournaments").setLevel(logging.DEBUG)
 
-load_dotenv()
 TOKEN    = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 ART_IMPORT = int(os.getenv("ART_IMPORT", "0") or 0)
@@ -88,6 +91,11 @@ async def on_ready():
         gids = [GUILD_ID] if GUILD_ID else [g.id for g in bot.guilds]
         await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=True)
         print("[rarity] cached emoji IDs:", getattr(bot.state, "rarity_emoji_ids", {}))
+        try:
+            await build_badge_tokens_from_state(bot, bot.state)
+            print("[rarity] precomputed badge tokens")
+        except Exception as e:
+            print("[rarity] badge token precompute skipped:", e)
     except Exception as e:
         print("[rarity] setup skipped:", e)
 

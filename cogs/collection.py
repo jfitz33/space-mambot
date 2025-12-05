@@ -75,30 +75,45 @@ async def build_badge_tokens_from_state(bot: commands.Bot, state: Any) -> Dict[s
     """
     Uses IDs stored by ensure_rarity_emojis in bot.state.rarity_emoji_ids and
     returns {'COMMON': '<:rar_common:123...>', ...}. Falls back to short text if unresolved.
+
+    The computed badge map is cached on ``state`` (``rarity_badge_tokens``) and
+    reused as long as the underlying ``rarity_emoji_ids`` mapping has not changed.
     """
     fallback = {"COMMON":"C","RARE":"R","SUPER RARE":"SR","ULTRA RARE":"UR","SECRET RARE":"SCR","STARLIGHT RARE":"SCR"}
     idmap = getattr(state, "rarity_emoji_ids", None)
-    if not isinstance(idmap, dict) or not idmap:
-        return fallback
+    ids_are_valid = isinstance(idmap, dict)
+    idmap = idmap if ids_are_valid else {}
 
-    async def tok(id_val) -> str:
-        if not id_val:
-            return ""
-        try:
-            eid = int(id_val)
-        except Exception:
-            return ""
-        e = bot.get_emoji(eid)
-        if not e:
-            try:
-                e = await bot.fetch_emoji(eid)
-            except Exception:
-                return ""
-        return str(e) if e else ""
+    cached_tokens = getattr(state, "rarity_badge_tokens", None)
+    cached_source_ids = getattr(state, "rarity_badge_token_source_ids", None)
+    if isinstance(cached_tokens, dict) and (cached_tokens or not idmap):
+        # Reuse cache if the emoji ID map matches what we last used to build it.
+        if not idmap and (cached_source_ids is None or cached_source_ids == {}):
+            return cached_tokens
+        if isinstance(cached_source_ids, dict) and cached_source_ids == idmap:
+            return cached_tokens
+
+    if not idmap:
+        state.rarity_badge_tokens = fallback
+        state.rarity_badge_token_source_ids = idmap
+        return fallback
 
     tokens: Dict[str, str] = {}
     for bucket, key in RARITY_TO_IDKEY.items():
-        tokens[bucket] = await tok(idmap.get(key)) or fallback[bucket]
+        eid = idmap.get(key)
+        if eid:
+            try:
+                int_eid = int(eid)
+                animated = getattr(state, "rarity_emoji_animated", {}) or {}
+                prefix = "a" if animated.get(key) else ""
+                tokens[bucket] = f"<{prefix}:rar_{key}:{int_eid}>"
+                continue
+            except Exception:
+                pass
+        tokens[bucket] = fallback[bucket]
+    
+    state.rarity_badge_tokens = tokens
+    state.rarity_badge_token_source_ids = dict(idmap)
     return tokens
 
 # ---------- Optional: pretty headers via your pack/starter indexes ----------
