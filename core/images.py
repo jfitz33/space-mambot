@@ -55,32 +55,7 @@ def rarity_badge(state_or_bot, rarity: str) -> str:
     }
     key = ALIASES.get(r, r)  # default to r if already canonical
 
-    # 2) If precomputed badge tokens exist (build_badge_tokens_from_state), reuse them.
-    badge_key_alias = {
-        "common": "COMMON",
-        "rare": "RARE",
-        "super": "SUPER RARE",
-        "ultra": "ULTRA RARE",
-        "secret": "SECRET RARE",
-    }
-    badge_tokens = None
-    if hasattr(state_or_bot, "rarity_badge_tokens"):
-        tokens = getattr(state_or_bot, "rarity_badge_tokens")
-        if isinstance(tokens, dict):
-            badge_tokens = tokens
-    if badge_tokens is None and hasattr(state_or_bot, "state"):
-        tokens = getattr(state_or_bot.state, "rarity_badge_tokens", None)
-        if isinstance(tokens, dict):
-            badge_tokens = tokens
-
-    if badge_tokens:
-        candidates = [badge_key_alias.get(key, key.upper()), key.upper(), key]
-        for candidate in candidates:
-            token = badge_tokens.get(candidate)
-            if isinstance(token, str) and token.strip():
-                return token
-
-    # 3) find the emoji id cache on either the object or its `.state`
+    # 2) find the emoji id cache on either the object or its `.state`
     emoji_ids = {}
     emoji_animated = {}
     if hasattr(state_or_bot, "rarity_emoji_ids") and getattr(state_or_bot, "rarity_emoji_ids"):
@@ -123,10 +98,6 @@ async def ensure_rarity_emojis(
         bot.state.rarity_emoji_ids = {}
     if not hasattr(bot.state, "rarity_emoji_animated") or bot.state.rarity_emoji_animated is None:
         bot.state.rarity_emoji_animated = {}
-
-    # Invalidate any cached badge tokens derived from a previous scan
-    setattr(bot.state, "rarity_badge_tokens", None)
-    setattr(bot.state, "rarity_badge_token_source_ids", None)
 
     wanted_names = {f"rar_{k}": k for k in RARITY_FILES.keys()}
     resolved: Dict[str, int] = {}
