@@ -64,6 +64,13 @@ def db_init(state: AppState):
         );
         """)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS starter_claims (
+            user_id    TEXT NOT NULL PRIMARY KEY,
+            status     TEXT NOT NULL,
+            updated_ts INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS tournament_decklists (
             tournament_id   TEXT NOT NULL,
             user_id         TEXT NOT NULL,
@@ -1427,6 +1434,104 @@ def db_starter_daily_try_grant(state, user_id: int, day_key: str, amount: int) -
         after = db_wallet_get(state, user_id)
 
     return int(after.get("mambucks", 0)), granted
+
+# --- Starter command single-run guard --------------------------------
+
+def db_starter_claim_begin(state, user_id: int) -> str:
+    """
+    Try to begin a starter claim for ``user_id``.
+
+    Returns one of:
+      - "acquired": claim acquired for this attempt
+      - "in_progress": another attempt is already running
+      - "complete": the starter has already been claimed
+    """
+
+    user_id_s = str(user_id)
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS starter_claims (
+                user_id    TEXT NOT NULL PRIMARY KEY,
+                status     TEXT NOT NULL,
+                updated_ts INTEGER NOT NULL
+            );
+            """
+        )
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO starter_claims (user_id, status, updated_ts)
+                VALUES (?, 'in_progress', ?);
+                """,
+                (user_id_s, now),
+            )
+            return "acquired"
+        except sqlite3.IntegrityError:
+            row = conn.execute(
+                "SELECT status, updated_ts FROM starter_claims WHERE user_id=?",
+                (user_id_s,),
+            ).fetchone()
+            if not row:
+                return "in_progress"
+
+            status, updated_ts = row[0], row[1] or 0
+            # If a prior in-progress claim is stale (e.g., crash), allow it to be reclaimed.
+            if status == "in_progress" and now - int(updated_ts) > 600:
+                conn.execute(
+                    "UPDATE starter_claims SET status='in_progress', updated_ts=? WHERE user_id=?",
+                    (now, user_id_s),
+                )
+                return "acquired"
+
+            return status
+
+
+def db_starter_claim_complete(state, user_id: int) -> None:
+    """Mark a starter claim as complete; leaves the guard in place permanently."""
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS starter_claims (
+                user_id    TEXT NOT NULL PRIMARY KEY,
+                status     TEXT NOT NULL,
+                updated_ts INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO starter_claims (user_id, status, updated_ts)
+            VALUES (?, 'complete', ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                status=excluded.status,
+                updated_ts=excluded.updated_ts;
+            """,
+            (str(user_id), now),
+        )
+
+
+def db_starter_claim_abort(state, user_id: int) -> None:
+    """Release an in-progress starter claim so a user can try again."""
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS starter_claims (
+                user_id    TEXT NOT NULL PRIMARY KEY,
+                status     TEXT NOT NULL,
+                updated_ts INTEGER NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "DELETE FROM starter_claims WHERE user_id=? AND status='in_progress'",
+            (str(user_id),),
+        )
 
 async def db_wallet_migrate_to_mambucks_and_shards_per_set(state) -> None:
     """
