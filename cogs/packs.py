@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import os
+import logging
 from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -28,6 +29,8 @@ from core.images import card_art_path_for_card
 from core.db import db_add_cards
 from core.packs import open_box_from_csv, open_pack_from_csv
 from core.purchase_options import format_payment_options, payment_options_for_set
+
+logger = logging.getLogger(__name__)
 
 # API and pack csv details
 YGOPRO_API_URL = "https://db.ygoprodeck.com/api/v7/cardinfo.php"
@@ -491,7 +494,8 @@ class Packs(commands.Cog):
         if not self.bot.state.packs_index:
             await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=amount)
-        await interaction.response.send_message("Pick a pack from the dropdown:", view=view, ephemeral=True)
+        await self._send_pack_selection(interaction, "Pick a pack from the dropdown:", view)
+        
     
     @app_commands.command(name="tin", description="Purchase a tin with a promo and 5 packs")
     @app_commands.guilds(GUILD)
@@ -510,13 +514,66 @@ class Packs(commands.Cog):
     @app_commands.command(name="box", description=f"Open a sealed box or box bundle.")
     @app_commands.guilds(GUILD)
     async def box(self, interaction: discord.Interaction):
-        import inspect
-        print("PacksSelectView from:", PacksSelectView.__module__)
-        print("Ctor:", inspect.signature(PacksSelectView.__init__))
+        if not self.bot.state.packs_index:
+            await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True)
+            return
+
         view = PacksSelectView(self.bot.state, requester=interaction.user, amount=PACKS_IN_BOX, mode="box")
-        await interaction.response.send_message(
-            "Pick a pack set for your **box**:", view=view, ephemeral=True
+        await self._send_pack_selection(interaction, "Pick a pack set for your **box**:", view)
+
+    async def _send_pack_selection(self, interaction: discord.Interaction, message: str, view: discord.ui.View) -> None:
+        # Always acknowledge first so we can edit the original response instead of racing followups.
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.HTTPException as e:
+                if e.code in {10062, 40060}:
+                    logger.warning("Pack selection interaction expired before defer; skipping message: %s", e)
+                    await self._notify_selection_error(interaction)
+                    return
+                raise
+
+        try:
+            await interaction.edit_original_response(content=message, view=view)
+        except discord.HTTPException as e:
+            if e.code in {10062, 40060}:
+                logger.warning("Pack selection interaction expired before send; skipping message: %s", e)
+                await self._notify_selection_error(interaction)
+            else:
+                raise
+
+    async def _notify_selection_error(self, interaction: discord.Interaction) -> None:
+        """Fall back to a plain warning when an interaction token is stale."""
+
+        error_text = (
+            f"⚠️ Something went wrong loading pack data. Please wait a moment and try again."
         )
+    
+
+        # Prefer editing the deferred/acknowledged interaction to avoid duplicate dropdowns.
+        try:
+            await interaction.edit_original_response(
+                content=error_text,
+                view=None,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            return
+        except discord.HTTPException as e:
+            if e.code not in {10062, 40060}:
+                logger.warning("Failed to edit pack selection error fallback", exc_info=True)
+
+        # If editing fails (e.g., original response missing), attempt an ephemeral follow-up.
+        try:
+            await interaction.followup.send(
+                error_text,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                ephemeral=True,
+            )
+        except discord.HTTPException as e:
+            if e.code not in {10062, 40060}:
+                logger.warning("Failed to send pack selection error followup", exc_info=True)
+        except Exception:
+            logger.warning("Failed to send pack selection error followup", exc_info=True)
     
     @app_commands.command(
         name="quick_box",
