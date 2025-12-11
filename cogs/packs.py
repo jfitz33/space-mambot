@@ -333,8 +333,10 @@ class Packs(commands.Cog):
         if quests_cog:
             await quests_cog.tick_pack_open(user_id=requester.id, amount=packs_in_tin)
 
+        opener_name = requester.display_name or requester.name
+
         summary = (
-            f"{requester.mention} opened the **{tin_name}** tin, chose promo **{promo_name}**, "
+            f"{opener_name} opened the **{tin_name}** tin, chose promo **{promo_name}**, "
             f"and received {packs_in_tin} pack{'s' if packs_in_tin != 1 else ''} of **{pack_choice}**."
         )
 
@@ -509,7 +511,7 @@ class Packs(commands.Cog):
             return
 
         view = TinSelectionView(self.bot.state, requester=interaction.user)
-        await interaction.response.send_message("Choose a tin to purchase:", view=view, ephemeral=True)
+        await self._send_pack_selection(interaction, "Choose a tin to purchase:", view)
 
     @app_commands.command(name="box", description=f"Open a sealed box or box bundle.")
     @app_commands.guilds(GUILD)

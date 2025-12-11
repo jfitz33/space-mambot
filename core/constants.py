@@ -11,6 +11,7 @@ TIN_COST=int(os.getenv("TIN_MAMBUCK_COST","80"))
 TIN_SHARD_COST=int(os.getenv("TIN_SHARD_COST", "800"))
 FROSTFIRE_BUNDLE_NAME="Frostfire Bundle"
 SANDSTORM_BUNDLE_NAME="Sandstorm Bundle"
+TEMPORAL_BUNDLE_NAME="Temporal Bundle"
 SALE_DISCOUNT_PCT=10
 
 # Daily sale layout: (rarity, number of entries)
@@ -81,7 +82,7 @@ STARTER_DECK_SET_NAMES = {
 PACKS_BY_SET = {
     1: {"Blazing Genesis", "Storm of the Abyss"},  # Set 1 → Frostfire Shards
     2: {"Obsidian Empire", "Evolving Maelstrom"},   # Set 2 -> Sandstorm Shards
-    # 2: {"...","..."},    # Add future sets here
+    3: {"Power of the Primordial", "Cyberstorm Crisis"}
 }
 
 BUNDLES = (
@@ -98,6 +99,13 @@ BUNDLES = (
         "cost": BUNDLE_BOX_COST,
         "shard_cost": BUNDLE_BOX_SHARD_COST,
         "set_id": 2,
+    },
+    {
+        "id": "temporal",
+        "name": TEMPORAL_BUNDLE_NAME,
+        "cost": BUNDLE_BOX_COST,
+        "shard_cost": BUNDLE_BOX_SHARD_COST,
+        "set_id": 3,
     },
 )
 

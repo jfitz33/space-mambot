@@ -4,7 +4,7 @@ import os
 SHARD_SET_NAMES = {
     1: "Frostfire Shards",
     2: "Sandstorm Shards",
-    # 3: "Techno Shards",
+    3: "Temporal Shards",
 }
 
 def shard_set_name(set_id: int, short: bool = False) -> str:

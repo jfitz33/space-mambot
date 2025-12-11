@@ -1150,9 +1150,11 @@ class PacksSelectView(discord.ui.View):
         except Exception:
             pass
 
+        opener_name = requester.display_name or requester.name
+
         # Public summary in the channel
         summary = (
-            f"{requester.mention} opened **{amount}** pack{'s' if amount != 1 else ''} of **{pack_name}**."
+            f"{opener_name} opened **{amount}** pack{'s' if amount != 1 else ''} of **{pack_name}**."
             f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
         )
 
@@ -1221,9 +1223,11 @@ class PacksSelectView(discord.ui.View):
         if quests_cog:
             await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=PACKS_IN_BOX)
 
+        opener_name = requester.display_name or requester.name
+
         # public summary
         summary = (
-            f"{requester.mention} opened a **box** (24 packs) of **{pack_name}**."
+            f"{opener_name} opened a **box** (24 packs) of **{pack_name}**."
             f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
         )
         await interaction.channel.send(summary)
