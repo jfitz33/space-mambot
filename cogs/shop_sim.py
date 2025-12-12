@@ -13,6 +13,9 @@ from core.constants import (
     BOX_COST,
     PACKS_IN_BOX,
     CRAFT_COST_BY_RARITY,
+    SHARD_YIELD_BY_RARITY,
+    BUNDLE_BOX_COST,
+    TIN_COST,
     RARITY_ORDER,
     SALE_LAYOUT
 )
@@ -155,15 +158,15 @@ class ShopSim(commands.Cog):
             title="🛍️ Welcome to the Mamshop",
             description=(
                 "Use **/pack** or **/box** to buy packs!\n"
-                "Use **/fragment** to convert cards into shards, and **/craft** to make cards!\n"
+                "Use **/fragment** to convert cards into shards, and **/craft** to turn shards into cards!\n"
             ),
             color=0x2b6cb0,
         )
 
         # Prices (packs/boxes)
         e.add_field(
-            name="Pack Prices",
-            value=f"• Per pack: **{PACK_COST} mambucks**\n• Box (24 packs): **{BOX_COST} mambucks**",
+            name="Sealed Products",
+            value=f"• Pack: **{PACK_COST} mambucks**\n• Box (24 packs): **{BOX_COST} mambucks**\n• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} mambucks**\n• Tin (1 promo and 5 packs): **{TIN_COST} mambucks**",
             inline=False,
         )
 
@@ -171,8 +174,15 @@ class ShopSim(commands.Cog):
         craft_lines = []
         for r, cost in CRAFT_COST_BY_RARITY.items():
             badge = _rar_badge(self.state, r)
-            craft_lines.append(f"{badge} **{r.title()}** → **{cost} shards**")
+            craft_lines.append(f"{badge} **{cost} shards** → **{r.title()}**")
         e.add_field(name="Craft Prices", value="\n".join(craft_lines) or "—", inline=False)
+
+        # Fragment prices by rarity (shards)
+        craft_lines = []
+        for r, cost in SHARD_YIELD_BY_RARITY.items():
+            badge = _rar_badge(self.state, r)
+            craft_lines.append(f"{badge} **{r.title()}** → **{cost} shards**")
+        e.add_field(name="Fragment Prices", value="\n".join(craft_lines) or "—", inline=False)
 
         # Sales section (compact format)
         if sales:
