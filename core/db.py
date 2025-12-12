@@ -1533,6 +1533,25 @@ def db_starter_claim_abort(state, user_id: int) -> None:
             (str(user_id),),
         )
 
+def db_starter_claim_clear(state, user_id: int) -> int:
+    """Remove any starter claim guard record for ``user_id``."""
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS starter_claims (
+                user_id    TEXT NOT NULL PRIMARY KEY,
+                status     TEXT NOT NULL,
+                updated_ts INTEGER NOT NULL
+            );
+            """
+        )
+        cur = conn.execute(
+            "DELETE FROM starter_claims WHERE user_id=?",
+            (str(user_id),),
+        )
+        return cur.rowcount
+
 async def db_wallet_migrate_to_mambucks_and_shards_per_set(state) -> None:
     """
     One-time migration (idempotent via app_migrations):

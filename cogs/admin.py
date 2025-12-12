@@ -17,6 +17,7 @@ from core.db import (
     db_shard_override_set,
     db_shard_override_clear,
     db_shard_override_list_active,
+    db_starter_claim_clear,
     db_stats_reset,
     db_stats_record_loss,
     db_stats_revert_result,
@@ -254,6 +255,7 @@ class Admin(commands.Cog):
         # Reset wheel tokens & win/loss stats
         wheel_tokens_removed = db_wheel_tokens_clear(self.state, user.id)
         stats_reset = db_stats_reset(self.state, user.id)
+        starter_claims_removed = db_starter_claim_clear(self.state, user.id)
 
         # Clear stored team points within this guild (if any)
         team_points_removed = 0
@@ -302,6 +304,10 @@ class Admin(commands.Cog):
             lines.append("ℹ️ No win/loss history found to clear.")
         if wheel_tokens_removed:
             lines.append(f"✅ Removed **{wheel_tokens_removed}** stored wheel token(s).")
+        if starter_claims_removed:
+            lines.append("✅ Cleared the starter claim guard; the user can run /start again.")
+        else:
+            lines.append("ℹ️ Starter claim guard was already clear.")
         if interaction.guild and team_points_removed:
             lines.append(f"✅ Cleared team points entries ({team_points_removed} row(s)).")
         if removed_roles:

@@ -1319,8 +1319,9 @@ class PacksSelectView(discord.ui.View):
         pack_labels = [label for _key, label in pack_entries]
         pack_count = len(pack_labels)
         pack_word = "pack" if pack_count == 1 else "packs"
+        opener_name = requester.display_name or requester.name
         summary = (
-            f"{requester.mention} opened the **{bundle_name}** "
+            f"{opener_name} opened the **{bundle_name}** "
             f"(one box each of {pack_count} {pack_word})."
             f"{' Results sent via DM.' if dm_sent else ' I could not DM you; posting results here.'}"
         )
