@@ -115,35 +115,6 @@ class ShopSim(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.state: AppState = bot.state
-        self._posted_once = False  # guard against multiple on_ready fires
-
-    async def cog_load(self):
-        # Fire-and-forget startup task
-        asyncio.create_task(self._startup_post_once())
-
-    async def _startup_post_once(self):
-        await self.bot.wait_until_ready()
-        if self._posted_once:
-            return
-        self._posted_once = True
-
-        # Only run for your configured guild
-        guild = self.bot.get_guild(GUILD_ID) if GUILD_ID else None
-        if not guild:
-            return
-        bot_member = guild.get_member(self.bot.user.id) if self.bot.user else None
-        if not bot_member:
-            return
-
-        ensure_shop_index(self.state)
-        channel = await ensure_shop_channel(guild, bot_member)
-
-        # Clear old messages so only the fresh one remains
-        await _clear_channel_all_messages(channel)
-
-        # Build and post the new embed
-        emb = self._build_shop_embed()
-        msg = await channel.send(embed=emb, content=" ")
 
     def _build_shop_embed(self, *, sales: dict | None = None) -> discord.Embed:
         """
@@ -166,7 +137,7 @@ class ShopSim(commands.Cog):
         # Prices (packs/boxes)
         e.add_field(
             name="Sealed Products",
-            value=f"• Pack: **{PACK_COST} mambucks**\n• Box (24 packs): **{BOX_COST} mambucks**\n• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} mambucks**\n• Tin (1 promo and 5 packs): **{TIN_COST} mambucks**",
+            value=f"• Pack: **{PACK_COST} mambucks**\n• Box (24 packs): **{BOX_COST} mambucks**\n• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} mambucks**\n• Tin (1 promo card and 5 packs): **{TIN_COST} mambucks**",
             inline=False,
         )
 
@@ -238,6 +209,9 @@ class ShopSim(commands.Cog):
         # 1) Ensure channel exists
         bot_member = guild.get_member(self.bot.user.id) if self.bot.user else None
         channel = await ensure_shop_channel(guild, bot_member)
+
+        # 1b) Make sure shop data is indexed for the embed
+        ensure_shop_index(self.state)
 
         # 2) Fetch today's sales (ET)
         day_key = _today_key_et()

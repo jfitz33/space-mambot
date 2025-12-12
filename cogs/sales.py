@@ -19,7 +19,13 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 import core.db as db
 
 # Craft costs + rarity helper
-from core.constants import CRAFT_COST_BY_RARITY, SALE_DISCOUNT_PCT, SALE_LAYOUT
+from core.constants import (
+    CRAFT_COST_BY_RARITY,
+    PACKS_BY_SET,
+    SALE_DISCOUNT_PCT,
+    SALE_LAYOUT,
+    pack_names_for_set,
+)
 from core.cards_shop import get_card_rarity  # normalizes rarity across your data
 from core.tins import is_tin_promo_print
 
@@ -121,7 +127,14 @@ class Sales(commands.Cog):
         # Pre-index all cards by rarity
         buckets: Dict[str, List[Dict[str, Any]]] = {r: [] for r in TARGET_RARITIES}
 
+        latest_set_id = max(PACKS_BY_SET) if PACKS_BY_SET else None
+        allowed_pack_names = set(pack_names_for_set(self.state, latest_set_id)) if latest_set_id else set()
+        if not allowed_pack_names:
+            return out
+
         for pack_name, pack in pi.items():
+            if allowed_pack_names and pack_name not in allowed_pack_names:
+                continue
             by_rarity = pack.get("by_rarity") or {}
             for rkey, items in by_rarity.items():
                 for card in items or []:
