@@ -359,7 +359,6 @@ class Admin(commands.Cog):
         quests = interaction.client.get_cog("Quests")
         try:
             if quests and getattr(quests, "qm", None):
-                await quests.qm.increment(winner.id, "win_3_matches", 1)
                 await quests.qm.increment(loser.id, "matches_played", 1)
                 await quests.qm.increment(winner.id, "matches_played", 2)
         except Exception as e:

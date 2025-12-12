@@ -1,50 +1,13 @@
 [
   {
-    "quest_id": "open_packs",
-    "title": "Open Packs",
-    "description": "Open packs today to earn multiple rewards.",
-    "category": "daily",
-    "reward_type": "mambucks",
-    "reward_payload": {
-      "milestones": [
-        { "count": 1,  "reward": { "type": "mambucks", "amount": 10 } },
-        { "count": 5,  "reward": { "type": "mambucks", "amount": 10 } },
-        { "count": 10, "reward": { "type": "shards",   "amount": 100, "set_id": 1 } },
-        { "count": 24, "reward": { "type": "shards",   "amount": 300, "set_id": 1 } }
-      ]
-    },
-    "target_count": 24,
-    "active": true
-  },
-  {
     "quest_id": "matches_played",
-    "title": "Daily Duelist",
+    "title": "Daily Duel",
     "description": "Play two ranked matches today (wins count double).",
     "category": "daily",
     "target_count": 2,
     "reward_type": "mambucks",
     "reward_payload": { "amount": 69, "max_rollover_days": 3 },
     "max_rollover_days": 3,
-    "active": true
-  },
-  {
-    "quest_id": "win_3_matches",
-    "title": "Win Streak",
-    "description": "Win 3 ranked matches this week.",
-    "category": "weekly",
-    "target_count": 3,
-    "reward_type": "shards",
-    "reward_payload": { "amount": 300, "set_id": 1 },
-    "active": true
-  },
-  {
-    "quest_id": "collector_100",
-    "title": "Collector",
-    "description": "Reach a collection of 100 total cards.",
-    "category": "permanent",
-    "target_count": 100,
-    "reward_type": "pack",
-    "reward_payload": { "pack": "FIRE", "qty": 1 },
     "active": true
   }
 ]

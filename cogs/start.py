@@ -194,10 +194,6 @@ class StarterDeckSelectView(View):
                 f" You can view your collection with the /collection command, or use the /collection_export command to get a csv version "
                 f"to upload to ygoprodeck. Happy dueling!"
             )
-            # Update packs opened counter for quests
-            quests_cog = interaction.client.get_cog("Quests")  # same as self.bot
-            if quests_cog:
-                await quests_cog.tick_pack_open(user_id=interaction.user.id, amount=START_PACKS)
 
             await interaction.channel.send(summary)
 

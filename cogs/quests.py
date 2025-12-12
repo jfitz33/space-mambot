@@ -4,7 +4,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.quests.engine import QuestManager
-from core.quests.schema import db_reset_all_user_quests   
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -22,44 +21,16 @@ class Quests(commands.Cog):
     async def cog_load(self):
         await self.qm.load_defs()
 
-    # --- ADMIN: reset all quest progress for a user ---
-    @app_commands.command(name="quest_reset", description="(Admin) Reset ALL quest progress for a user.")
-    @app_commands.guilds(GUILD)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(user="User whose quest progress you want to wipe")
-    async def quest_reset(self, interaction: discord.Interaction, user: discord.User):
-        await interaction.response.defer(ephemeral=True)
-        deleted = await db_reset_all_user_quests(self.bot.state, user.id)
-        await interaction.edit_original_response(
-            content=f"🧹 Reset quests for {user.mention}. Removed **{deleted}** progress row(s)."
-        )
-
-    # Optional: cleaner error if non-admins try to use it
-    @quest_reset.error
-    async def quest_reset_error(self, interaction: discord.Interaction, error: Exception):
-        if isinstance(error, app_commands.errors.MissingPermissions):
-            if interaction.response.is_done():
-                await interaction.followup.send("You need **Administrator** permissions to run this.", ephemeral=True)
-            else:
-                await interaction.response.send_message("You need **Administrator** permissions to run this.", ephemeral=True)
-        else:
-            # fall back to a generic error
-            msg = f"Error: {error.__class__.__name__}: {error}"
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
-
-    @app_commands.command(name="quests", description="View your quests and claim rewards.")
+    @app_commands.command(name="daily_duel", description="View your daily duel progress and claim reward(s)")
     @app_commands.guilds(GUILD)
     async def quests(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         viewdata = await self.qm.get_user_view(interaction.user.id)
         if not viewdata:
-            await interaction.edit_original_response(content="No quests available right now.")
+            await interaction.edit_original_response(content="Daily duel unavailable right now.")
             return
 
-        embed = discord.Embed(title="📜 Your Quests")
+        embed = discord.Embed(title="⚔️ Daily Duel")
         lines: List[str] = []
         for row in viewdata:
             q = row["quest"]
@@ -129,58 +100,6 @@ class Quests(commands.Cog):
 
         view = ClaimView(self, viewdata)
         await interaction.edit_original_response(embed=embed, view=(view if view.children else None))
-
-    # ---- /quest_claim with autocomplete of claimable quests ----
-    @app_commands.command(name="quest_claim", description="Claim a quest reward by name.")
-    @app_commands.guilds(GUILD)
-    @app_commands.describe(quest="Start typing the quest name (suggests claimable ones).")
-    async def quest_claim(self, interaction: discord.Interaction, quest: str):
-        await interaction.response.defer(ephemeral=True)
-
-        viewdata = await self.qm.get_user_view(interaction.user.id)
-        # Next-claimable only
-        claimables = {r["quest"].title.lower(): r["quest"].quest_id
-                    for r in viewdata if r["completed"] and not r["claimed"]}
-
-        # Resolve by exact id or fuzzy title match
-        qid = None
-        # exact id match?
-        for r in viewdata:
-            if quest == r["quest"].quest_id:
-                qid = quest
-                break
-        if not qid:
-            # title contains match
-            qid = next((qid for title, qid in claimables.items() if quest.lower() in title), None)
-
-        if not qid:
-            if not claimables:
-                await interaction.edit_original_response(content="You have no claimable quests right now.")
-            else:
-                s = ", ".join([t.title() for t in claimables.keys()])
-                await interaction.edit_original_response(content=f"Could not find that quest. Try one of: {s}")
-            return
-
-        ok, msg = await self.qm.claim(interaction.user.id, qid)
-        await interaction.edit_original_response(content=msg)
-
-    # ✅ Proper autocomplete attachment (must be async and return Choices)
-    @quest_claim.autocomplete("quest")
-    async def quest_claim_autocomplete(self, interaction: discord.Interaction, current: str):
-        viewdata = await self.qm.get_user_view(interaction.user.id)
-        names = [r["quest"].title for r in viewdata if r["completed"] and not r["claimed"]]
-        current_l = (current or "").lower()
-        filtered = [n for n in names if current_l in n.lower()]
-        return [app_commands.Choice(name=n, value=n) for n in filtered[:20]]
-
-
-    # Helper you can call from other cogs when packs are opened:
-    async def tick_pack_open(self, user_id: int, amount: int = 1):
-        # Milestone quest id we seeded above:
-        try:
-            await self.qm.increment(user_id, "open_packs", amount)
-        except Exception as e:
-            print("[quests] tick_pack_open error:", e)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Quests(bot))

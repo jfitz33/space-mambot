@@ -454,53 +454,6 @@ async def db_seed_quests_from_json(state, json_path: str, *, deactivate_missing:
 
     await asyncio.to_thread(work)
 
-async def db_seed_example_quests(state) -> None:
-    """
-    Keep your original examples if you like, but here’s a NEW daily multi-part quest
-    that rewards at 1/5/10/24 packs. You can disable your old 'open_5_packs' to avoid overlap.
-    """
-    open_packs_multi = {
-        "quest_id": "open_packs",
-        "title": "Open Packs",
-        "description": "Open packs today to earn multiple rewards.",
-        "category": "daily",
-        "target_count": 24,               
-        "reward_type": "mambucks",        # ignored for milestones; kept for compatibility
-        "reward_payload": json.dumps({
-            "milestones": [
-                {"count": 1,  "reward": {"type": "mambucks", "amount": 10}},
-                {"count": 5,  "reward": {"type": "mambucks", "amount": 10}},
-                {"count": 10, "reward": {"type": "mambucks", "amount": 10}},
-                {"count": 24, "reward": {"type": "mambucks", "amount": 10}},
-            ]
-        }),
-        "active": 1,
-    }
-
-    def _work():
-        with _conn(state.db_path) as conn, conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO quests
-                   (quest_id,title,description,category,target_count,reward_type,reward_payload,active)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (
-                    open_packs_multi["quest_id"],
-                    open_packs_multi["title"],
-                    open_packs_multi["description"],
-                    open_packs_multi["category"],
-                    open_packs_multi["target_count"],
-                    open_packs_multi["reward_type"],
-                    open_packs_multi["reward_payload"],
-                    open_packs_multi["active"],
-                )
-            )
-            # Optional: deactivate the older single-step seed, if you had it
-            try:
-                conn.execute("UPDATE quests SET active=0 WHERE quest_id='open_5_packs'")
-            except Exception:
-                pass
-    await asyncio.to_thread(_work)
-
 async def db_mark_claimed_step(state, user_id: int, quest_id: str, period_key: str, expect_steps: int) -> bool:
     """Optimistic bump of claimed_steps to prevent double claims under race."""
     def _work():

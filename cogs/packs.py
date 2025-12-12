@@ -329,10 +329,6 @@ class Packs(commands.Cog):
         db_add_cards(state, requester.id, [promo], promo.get("set") or tin_name)
         db_add_cards(state, requester.id, flat, pack_choice)
 
-        quests_cog = interaction.client.get_cog("Quests")
-        if quests_cog:
-            await quests_cog.tick_pack_open(user_id=requester.id, amount=packs_in_tin)
-
         opener_name = requester.display_name or requester.name
 
         summary = (
@@ -621,7 +617,6 @@ class Packs(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            quests_cog = interaction.client.get_cog("Quests")
             if is_bundle:
                 pack_names = pack_names_for_set(state, bundle["set_id"])
                 if not pack_names:
@@ -638,11 +633,6 @@ class Packs(commands.Cog):
                         flat = [card for pack in per_pack for card in pack]
                         db_add_cards(state, interaction.user.id, flat, bundle_pack)
 
-                if quests_cog:
-                    await quests_cog.tick_pack_open(
-                        user_id=interaction.user.id,
-                        amount=total_packs_opened,
-                    )
             else:
                 per_pack: list[list[dict]] = []
                 for _ in range(amount):
@@ -651,11 +641,6 @@ class Packs(commands.Cog):
                 flat = [card for pack in per_pack for card in pack]
                 db_add_cards(state, interaction.user.id, flat, pack_name)
 
-                if quests_cog:
-                    await quests_cog.tick_pack_open(
-                        user_id=interaction.user.id,
-                        amount=PACKS_IN_BOX * amount,
-                    )
         except Exception:
             await interaction.followup.send(
                 "⚠️ Something went wrong opening those quick boxes.",

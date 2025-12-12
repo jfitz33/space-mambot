@@ -17,7 +17,7 @@ from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index, reset_shop_index
 from core.images import ensure_rarity_emojis
 from core.art_import import download_cardpool_art_from_state
-from core.quests.schema import db_init_quests, db_seed_example_quests, db_seed_quests_from_json
+from core.quests.schema import db_init_quests, db_seed_quests_from_json
 from core.tins import load_tins_from_json
 
 
