@@ -1,5 +1,6 @@
 # core/engine.py
 from __future__ import annotations
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Iterable, List, Tuple
 from datetime import datetime, timedelta, date
@@ -64,6 +65,7 @@ class QuestManager:
         self.state = state
         self._defs: dict[str, QuestDef] = {}
         self._last_defs_refresh_date: date | None = None
+        self.week1_enabled = os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1"
 
     async def load_defs(self) -> None:
         rows = await db_fetch_active_quests(self.state)
@@ -169,6 +171,34 @@ class QuestManager:
             oldest["completed_at"] = oldest.get("completed_at") or stamp
             oldest["auto_granted_at"] = oldest.get("auto_granted_at") or stamp
         return slots
+
+    def _resolve_reward_payload_for_user(
+        self, payload: dict, *, roles: List[str] | None = None
+    ) -> dict:
+        """
+        Apply per-role overrides (if present) to the reward payload without
+        mutating the stored snapshot.
+        """
+
+        data = dict(payload or {})
+        pack_by_role = data.get("pack_by_role") or {}
+        if not pack_by_role:
+            return data
+
+        pack_name = None
+        role_names = {r.casefold() for r in (roles or []) if isinstance(r, str)}
+        for role_name, pack in pack_by_role.items():
+            if isinstance(role_name, str) and role_name.casefold() in role_names:
+                pack_name = pack
+                break
+
+        if not pack_name:
+            pack_name = data.get("default_pack") or data.get("pack")
+
+        if pack_name:
+            data["pack"] = pack_name
+
+        return data
 
     async def _ensure_daily_rollover_slots(self, user_id: int, q: QuestDef, today_date: date | None = None) -> List[dict]:
         today_key = daily_key(today_date)
@@ -346,24 +376,91 @@ class QuestManager:
                 })
         return view
 
-    async def claim(self, user_id: int, quest_id: str) -> Tuple[bool, str]:
+    async def claim(
+        self, user_id: int, quest_id: str, *, roles: List[str] | None = None
+    ) -> Tuple[bool, str]:
         q = self._defs.get(quest_id)
         if not q:
             return False, "Quest not found."
         if q.category == "daily" and q.max_rollover_days > 0:
             slots = await self._ensure_daily_rollover_slots(user_id, q)
-            claimables = [s for s in slots if not s.get("claimed_at") and int(s.get("progress", 0)) >= int(s.get("target_count") or q.target_count)]
+            pending = [s for s in slots if not s.get("claimed_at")]
+            claimables = [
+                s
+                for s in pending
+                if int(s.get("progress", 0))
+                >= int(s.get("target_count") or q.target_count)
+            ]
+            payload_flags = q.reward_payload or {}
+            catch_up_all = bool(
+                payload_flags.get("catch_up_all_pending")
+                or payload_flags.get("catch_up_all")
+            )
+            include_all_pending = catch_up_all and self.week1_enabled
             if not claimables:
                 return False, "Not completed yet."
-            slot = claimables[0]
-            ok = await db_daily_quest_mark_claimed(self.state, user_id, q.quest_id, slot["day_key"], auto=False)
-            if not ok:
-                return False, "Already claimed or race condition; try again."
-            try:
-                ack = await give_reward(self.state, user_id, slot.get("reward_type", q.reward_type), slot.get("reward_payload") or {})
-            except Exception as e:
-                return False, f"Reward error: {e}"
-            return True, f"Reward claimed for {slot['day_key'].split(':')[-1]}! {ack}"
+            
+            # Only attempt to claim slots that have actually hit their target so
+            # we don't bounce on partially-complete days when catch-up is
+            # enabled—unless launch-week catchup is active, in which case we
+            # claim every pending day once any day is completed.
+            to_claim = pending if include_all_pending else (claimables if catch_up_all else claimables[:1])
+
+            granted, messages, failures = 0, [], []
+            for slot in to_claim:
+                ok = await db_daily_quest_mark_claimed(
+                    self.state, user_id, q.quest_id, slot["day_key"], auto=False
+                )
+                if not ok:
+                    # Attempt a one-time refresh in case a reset left the slot
+                    # row missing or with empty claim markers.
+                    refreshed = await db_daily_quest_add_slot(
+                        self.state, user_id, q, slot["day_key"]
+                    )
+                    if not refreshed.get("claimed_at"):
+                        ok = await db_daily_quest_mark_claimed(
+                            self.state, user_id, q.quest_id, slot["day_key"], auto=False
+                        )
+                if not ok:
+                    failures.append(
+                        f"{slot['day_key'].split(':')[-1]}: could not mark claimed"
+                    )
+                    continue
+                try:
+                    payload = self._resolve_reward_payload_for_user(
+                        slot.get("reward_payload") or q.reward_payload or {},
+                        roles=roles,
+                    )
+                    ack = await give_reward(
+                        self.state,
+                        user_id,
+                        slot.get("reward_type", q.reward_type),
+                        payload,
+                    )
+                except Exception as e:
+                    failures.append(
+                        f"{slot['day_key'].split(':')[-1]}: reward error: {e}"
+                    )
+                    continue
+                granted += 1
+                messages.append(
+                    f"{slot['day_key'].split(':')[-1]}: {ack}"
+                )
+
+            if granted == 0:
+                pending_desc = ", ".join(
+                    f"{s['day_key'].split(':')[-1]}={int(s.get('progress', 0))}/"
+                    f"{int(s.get('target_count') or q.target_count)}"
+                    for s in pending
+                )
+                return (
+                    False,
+                    "Already claimed or race condition; try again. "
+                    f"(Pending slots: {pending_desc or 'none'}; failures: {', '.join(failures) or 'none'})",
+                )
+            summary = "\n".join(messages)
+            return True, f"Reward claimed for {granted} day(s)!\n{summary}"
+        
         pkey = period_key_for_category(q.category)
         row = await db_get_user_progress(self.state, user_id, [q.quest_id], pkey)
         r = (row or {}).get(q.quest_id) or {}
@@ -480,11 +577,16 @@ async def give_reward(state, user_id: int, reward_type: str, payload: dict) -> s
         return f"{amt} {shard_set_name(set_id)} credited to your wallet."
 
     if rt == "pack":
-        pack_name = data["pack"]
-        qty = int(data.get("qty", 1))
-        if hasattr(state, "shop") and hasattr(state.shop, "grant_pack"):
-            await maybe_await(state.shop.grant_pack(user_id, pack_name, qty))
-            return f"Granted {qty}× {pack_name} pack(s)."
-        raise RuntimeError("Pack reward helper not wired (expected state.shop.grant_pack).")
+        pack_name = data.get("pack")
+        if not pack_name:
+            raise RuntimeError("Pack reward payload missing 'pack' name.")
+
+        qty = max(1, int(data.get("qty", 1)))
+
+        if not hasattr(state, "shop") or not hasattr(state.shop, "grant_pack"):
+            raise RuntimeError("Pack reward helper not wired (expected state.shop.grant_pack).")
+
+        ack = await maybe_await(state.shop.grant_pack(user_id, pack_name, qty))
+        return ack or f"Granted {qty}× {pack_name} pack(s)."
 
     raise RuntimeError(f"Unknown reward_type: {reward_type}")

@@ -1,0 +1,22 @@
+[
+  {
+    "quest_id": "matches_played",
+    "title": "Daily Duel",
+    "description": "Play two ranked matches today (wins count double).",
+    "category": "daily",
+    "target_count": 2,
+    "reward_type": "pack",
+    "reward_payload": {
+      "qty": 3,
+      "pack_by_role": {
+        "Water": "Storm of the Abyss",
+        "Fire": "Blazing Genesis"
+      },
+      "default_pack": "Storm of the Abyss",
+      "catch_up_all_pending": true,
+      "max_rollover_days": 366
+    },
+    "max_rollover_days": 366,
+    "active": true
+  }
+]

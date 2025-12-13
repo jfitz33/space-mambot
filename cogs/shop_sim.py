@@ -42,6 +42,15 @@ def _rar_badge(state: AppState, rarity: str) -> str:
     short = {"common":"C","rare":"R","super":"SR","ultra":"UR","secret":"SEC","starlight":"SL"}.get(key, key[:1].upper())
     return f"[{short}]"
 
+def _shard_badge(state: AppState) -> str:
+    rid = getattr(state, "rarity_emoji_ids", {}) or {}
+    anim = getattr(state, "rarity_emoji_animated", {}) or {}
+    eid = rid.get("frostfire")
+    if eid:
+        prefix = "a" if anim.get("frostfire") else ""
+        return f"<{prefix}:rar_frostfire:{eid}>"
+    return "💠"
+
 def _pretty_shard_name_for_set(set_id: int) -> str:
     return SHARD_SET_NAMES.get(set_id, f"Shards (Set {set_id})")
 
@@ -142,17 +151,18 @@ class ShopSim(commands.Cog):
         )
 
         # Craft prices by rarity (shards)
+        shard_badge = _shard_badge(self.state)
         craft_lines = []
         for r, cost in CRAFT_COST_BY_RARITY.items():
             badge = _rar_badge(self.state, r)
-            craft_lines.append(f"{badge} **{cost} shards** → **{r.title()}**")
+            craft_lines.append(f"{badge} {shard_badge} **{cost} shards** → **{r.title()}**")
         e.add_field(name="Craft Prices", value="\n".join(craft_lines) or "—", inline=False)
 
         # Fragment prices by rarity (shards)
         craft_lines = []
         for r, cost in SHARD_YIELD_BY_RARITY.items():
             badge = _rar_badge(self.state, r)
-            craft_lines.append(f"{badge} **{r.title()}** → **{cost} shards**")
+            craft_lines.append(f"{badge} **{r.title()}** → **{cost}** {shard_badge}")
         e.add_field(name="Fragment Prices", value="\n".join(craft_lines) or "—", inline=False)
 
         # Sales section (compact format)
@@ -184,7 +194,7 @@ class ShopSim(commands.Cog):
                     badge = _rar_badge(self.state, rarity)
                     name = row.get("card_name", "?")
                     price = int(row.get("price_shards", 0))
-                    lines.append(f"{badge} {name} -> **{price} shards**")
+                    lines.append(f"{badge} {name} -> {shard_badge} **{price} shards**")
                 
             # Include any leftover rarities (legacy data) at the end
             for rarity, rows in sales.items():
@@ -194,7 +204,7 @@ class ShopSim(commands.Cog):
                     badge = _rar_badge(self.state, rarity)
                     name = row.get("card_name", "?")
                     price = int(row.get("price_shards", 0))
-                    lines.append(f"{badge} {name} -> **{price} shards**")
+                    lines.append(f"{badge} {name} -> {shard_badge} **{price} shards**")
 
             if lines:
                 e.add_field(name=sale_title, value="\n".join(lines), inline=False)

@@ -325,6 +325,32 @@ class Admin(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(
+        name="admin_reset_user_quests",
+        description="(Admin) Clear all quest progress/claims for a user without touching anything else.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(user="Member to reset", reason="Optional reason")
+    async def admin_reset_user_quests(
+        self, interaction: discord.Interaction, user: discord.Member, reason: str | None = None
+    ):
+        if user.bot:
+            await interaction.response.send_message("You can’t reset a bot account.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        cleared = await db_reset_all_user_quests(self.state, user.id)
+        reason_suffix = f" Reason: {reason}" if reason else ""
+        await interaction.followup.send(
+            (
+                f"✅ Cleared quest progress/claims for **{user.display_name}** "
+                f"({cleared} rows).{reason_suffix}"
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
         name="admin_report_loss",
         description="(Admin) Record a loss between two players (updates both records).",
     )
@@ -899,7 +925,12 @@ class Admin(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def admin_reset_simulated_day(self, interaction: discord.Interaction):
-        """Bring the simulate-next-day baseline back to the current ET date."""
+        """Remove future-dated rollover markers so simulations don't skip days.
+
+            Also clears any un/catch-up claim state for daily quests at or after the
+            reset point so an admin can re-test reward flows without hitting
+            "already claimed" responses.
+            """
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -946,11 +977,26 @@ class Admin(commands.Cog):
 
                     # Quest rollovers: drop any future-dated quest snapshots/slots
                     conn.execute(
-                        "DELETE FROM daily_quest_days WHERE day_key >= ?;",
+                        "DELETE FROM daily_quest_days WHERE day_key > ?;",
                         (quest_day_key,),
                     )
                     conn.execute(
-                        "DELETE FROM user_daily_quest_slots WHERE day_key >= ?;",
+                        "DELETE FROM user_daily_quest_slots WHERE day_key > ?;",
+                        (quest_day_key,),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE user_daily_quest_slots
+                           SET progress = 0,
+                               completed_at = NULL,
+                               claimed_at = NULL,
+                               auto_granted_at = NULL
+                         WHERE day_key >= ?;
+                        """,
+                        (quest_day_key,),
+                    )
+                    conn.execute(
+                        "DELETE FROM user_quest_progress WHERE period_key >= ?;",
                         (quest_day_key,),
                     )
             except Exception:

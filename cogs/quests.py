@@ -83,11 +83,19 @@ class Quests(commands.Cog):
                 # capture quest_id via default arg to avoid late-binding bug
                 async def _on_click(inter: discord.Interaction, qid=quest_id):
                     await inter.response.defer(ephemeral=True)
+                    for child in self.children:
+                        child.disabled = True
+                    try:
+                        await inter.edit_original_response(view=self)
+                    except discord.HTTPException:
+                        pass
                     # optional: restrict to the original requester
                     # if inter.user.id != interaction.user.id:
                     #     await inter.response.send_message("This panel isn’t for you.", ephemeral=True)
                     #     return
-                    ok, msg = await self.outer.qm.claim(inter.user.id, qid)
+                    ok, msg = await self.outer.qm.claim(
+                        inter.user.id, qid, roles=[r.name for r in inter.user.roles]
+                    )
                     try:
                         await inter.delete_original_response()
                     except discord.HTTPException:

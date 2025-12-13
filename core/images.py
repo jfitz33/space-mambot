@@ -16,6 +16,7 @@ RARITY_FILES: Dict[str, str] = {
     "super":  ("super.gif", "super.png"),
     "ultra":  ("ultra.gif", "ultra.png"),
     "secret": ("secret.gif", "secret.png"),
+    "frostfire": ("frostfire.gif", "frostfire.png"),
 }
 
 FALLBACK_BADGES: Dict[str, str] = {

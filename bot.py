@@ -19,6 +19,7 @@ from core.images import ensure_rarity_emojis
 from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_quests_from_json
 from core.tins import load_tins_from_json
+from core.pack_rewards import PackRewardHelper
 
 
 logging.basicConfig(
@@ -53,6 +54,15 @@ bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 bot.state.banlist_path = str((BASE_DIR / "data" / "banlist.json").resolve())
 bot.state.tins_path = str((BASE_DIR / "data" / "tins.json").resolve())
 
+def _select_quests_path(base_dir: Path) -> Path:
+    """Choose quests.json for normal mode or quests_week1.json for launch week."""
+
+    # Allow an explicit toggle via env for quick rollout/rollback.
+    week1_enabled = os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1"
+
+    filename = "quests_week1.json" if week1_enabled else "quests.json"
+    return (base_dir / "data" / filename).resolve()
+
 # Set to track live views to properly enforce timeouts
 setattr(bot.state, "live_views", set())
 
@@ -69,12 +79,13 @@ async def on_ready():
     db_init(bot.state)
     db_init_trades(bot.state)
     await db_init_quests(bot.state)
-    quests_json_path = (BASE_DIR / "data" / "quests.json").resolve()
+    quests_json_path = _select_quests_path(BASE_DIR)
     bot.state.quests_json_path = str(quests_json_path)
     await db_seed_quests_from_json(bot.state, str(quests_json_path), deactivate_missing=True)
     db_init_user_stats(bot.state)
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
+    bot.state.shop = PackRewardHelper(bot.state, bot)
     load_starters_from_csv(bot.state)
     load_tins_from_json(bot.state, bot.state.tins_path)
     db_init_wallet(bot.state)

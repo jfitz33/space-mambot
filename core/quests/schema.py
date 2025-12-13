@@ -256,10 +256,10 @@ async def db_daily_quest_mark_claimed(state, user_id: int, quest_id: str, day_ke
         with _conn(state.db_path) as conn, conn:
             cur = conn.execute(
                 """UPDATE user_daily_quest_slots
-                      SET claimed_at = COALESCE(claimed_at, ?),
-                          completed_at = COALESCE(completed_at, ?),
-                          auto_granted_at = CASE WHEN ? THEN COALESCE(auto_granted_at, ?) ELSE auto_granted_at END
-                    WHERE user_id=? AND quest_id=? AND day_key=? AND claimed_at IS NULL""",
+                      SET claimed_at = CASE WHEN claimed_at IS NULL OR claimed_at = '' THEN ? ELSE claimed_at END,
+                          completed_at = CASE WHEN completed_at IS NULL OR completed_at = '' THEN ? ELSE completed_at END,
+                          auto_granted_at = CASE WHEN ? THEN CASE WHEN auto_granted_at IS NULL OR auto_granted_at = '' THEN ? ELSE auto_granted_at END ELSE auto_granted_at END
+                    WHERE user_id=? AND quest_id=? AND day_key=? AND (claimed_at IS NULL OR claimed_at = '')""",
                 (now_iso, now_iso, 1 if auto else 0, now_iso, str(user_id), quest_id, day_key),
             )
             return cur.rowcount > 0
