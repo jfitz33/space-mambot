@@ -1,5 +1,5 @@
 # cogs/shop_sim.py
-import os, asyncio, discord, math
+import os, asyncio, discord, math, re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import List
@@ -50,6 +50,13 @@ def _shard_badge(state: AppState) -> str:
         prefix = "a" if anim.get("frostfire") else ""
         return f"<{prefix}:rar_frostfire:{eid}>"
     return "💠"
+
+_NBSP = "\u00A0"  # non-breaking space to preserve padding in embeds
+
+
+def _nbsp(text: str) -> str:
+    """Swap standard spaces for non-breaking spaces so Discord preserves padding."""
+    return text.replace(" ", _NBSP)
 
 def _pretty_shard_name_for_set(set_id: int) -> str:
     return SHARD_SET_NAMES.get(set_id, f"Shards (Set {set_id})")
@@ -150,20 +157,17 @@ class ShopSim(commands.Cog):
             inline=False,
         )
 
-        # Craft prices by rarity (shards)
+        # Craft/fragment prices by rarity (shards)
         shard_badge = _shard_badge(self.state)
-        craft_lines = []
-        for r, cost in CRAFT_COST_BY_RARITY.items():
-            badge = _rar_badge(self.state, r)
-            craft_lines.append(f"{badge} {shard_badge} **{cost} shards** → **{r.title()}**")
-        e.add_field(name="Craft Prices", value="\n".join(craft_lines) or "—", inline=False)
+        price_rows = [
+            _nbsp(f"**4**         {shard_badge} | **1**      {shard_badge}  -> {_rar_badge(self.state, 'common')} Common"),
+            _nbsp(f"**40**      {shard_badge} | **10**   {shard_badge}  -> {_rar_badge(self.state, 'rare')} Rare"),
+            _nbsp(f"**100**      {shard_badge} | **25**   {shard_badge}  -> {_rar_badge(self.state, 'super')} Super"),
+            _nbsp(f"**300**   {shard_badge} | **75** {shard_badge}  -> {_rar_badge(self.state, 'ultra')} Ultra"),
+            _nbsp(f"**1500** {shard_badge} | **375** {shard_badge}  -> {_rar_badge(self.state, 'secret')} Secret"),
+        ]
 
-        # Fragment prices by rarity (shards)
-        craft_lines = []
-        for r, cost in SHARD_YIELD_BY_RARITY.items():
-            badge = _rar_badge(self.state, r)
-            craft_lines.append(f"{badge} **{r.title()}** → **{cost}** {shard_badge}")
-        e.add_field(name="Fragment Prices", value="\n".join(craft_lines) or "—", inline=False)
+        e.add_field(name="Craft | Fragment", value="\n".join(price_rows) or "—", inline=False)
 
         # Sales section (compact format)
         if sales:

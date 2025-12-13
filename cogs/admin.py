@@ -1,4 +1,5 @@
-import discord, os, time
+import asyncio
+import discord, os, time, logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from discord.ext import commands
@@ -27,9 +28,15 @@ from core.db import (
 )
 from core.quests.schema import db_reset_all_user_quests
 from core.quests.timekeys import daily_key
-from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES
+from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
+from core.db import db_add_cards
+from core.packs import open_pack_from_csv, open_box_from_csv
+from core.views import _pack_embed_for_cards
+from cogs.packs import ac_pack_name_choices
+
+logger = logging.getLogger(__name__)
 
 # Set guild ID for development
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -87,6 +94,54 @@ class Admin(commands.Cog):
             resolved["set"] = set_name
             resolved.setdefault("cardset", set_name)
         return resolved
+
+    async def _dm_pack_results(
+        self,
+        recipient: discord.abc.User,
+        pack_name: str,
+        per_pack: list[list[dict]],
+    ) -> bool:
+        try:
+            dm = await recipient.create_dm()
+            for i, cards in enumerate(per_pack, start=1):
+                content, embeds, files = _pack_embed_for_cards(
+                    self.bot, pack_name, cards, i, len(per_pack)
+                )
+                send_kwargs: dict = {"embeds": embeds}
+                if content:
+                    send_kwargs["content"] = content
+                if files:
+                    send_kwargs["files"] = files
+                await dm.send(**send_kwargs)
+                if len(per_pack) > 5:
+                    await asyncio.sleep(0.2)
+            return True
+        except Exception:
+            logger.warning("Failed to DM pack/box results", exc_info=True)
+            return False
+
+    async def _post_pack_results(
+        self,
+        destination: discord.abc.Messageable | None,
+        pack_name: str,
+        per_pack: list[list[dict]],
+    ) -> None:
+        if destination is None:
+            return
+        for i, cards in enumerate(per_pack, start=1):
+            content, embeds, files = _pack_embed_for_cards(
+                self.bot, pack_name, cards, i, len(per_pack)
+            )
+            send_kwargs: dict = {"embeds": embeds}
+            if content:
+                send_kwargs["content"] = content
+            if files:
+                send_kwargs["files"] = files
+            try:
+                await destination.send(**send_kwargs)
+            except Exception:
+                logger.warning("Failed to post pack/box results to channel", exc_info=True)
+                break
 
     @staticmethod
     def _card_name(card: dict) -> str:
@@ -216,6 +271,104 @@ class Admin(commands.Cog):
         await interaction.channel.send(
             f"🗑 **{interaction.user.display_name}** removed x{removed} **{label}** from **{user.display_name}**'s collection."
         )
+
+    @app_commands.command(
+        name="admin_award_pack",
+        description="(Admin) Open packs for a user and DM them the pulls.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        user="User receiving the packs",
+        pack_name="Pack set to open",
+        amount="How many packs to open (1-100)",
+    )
+    @app_commands.autocomplete(pack_name=ac_pack_name_choices)
+    async def admin_award_pack(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User,
+        pack_name: str,
+        amount: app_commands.Range[int, 1, 100] = 1,
+    ):
+        state = self.state
+        normalized_pack = (pack_name or "").strip()
+        if normalized_pack not in (state.packs_index or {}):
+            await interaction.response.send_message("That pack set could not be found.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        per_pack: list[list[dict]] = []
+        for _ in range(amount):
+            per_pack.append(open_pack_from_csv(state, normalized_pack, 1))
+
+        flat = [card for pack in per_pack for card in pack]
+        db_add_cards(state, user.id, flat, normalized_pack)
+
+        dm_sent = await self._dm_pack_results(user, normalized_pack, per_pack)
+
+        summary = (
+            f"{interaction.user.display_name} awarded **{amount}** pack{'s' if amount != 1 else ''}"
+            f" of **{normalized_pack}** to {user.mention}."
+            f"{' Results sent via DM.' if dm_sent else ' Could not DM results; posting here.'}"
+        )
+
+        await interaction.followup.send(summary, ephemeral=True)
+        await interaction.channel.send(summary)
+
+        if not dm_sent:
+            await self._post_pack_results(interaction.channel, normalized_pack, per_pack)
+
+    @app_commands.command(
+        name="admin_award_box",
+        description="(Admin) Open a sealed box for a user and DM them the pulls.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        user="User receiving the box",
+        pack_name="Pack set to open",
+        amount="How many boxes to open (1-5)",
+    )
+    @app_commands.autocomplete(pack_name=ac_pack_name_choices)
+    async def admin_award_box(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User,
+        pack_name: str,
+        amount: app_commands.Range[int, 1, 5] = 1,
+    ):
+        state = self.state
+        normalized_pack = (pack_name or "").strip()
+        if normalized_pack not in (state.packs_index or {}):
+            await interaction.response.send_message("That pack set could not be found.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        per_pack: list[list[dict]] = []
+        for _ in range(amount):
+            per_pack.extend(open_box_from_csv(state, normalized_pack))
+
+        flat = [card for pack in per_pack for card in pack]
+        db_add_cards(state, user.id, flat, normalized_pack)
+
+        dm_sent = await self._dm_pack_results(user, normalized_pack, per_pack)
+
+        summary = (
+            f"{interaction.user.display_name} awarded **{amount}** box{'es' if amount != 1 else ''}"
+            f" of **{normalized_pack}** to {user.mention} ({amount * PACKS_IN_BOX} packs)."
+            f"{' Results sent via DM.' if dm_sent else ' Could not DM results; posting here.'}"
+        )
+
+        await interaction.followup.send(summary, ephemeral=True)
+        await interaction.channel.send(summary)
+
+        if not dm_sent:
+            await self._post_pack_results(interaction.channel, normalized_pack, per_pack)
 
     @app_commands.command(
         name="admin_reset_user",

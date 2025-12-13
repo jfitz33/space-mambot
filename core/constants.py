@@ -159,17 +159,17 @@ def pack_names_for_set(state, set_id: int) -> list[str]:
 
 # Shard economy
 CRAFT_COST_BY_RARITY = {
-    "common": 5,
-    "rare": 60,
-    "super": 90,
+    "common": 4,
+    "rare": 40,
+    "super": 100,
     "ultra": 300,
     "secret": 1500
 }
 
 SHARD_YIELD_BY_RARITY = {
     "common": 1,
-    "rare": 20,
-    "super": 30,
-    "ultra": 100,
-    "secret": 500
+    "rare": 10,
+    "super": 25,
+    "ultra": 75,
+    "secret": 375
 }
