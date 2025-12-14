@@ -327,6 +327,13 @@ async def db_init_quests(state) -> None:
               PRIMARY KEY (user_id, quest_id, day_key),
               FOREIGN KEY (quest_id, day_key) REFERENCES daily_quest_days(quest_id, day_key)
             );
+            CREATE TABLE IF NOT EXISTS daily_quest_pack_totals (
+              quest_id    TEXT PRIMARY KEY,
+              last_day    TEXT,
+              total       INTEGER NOT NULL DEFAULT 0,
+              updated_ts  INTEGER NOT NULL,
+              FOREIGN KEY (quest_id) REFERENCES quests(quest_id)
+            );
             """)
     await asyncio.to_thread(_work)
 

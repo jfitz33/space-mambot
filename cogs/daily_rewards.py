@@ -14,6 +14,10 @@ from core.constants import TEAM_ROLE_NAMES
 from core.currency import mambucks_label
 from core.db import (
     db_daily_quest_mambuck_reward_for_day,
+    db_daily_quest_pack_get_total,
+    db_daily_quest_pack_increment_total,
+    db_daily_quest_pack_reward_for_day,
+    db_daily_quest_pack_reset_total,
     db_init_starter_daily_rewards,
     db_starter_daily_get_amount,
     db_starter_daily_get_total,
@@ -25,6 +29,7 @@ from core.db import (
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+WEEK1_QUEST_ID = "matches_played"
 
 ET = ZoneInfo("America/New_York")
 
@@ -55,6 +60,7 @@ class DailyRewards(commands.Cog):
         self.bot = bot
         self._task: asyncio.Task | None = None
         self._last_grant_day_key: str | None = None
+        self._week1_enabled = os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1"
 
     async def cog_load(self):
         db_init_starter_daily_rewards(self.bot.state)
@@ -83,6 +89,18 @@ class DailyRewards(commands.Cog):
         total_after, did_total = db_starter_daily_increment_total(
             self.bot.state, day_key, total_increment
         )
+
+        pack_increment = 0
+        pack_total_after = db_daily_quest_pack_get_total(
+            self.bot.state, WEEK1_QUEST_ID
+        )
+        if self._week1_enabled and prev_quest_day_key:
+            pack_increment = db_daily_quest_pack_reward_for_day(
+                self.bot.state, prev_quest_day_key, WEEK1_QUEST_ID
+            )
+            pack_total_after, _ = db_daily_quest_pack_increment_total(
+                self.bot.state, WEEK1_QUEST_ID, prev_quest_day_key, pack_increment
+            )
 
         awarded = 0
         seen_members = 0
@@ -123,6 +141,12 @@ class DailyRewards(commands.Cog):
             print(
                 f"[daily-rewards] {day_key}: total mambucks awarded now {mambucks_label(total_after)}."
                 f"[daily-rewards] {day_key}: total daily earnable now {mambucks_label(total_after)}{quest_note}."
+            )
+        
+        if pack_increment > 0:
+            print(
+                f"[daily-rewards] {day_key}: +{pack_increment} pack(s) added to {WEEK1_QUEST_ID} total "
+                f"(now {pack_total_after})."
             )
 
     async def run_midnight_grant(self, *, day_key: str | None = None):
@@ -216,6 +240,49 @@ class DailyRewards(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(
+        name="daily_packs_total",
+        description="(Admin) View the running total of daily quest packs earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        quest_id="Quest ID to inspect (default: matches_played for week 1 daily duel)",
+    )
+    async def daily_packs_total(
+        self, interaction: discord.Interaction, quest_id: str | None = None
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        qid = quest_id or WEEK1_QUEST_ID
+        total = db_daily_quest_pack_get_total(self.bot.state, qid)
+        await interaction.followup.send(
+            f"Total daily quest packs earnable per user for `{qid}`: **{total}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="daily_packs_reset_total",
+        description="(Admin) Reset the running total of daily quest packs earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        quest_id="Quest ID to reset (default: matches_played for week 1 daily duel)",
+    )
+    async def daily_packs_reset_total(
+        self, interaction: discord.Interaction, quest_id: str | None = None
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        qid = quest_id or WEEK1_QUEST_ID
+        db_daily_quest_pack_reset_total(self.bot.state, qid)
+        await interaction.followup.send(
+            f"Daily quest pack total for `{qid}` has been reset to 0.",
+            ephemeral=True,
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DailyRewards(bot))

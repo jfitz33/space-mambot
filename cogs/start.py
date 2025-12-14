@@ -15,15 +15,17 @@ from core.packs import (
 from core.views import _pack_embed_for_cards
 from core.db import (
     db_add_cards,
+    db_daily_quest_pack_get_total,
     db_starter_claim_abort,
     db_starter_claim_begin,
     db_starter_claim_complete,
+    db_starter_daily_get_total,
     db_wallet_add,
 )
 from core.images import ensure_rarity_emojis
 from core.wallet_api import get_mambucks, credit_mambucks, get_shards, add_shards
 from core.constants import PACKS_BY_SET, TEAM_ROLE_MAPPING, TEAM_ROLE_NAMES
-from core.currency import shard_set_name
+from core.currency import mambucks_label, shard_set_name
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -32,6 +34,11 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 STARTER_TO_PACK = {
     "Cult of the Mambo": "Storm of the Abyss",
     "Hellfire Heretics": "Blazing Genesis",
+}
+WEEK1_QUEST_ID = "matches_played"
+WEEK1_PACK_BY_ROLE = {
+    "Water": "Storm of the Abyss",
+    "Fire": "Blazing Genesis",
 }
 
 async def _resolve_member(interaction: discord.Interaction) -> discord.Member | None:
@@ -47,6 +54,13 @@ async def _resolve_member(interaction: discord.Interaction) -> discord.Member | 
         return await interaction.guild.fetch_member(interaction.user.id)
     except discord.NotFound:
         return None
+
+def _week1_pack_for_member(member: discord.Member) -> str:
+    role_names = {r.name for r in member.roles}
+    for role_name, pack in WEEK1_PACK_BY_ROLE.items():
+        if role_name in role_names:
+            return pack
+    return WEEK1_PACK_BY_ROLE.get("Water", "Storm of the Abyss")
 
 class StarterDeckSelectView(View):
     def __init__(self, state, member: discord.Member, timeout: float = 180, on_success=None, on_abort=None):
@@ -185,6 +199,27 @@ class StarterDeckSelectView(View):
             except Exception:
                 dm_sent = False
 
+            catchup_lines: list[str] = []
+            catchup_note = (
+                "Because you joined after day 1 and missed out on daily rewards, "
+                "I've awarded you these packs and mambucks to catch you up!"
+            )
+
+            if os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1":
+                pack_catchup_total = db_daily_quest_pack_get_total(self.state, WEEK1_QUEST_ID)
+                if pack_catchup_total > 0:
+                    pack_ack = await self.state.shop.grant_pack(
+                        self.member.id, _week1_pack_for_member(self.member), pack_catchup_total
+                    )
+                    catchup_lines.append(pack_ack)
+
+            daily_total = db_starter_daily_get_total(self.state)
+            if daily_total > 0:
+                new_wallet = credit_mambucks(self.state, self.member.id, daily_total)
+                catchup_lines.append(
+                    f"Credited {mambucks_label(daily_total)} (new total: {mambucks_label(new_wallet)})."
+                )
+
             # (D) Post a succinct summary; if DMs failed, fall back with embeds in-channel
             summary = (
                 f"Welcome to the **{TEAM_ROLE_MAPPING.get(deck_name)}** team {interaction.user.mention}!"
@@ -194,6 +229,9 @@ class StarterDeckSelectView(View):
                 f" You can view your collection with the /collection command, or use the /collection_export command to get a csv version "
                 f"to upload to ygoprodeck. Happy dueling!"
             )
+
+            if catchup_lines:
+                summary += "\n\n" + catchup_note + "\n" + "\n".join(f"• {line}" for line in catchup_lines)
 
             await interaction.channel.send(summary)
 

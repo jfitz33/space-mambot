@@ -1224,6 +1224,17 @@ def db_init_starter_daily_rewards(state):
         """)
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS daily_quest_pack_totals (
+                quest_id    TEXT PRIMARY KEY,
+                last_day    TEXT,
+                total       INTEGER NOT NULL DEFAULT 0,
+                updated_ts  INTEGER NOT NULL,
+                FOREIGN KEY (quest_id) REFERENCES quests(quest_id)
+            );
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO starter_daily_rewards_config (id, amount, updated_ts)
             VALUES (1, 100, ?)
             ON CONFLICT(id) DO NOTHING;
@@ -1377,6 +1388,132 @@ def db_daily_quest_mambuck_reward_for_day(state, day_key: str) -> int:
         return 0
 
     return sum(_sum_row(r) for r in rows)
+
+def db_daily_quest_pack_reward_for_day(state, day_key: str, quest_id: str) -> int:
+    """Return the pack quantity available from ``quest_id`` for ``day_key`` snapshots."""
+
+    if not day_key or not quest_id:
+        return 0
+
+    try:
+        with sqlite3.connect(state.db_path) as conn:
+            row = conn.execute(
+                "SELECT reward_type, reward_payload FROM daily_quest_days WHERE day_key=? AND quest_id=?",
+                (day_key, quest_id),
+            ).fetchone()
+    except Exception:
+        return 0
+
+    if not row:
+        return 0
+
+    reward_type, payload_json = row
+    if (reward_type or "").lower() != "pack":
+        return 0
+
+    try:
+        payload = json.loads(payload_json or "{}")
+    except Exception:
+        payload = {}
+
+    try:
+        qty = int((payload or {}).get("qty", 1) or 0)
+    except Exception:
+        qty = 0
+
+    return max(0, qty)
+
+
+def db_daily_quest_pack_increment_total(
+    state, quest_id: str, day_key: str, qty: int
+) -> tuple[int, bool]:
+    """Add ``qty`` packs for ``quest_id`` to the running total once per ``day_key``."""
+
+    now = int(time.time())
+    qid = str(quest_id or "").strip()
+    amt = max(0, int(qty or 0))
+    if not qid:
+        return 0, False
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO daily_quest_pack_totals (quest_id, last_day, total, updated_ts)
+            VALUES (?, NULL, 0, ?)
+            ON CONFLICT(quest_id) DO NOTHING;
+            """,
+            (qid, now),
+        )
+
+        cur = conn.execute(
+            """
+            UPDATE daily_quest_pack_totals
+               SET total = total + ?,
+                   last_day = ?,
+                   updated_ts = ?
+             WHERE quest_id = ?
+               AND (last_day IS NULL OR last_day <> ?);
+            """,
+            (amt, day_key, now, qid, day_key),
+        )
+
+        did = cur.rowcount > 0 and amt > 0
+        total_row = conn.execute(
+            "SELECT total FROM daily_quest_pack_totals WHERE quest_id=?",
+            (qid,),
+        ).fetchone()
+
+    total_val = int(total_row[0]) if total_row and total_row[0] is not None else 0
+    return total_val, did
+
+
+def db_daily_quest_pack_get_total(state, quest_id: str) -> int:
+    qid = str(quest_id or "").strip()
+    if not qid:
+        return 0
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO daily_quest_pack_totals (quest_id, last_day, total, updated_ts)
+            VALUES (?, NULL, 0, ?)
+            ON CONFLICT(quest_id) DO NOTHING;
+            """,
+            (qid, now),
+        )
+        row = conn.execute(
+            "SELECT total FROM daily_quest_pack_totals WHERE quest_id=?",
+            (qid,),
+        ).fetchone()
+
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def db_daily_quest_pack_reset_total(state, quest_id: str) -> int:
+    qid = str(quest_id or "").strip()
+    if not qid:
+        return 0
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO daily_quest_pack_totals (quest_id, last_day, total, updated_ts)
+            VALUES (?, NULL, 0, ?)
+            ON CONFLICT(quest_id) DO UPDATE SET
+                total = 0,
+                last_day = NULL,
+                updated_ts = excluded.updated_ts;
+            """,
+            (qid, now),
+        )
+        row = conn.execute(
+            "SELECT total FROM daily_quest_pack_totals WHERE quest_id=?",
+            (qid,),
+        ).fetchone()
+
+    return int(row[0]) if row and row[0] is not None else 0
 
 def db_starter_daily_reset_total(state) -> int:
     now = int(time.time())
