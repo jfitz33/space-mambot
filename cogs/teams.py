@@ -380,9 +380,6 @@ class Teams(commands.Cog):
         for role in member.roles:
             if role.name in active_names:
                 return role.name
-        for role in member.roles:
-            if role.name in TEAM_ROLE_NAMES:
-                return role.name
         return None
 
     @app_commands.command(name="team_award", description="(Admin) Award points to a team member")
@@ -405,7 +402,7 @@ class Teams(commands.Cog):
         team_name = self._resolve_member_team(member)
         if not team_name:
             await interaction.followup.send(
-                "That member does not have a team role assigned.",
+                "That member does not have a team role for the current set assigned.",
                 ephemeral=True,
             )
             return

@@ -2201,15 +2201,17 @@ def db_team_points_add(state, guild_id: int, user_id: int, team_name: str, delta
     with sqlite3.connect(state.db_path) as conn, conn:
         cur = conn.execute(
             """
-            SELECT points
+            SELECT team_name, points
               FROM team_points
              WHERE guild_id = ? AND user_id = ?
             """,
             (guild_id_s, user_id_s),
         )
         row = cur.fetchone()
-        current = int(row[0]) if row else 0
-        new_total = max(0, current + delta)
+        current_team = str(row[0]) if row else None
+        current_points = int(row[1]) if row else 0
+        base_points = 0 if (row and current_team != team_name) else current_points
+        new_total = max(0, base_points + delta)
 
         if row is None:
             conn.execute(
