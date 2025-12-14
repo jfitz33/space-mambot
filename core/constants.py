@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+from dotenv import load_dotenv, find_dotenv
 
 PACK_COST=int(os.getenv("PACK_MAMBUCK_COST","10"))
 PACK_SHARD_COST=int(os.getenv("PACK_SHARD_COST", "100"))
@@ -13,6 +15,27 @@ FROSTFIRE_BUNDLE_NAME="Frostfire Bundle"
 SANDSTORM_BUNDLE_NAME="Sandstorm Bundle"
 TEMPORAL_BUNDLE_NAME="Temporal Bundle"
 SALE_DISCOUNT_PCT=10
+def _parse_active_set_env() -> int:
+    # Ensure we load the .env file even if this module is imported before bot.py
+    # (or another entry point) has a chance to call load_dotenv. This keeps
+    # CURRENT_ACTIVE_SET in sync with the developer's .env configuration when
+    # running scripts or shells that import this module directly.
+    dotenv_path = find_dotenv(usecwd=True)
+    if not dotenv_path:
+        # Fallback to a .env next to bot.py when the working directory is
+        # elsewhere (e.g., service managers).
+        dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+
+    if dotenv_path:
+        load_dotenv(dotenv_path=dotenv_path)
+
+    try:
+        return int(os.getenv("CURRENT_ACTIVE_SET", "1"))
+    except ValueError:
+        return 1
+
+
+CURRENT_ACTIVE_SET = _parse_active_set_env()
 
 # Daily sale layout: (rarity, number of entries)
 SALE_LAYOUT = [
@@ -127,12 +150,64 @@ _PACKS_BY_SET_NORMALIZED = {
     for sid, names in PACKS_BY_SET.items()
 }
 
-# Team roles
+# Team roles / packs by set
+TEAM_SETS = {
+    1: {
+        "order": ("Fire", "Water"),
+        "teams": {
+            "Fire": {"display": "Team Fire", "emoji": "🔥"},
+            "Water": {"display": "Team Water", "emoji": "💧"},
+        },
+    },
+    2: {
+        "order": ("Wind", "Earth"),
+        "teams": {
+            "Wind": {
+                "display": "Team Wind",
+                "emoji": "🌪️",
+                "pack": "Evolving Maelstrom",
+            },
+            "Earth": {
+                "display": "Team Earth",
+                "emoji": "⛰️",
+                "pack": "Obsidian Empire",
+            },
+        },
+    },
+    3: {
+        "order": ("Past", "Future"),
+        "teams": {
+            "Past": {
+                "display": "Team Past",
+                "emoji": "⌛",
+                "pack": "Power of the Primordial",
+            },
+            "Future": {
+                "display": "Team Future",
+                "emoji": "🤖",
+                "pack": "Cyberstorm Crisis",
+            },
+        },
+    },
+}
+
 TEAM_ROLE_MAPPING = {
     "Cult of the Mambo": "Water",
     "Hellfire Heretics": "Fire",
 }
-TEAM_ROLE_NAMES = frozenset(TEAM_ROLE_MAPPING.values())
+TEAM_ROLE_NAMES = frozenset({name for cfg in TEAM_SETS.values() for name in cfg.get("teams", {})})
+
+
+def latest_team_set_id() -> int | None:
+    team_sets = set(TEAM_SETS.keys())
+    pack_sets = set(PACKS_BY_SET.keys())
+    eligible = sorted(team_sets & pack_sets)
+    if not eligible:
+        return None
+
+    if CURRENT_ACTIVE_SET in eligible:
+        return CURRENT_ACTIVE_SET
+    return eligible[-1]
 
 def set_id_for_pack(pack_name: str) -> int | None:
     if not pack_name:

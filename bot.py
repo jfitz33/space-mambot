@@ -28,13 +28,13 @@ logging.basicConfig(
 )
 logging.getLogger("cogs.tournaments").setLevel(logging.DEBUG)
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(dotenv_path=BASE_DIR / ".env")
 TOKEN    = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 ART_IMPORT = int(os.getenv("ART_IMPORT", "0") or 0)
 DEV_FORCE_CLEAN = os.getenv("DEV_FORCE_CLEAN", "0") == "1"
 
-BASE_DIR  = Path(__file__).resolve().parent
 DB_PATH   = os.getenv("DB_PATH", "collections.sqlite3")
 PACKS_DIR = os.getenv("PACKS_DIR", "packs_csv")
 
