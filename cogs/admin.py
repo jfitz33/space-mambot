@@ -27,7 +27,7 @@ from core.db import (
     db_wishlist_clear,
 )
 from core.quests.schema import db_reset_all_user_quests
-from core.quests.timekeys import daily_key
+from core.quests.timekeys import daily_key, now_et
 from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
@@ -502,6 +502,67 @@ class Admin(commands.Cog):
             ),
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="admin_daily_duel_status",
+        description="(Admin) Inspect daily duel rollover slots for a user.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(user="Member to inspect")
+    async def admin_daily_duel_status(
+        self, interaction: discord.Interaction, user: discord.Member
+    ) -> None:
+        """Show rollover slot state to debug missing queued rewards."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        quests_cog = interaction.client.get_cog("Quests")
+        if not quests_cog or not getattr(quests_cog, "qm", None):
+            await interaction.followup.send("⚠️ Quests cog not loaded.", ephemeral=True)
+            return
+
+        qm = quests_cog.qm
+        await qm._refresh_defs_if_needed(now_et().date())
+
+        daily_rollover_quests = [
+            q for q in qm._defs.values() if q.category == "daily" and q.max_rollover_days > 0
+        ]
+        if not daily_rollover_quests:
+            await interaction.followup.send(
+                "ℹ️ No rollover-enabled daily quests are configured.", ephemeral=True
+            )
+            return
+
+        lines: list[str] = []
+        for q in daily_rollover_quests:
+            slots = await qm._ensure_daily_rollover_slots(user.id, q)
+            max_target = max(int(s.get("target_count", q.target_count) or 0) for s in slots)
+            pending = [s for s in slots if not s.get("claimed_at")]
+            claimables = [s for s in pending if int(s.get("progress", 0)) >= max_target]
+
+            lines.append(
+                f"**{q.title}** — {len(pending)} pending / {len(claimables)} claimable"
+            )
+
+            for slot in slots[-10:]:
+                target = int(slot.get("target_count", max_target) or max_target)
+                progress = int(slot.get("progress", 0))
+                claimed = bool(slot.get("claimed_at"))
+                completed = progress >= target
+                flags = []
+                if slot.get("auto_granted_at"):
+                    flags.append("auto")
+                status = "✅ claimed" if claimed else ("🏁 ready" if completed else "…")
+                if flags:
+                    status += " (" + ", ".join(flags) + ")"
+                lines.append(f"• {slot['day_key']}: {progress}/{target} — {status}")
+
+            if len(slots) > 10:
+                lines.append(f"(showing latest 10 of {len(slots)} slots)")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @app_commands.command(
         name="admin_report_loss",

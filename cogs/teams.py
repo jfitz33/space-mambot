@@ -136,8 +136,8 @@ class Teams(commands.Cog):
         team_name: str,
         pack_name: str,
     ) -> bool:
-        START_PACKS = 12
-        guaranteed_tops = ["super"] * 8 + ["ultra"] * 3 + ["secret"]
+        START_PACKS = 8
+        guaranteed_tops = ["super"] * 6 + ["ultra"] * 2
 
         per_pack: list[list[dict]] = []
         for top_rarity in guaranteed_tops:

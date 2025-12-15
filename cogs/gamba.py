@@ -213,6 +213,8 @@ def _rarity_badge_tokens(state) -> dict[str, str]:
         "ultra": badge("ultra", ":rar_ultra:"),
         "secret": badge("secret", ":rar_secret:"),
         "frostfire": badge("frostfire", ":rar_frostfire:"),
+        "sandstorm": badge("sandstorm", ":rar_sandstorm:"),
+        "temporal": badge("temporal", ":rar_temporal:"),
     }
 
 

@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.quests.engine import QuestManager
+from core.quests.timekeys import now_et
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -20,6 +21,9 @@ class Quests(commands.Cog):
 
     async def cog_load(self):
         await self.qm.load_defs()
+        # Ensure rollover-style daily quests have their slots advanced through
+        # today in case the bot was restarted and missed the regular scheduler.
+        await self.qm.fast_forward_daily_rollovers(now_et().date())
 
     @app_commands.command(name="daily_duel", description="View your daily duel progress and claim reward(s)")
     @app_commands.guilds(GUILD)
