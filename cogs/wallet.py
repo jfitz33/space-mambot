@@ -7,10 +7,27 @@ from discord import app_commands
 from core.state import AppState
 from core.db import db_wallet_get, db_shards_get
 from core.constants import PACKS_BY_SET
-from core.currency import shard_set_name  # pretty names like "Frostfire Shards"
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+
+def _shard_badge_or_label(state, set_id: int) -> str:
+    rid = getattr(state, "rarity_emoji_ids", {}) or {}
+    anim = getattr(state, "rarity_emoji_animated", {}) or {}
+    sid = int(set_id)
+    key, fallback = {
+        1: ("frostfire", "Frostfire"),
+        2: ("sandstorm", "Sandstorm"),
+        3: ("temporal", "Temporal"),
+    }.get(sid, (None, f"Set {sid}"))
+
+    if key:
+        eid = rid.get(key)
+        if eid:
+            prefix = "a" if anim.get(key) else ""
+            return f"<{prefix}:rar_{key}:{eid}>"
+        return fallback
+    return fallback
 
 class Wallet(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -32,9 +49,8 @@ class Wallet(commands.Cog):
         for sid in set_ids:
             amt = db_shards_get(self.state, target.id, sid)
             # Show a short label like "Frostfire" instead of "Frostfire Shards"
-            full = shard_set_name(sid)
-            label = full.replace(" Shards", "")  # simple trim; adjust if you prefer full names
-            lines.append(f"{label}: {amt}")
+            badge = _shard_badge_or_label(self.state, sid)
+            lines.append(f"{badge} {amt}")
         shards_value = "\n".join(lines) if lines else "—"
 
         embed = discord.Embed(
