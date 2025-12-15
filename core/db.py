@@ -1534,6 +1534,26 @@ def db_starter_daily_reset_total(state) -> int:
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 
+def db_starter_daily_set_total(state, total: int) -> int:
+    """Set the running total of daily mambucks earnable per user."""
+
+    now = int(time.time())
+    amt = max(0, int(total))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO starter_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                total = excluded.total,
+                updated_ts = excluded.updated_ts;
+            """,
+            (amt, now),
+        )
+        row = conn.execute(
+            "SELECT total FROM starter_daily_totals WHERE id=1"
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 def db_starter_daily_try_grant(state, user_id: int, day_key: str, amount: int) -> tuple[int, bool]:
     """Idempotently grant ``amount`` mambucks if ``day_key`` has not been seen."""

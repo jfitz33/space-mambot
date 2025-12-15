@@ -23,6 +23,7 @@ from core.db import (
     db_starter_daily_get_total,
     db_starter_daily_increment_total,
     db_starter_daily_reset_total,
+    db_starter_daily_set_total,
     db_starter_daily_set_amount,
     db_starter_daily_try_grant,
 )
@@ -237,6 +238,33 @@ class DailyRewards(commands.Cog):
         db_starter_daily_reset_total(self.bot.state)
         await interaction.followup.send(
             "Daily mambucks earnable total has been reset to 0.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="daily_mambucks_set_total",
+        description="(Admin) Set the running total of daily mambucks earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(total="New running total of daily mambucks earnable per user")
+    async def daily_mambucks_set_total(
+        self, interaction: discord.Interaction, total: int
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if total < 0:
+            await interaction.followup.send(
+                "Total must be zero or greater.", ephemeral=True
+            )
+            return
+
+        current = db_starter_daily_get_total(self.bot.state)
+        updated = db_starter_daily_set_total(self.bot.state, total)
+        await interaction.followup.send(
+            "Daily mambucks earnable total updated: "
+            f"**{mambucks_label(current)}** → **{mambucks_label(updated)}**.",
             ephemeral=True,
         )
 

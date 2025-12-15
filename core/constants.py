@@ -80,11 +80,20 @@ GAMBA_PRIZES = [
         "description": "Random Secret Rare Card",
     },
     {
-        "key": "shards_100",
-        "weight": 0.20,
+        "key": "shards_100_sandstorm",
+        "weight": 0.10,
         "prize_type": "shards",
         "amount": 100,
-        "description": "100 Shards",
+        "shard_type": "sandstorm",
+        "description": "100 Sandstorm Shards",
+    },
+    {
+        "key": "shards_1000_frostfire",
+        "weight": 0.10,
+        "prize_type": "shards",
+        "amount": 100,
+        "shard_type": "frostfire",
+        "description": "1000 Frostfire Shards",
     },
     {
         "key": "mambucks_10",
