@@ -6,7 +6,6 @@ Welcome to the Space Mambot Command Guide. Here you can find details for every c
 - **/start** — Pick your starter deck, open the matching packs, and get your team role. The first thing all new users must do!
 
 ## Packs, Boxes, and Imports
-- **/packlist** — Show the list of packs currently available for purchase.
 - **/pack** `amount` — Buy/open packs from the available sets; `amount` optional default is 1, max 100.
 - **/tin** — Buy a tin (promo plus five packs) from the available tin list. (Tins to be released later)
 - **/box** — Buy/open a sealed box of 24 packs.
@@ -17,7 +16,6 @@ Welcome to the Space Mambot Command Guide. Here you can find details for every c
 - **/craft** `card` `amount` — Craft copies of a printing using shards; `amount` optional default is 1, max 3; starter cards and promos are un-craftable.
 - **/fragment** `card` `amount` — Break down owned copies of a printing into shards; `amount` optional default is 1, max 100.
 - **/fragment_bulk** `pack` `rarity` `keep` — Fragment owned cards from a pack at a specific rarity while keeping at least the chosen amount; `keep` optional default is 0; example: /fragment_bulk `Blazing Genesis` `Super Rare` `3` will fragment all your excess super rare cards owned from blazing genesis that you own more than 3 copies of
-- **/shard_exchange** `from_shard` `to_shard` `amount` — Swap shards from one set to another using the current shard exchange rate.
 
 ## Wallets & Currency
 - **/wallet** `user` — View mambucks and shard balances for yourself or another member; `user` optional default is you.

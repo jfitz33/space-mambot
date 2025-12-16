@@ -1,9 +1,8 @@
 # cogs/cards_shop.py
-import os, discord, textwrap, math
+import os, discord, textwrap
 from typing import List, Dict
 from discord.ext import commands
 from discord import app_commands
-from typing import Optional, Tuple
 from core.feature_flags import is_set1_week1_locked
 from core.state import AppState
 from core.cards_shop import (
@@ -24,7 +23,7 @@ from core.views import (
     ConfirmBuyCardView,
     ConfirmSellCardView,
 )
-from core.currency import SHARD_SET_NAMES, get_shard_exchange_rate, shard_set_name
+from core.currency import shard_set_name
 from core.db import (
     db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
     db_shards_add, db_collection_remove_exact_print, db_fragment_yield_for_card,
@@ -176,94 +175,6 @@ async def ac_fragmentable_rarity(interaction: discord.Interaction, current: str)
         out.append(app_commands.Choice(name=label, value=r))
     return out
 
-def _choices_for_shards(current: str):
-    cur = (current or "").lower().strip()
-    out = []
-    for set_id, label in SHARD_SET_NAMES.items():
-        if cur and cur not in label.lower():
-            continue
-        out.append(app_commands.Choice(name=label, value=str(set_id)))
-        if len(out) >= 25:
-            break
-    return out
-
-def _pretty(set_id: int) -> str:
-    return shard_set_name(set_id)
-
-class ConfirmShardExchangeView(discord.ui.View):
-    def __init__(self, state: AppState, user: discord.Member,
-                 from_set_id: int, to_set_id: int, amount_from: int,
-                 rate_num: int, rate_den: int, *, timeout: float = 90):
-        super().__init__(timeout=timeout)
-        self.state = state
-        self.user = user
-        self.from_set_id = int(from_set_id)
-        self.to_set_id = int(to_set_id)
-        self.amount_from = int(amount_from)
-        self.rate_num = int(rate_num)
-        self.rate_den = int(rate_den)
-        self._processing = False
-
-    async def _remove_ui(self, interaction: discord.Interaction, content: str | None = None):
-        self.stop()
-        for item in self.children: item.disabled = True
-        try:
-            await interaction.response.edit_message(content=content, view=None)
-        except discord.InteractionResponded:
-            await interaction.message.edit(content=content, view=None)
-
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
-    async def yes(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.user.id:
-            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
-        if self._processing:
-            try: await interaction.response.defer_update()
-            except: pass
-            return
-        self._processing = True
-
-        await self._remove_ui(interaction, content="Processing exchange…")
-        try:
-            await interaction.followup.defer(ephemeral=True)
-        except: pass
-
-        # Compute target (floor to whole shards)
-        amount_to = (self.amount_from * self.rate_den) // self.rate_num
-        if amount_to <= 0:
-            self._processing = False
-            return await interaction.followup.send("❌ That amount is too small for the current rate.", ephemeral=True)
-
-        # Check balance, then debit/credit
-        have = db_shards_get(self.state, self.user.id, self.from_set_id)
-        if have < self.amount_from:
-            self._processing = False
-            return await interaction.followup.send(
-                f"❌ You only have **{have}** {_pretty(self.from_set_id)}.", ephemeral=True
-            )
-
-        # Perform exchange (best-effort, non-atomic by design per your helpers)
-        db_shards_add(self.state, self.user.id, self.from_set_id, -self.amount_from)
-        db_shards_add(self.state, self.user.id, self.to_set_id, amount_to)
-
-        after_from = db_shards_get(self.state, self.user.id, self.from_set_id)
-        after_to   = db_shards_get(self.state, self.user.id, self.to_set_id)
-
-        await interaction.followup.send(
-            (
-                f"🔁 Exchanged **{self.amount_from}** {_pretty(self.from_set_id)} "
-                f"→ **{amount_to}** {_pretty(self.to_set_id)}\n"
-                f"Balances: {_pretty(self.from_set_id)} **{after_from}**, {_pretty(self.to_set_id)} **{after_to}**"
-            ),
-            ephemeral=True
-        )
-        self._processing = False
-
-    @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
-    async def no(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.user.id:
-            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
-        await self._remove_ui(interaction, content="Exchange cancelled.")
-
 class BulkFragmentConfirmView(discord.ui.View):
     def __init__(self, state: AppState, user: discord.Member, plan_rows: List[Dict], pack_name: str, rarity: str, keep: int, total_yield: int, *, timeout: float = 120):
         super().__init__(timeout=timeout)
@@ -347,8 +258,6 @@ class CardsShop(commands.Cog):
         # Suggest craftable prints from shop index (set-aware, as before)
         return suggest_prints_with_set(self.state, current)
     
-    async def ac_shard_type(self, interaction: discord.Interaction, current: str):
-        return _choices_for_shards(current)
 
     @app_commands.command(
         name="craft",
@@ -526,68 +435,6 @@ class CardsShop(commands.Cog):
         ])
 
         await interaction.followup.send(content=content, ephemeral=True, view=view)
-
-    @app_commands.command(name="shard_exchange", description="Convert shards from one set to another.")
-    @app_commands.guilds(GUILD)
-    @app_commands.describe(
-        from_shard="Shard type to exchange from",
-        to_shard="Shard type to receive",
-        amount="How many source shards to convert (>=1)",
-    )
-    @app_commands.autocomplete(from_shard=ac_shard_type, to_shard=ac_shard_type)
-    async def shard_exchange(
-        self,
-        interaction: discord.Interaction,
-        from_shard: str,
-        to_shard: str,
-        amount: app_commands.Range[int, 1, 1_000_000],
-    ):
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            from_id = int(from_shard)
-            to_id   = int(to_shard)
-        except Exception:
-            return await interaction.followup.send("❌ Invalid shard selection.", ephemeral=True)
-
-        if from_id == to_id:
-            return await interaction.followup.send("❌ Choose two different shard types.", ephemeral=True)
-
-        rate_num, rate_den = get_shard_exchange_rate()
-        # Preview target amount (floor)
-        amount_to = (int(amount) * rate_den) // rate_num
-        if amount_to <= 0:
-            # Minimum amount required to yield at least 1 target shard
-            min_amt = math.ceil(rate_num / rate_den)
-            return await interaction.followup.send(
-                f"❌ At the current rate, you need at least **{min_amt}** {_pretty(from_id)} to receive 1 {_pretty(to_id)}.",
-                ephemeral=True
-            )
-
-        # Balance check (for a nicer pre-confirmation message)
-        have = db_shards_get(self.state, interaction.user.id, from_id)
-        if have < int(amount):
-            return await interaction.followup.send(
-                f"❌ You have **{have}** {_pretty(from_id)}, which isn’t enough to exchange **{int(amount)}**.",
-                ephemeral=True
-            )
-
-        # Confirmation prompt
-        rate_txt = f"{rate_num}:{rate_den}"
-        msg = (
-            f"Current shard exchange rate is **{rate_txt}** "
-            f"({_pretty(from_id)} → {_pretty(to_id)}).\n\n"
-            f"Are you sure you want to exchange **{int(amount)} {_pretty(from_id)}** "
-            f"into **{amount_to} {_pretty(to_id)}**?"
-        )
-
-        view = ConfirmShardExchangeView(
-            self.state, interaction.user,
-            from_set_id=from_id, to_set_id=to_id,
-            amount_from=int(amount),
-            rate_num=rate_num, rate_den=rate_den
-        )
-        await interaction.followup.send(msg, view=view, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))

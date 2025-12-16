@@ -1,5 +1,3 @@
-import os
-
 # Configure shard display names (you can add emoji, short names, etc.)
 SHARD_SET_NAMES = {
     1: "Frostfire Shards",
@@ -19,17 +17,3 @@ def shards_label(amount: int, set_id: int) -> str:
 def mambucks_label(amount: int) -> str:
     return f"{amount} Mambucks"
 
-
-def get_shard_exchange_rate() -> tuple[int, int]:
-    """
-    Read SHARD_EXCHANGE_RATE from env as 'A:B' meaning A source -> B target.
-    Defaults to '1:2'.
-    """
-    raw = os.getenv("SHARD_EXCHANGE_RATE", "2:1")
-    try:
-        a, b = raw.split(":")
-        num = max(1, int(a))
-        den = max(1, int(b))
-    except Exception:
-        num, den = 1, 2
-    return num, den

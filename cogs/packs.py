@@ -477,15 +477,6 @@ class Packs(commands.Cog):
             return set()
         return keys
 
-    @app_commands.command(name="packlist", description="List available pack types")
-    @app_commands.guilds(GUILD)
-    async def packlist(self, interaction: discord.Interaction):
-        names = sorted((self.bot.state.packs_index or {}).keys())
-        if not names:
-            await interaction.response.send_message("No packs found. Load CSVs and /reload_data.", ephemeral=True); return
-        desc = "\n".join(f"• `{n}`" for n in names[:25])
-        await interaction.response.send_message(embed=discord.Embed(title="Available Packs", description=desc, color=0x2b6cb0), ephemeral=True)
-
     @app_commands.command(name="pack", description="Open packs via dropdown")
     @app_commands.guilds(GUILD)
     @app_commands.describe(amount="How many packs (1-100)")
