@@ -82,6 +82,16 @@ def db_init(state: AppState):
             PRIMARY KEY (tournament_id, user_id)
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS tournament_replays (
+            tournament_id TEXT NOT NULL,
+            match_label   TEXT NOT NULL,
+            replay_url    TEXT NOT NULL,
+            submitted_by  TEXT,
+            updated_ts    REAL NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (tournament_id, match_label)
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
 
@@ -319,6 +329,56 @@ def db_list_user_tournament_decklists(
                 },
             }
         )
+    return entries
+
+def db_save_tournament_replay(
+    state: AppState,
+    tournament_id: str,
+    match_label: str,
+    replay_url: str,
+    *,
+    submitted_by: Optional[int] = None,
+) -> None:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO tournament_replays (
+                tournament_id, match_label, replay_url, submitted_by
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(tournament_id, match_label) DO UPDATE SET
+                replay_url=excluded.replay_url,
+                submitted_by=excluded.submitted_by,
+                updated_ts=strftime('%s','now');
+            """,
+            (tournament_id, match_label, replay_url, str(submitted_by) if submitted_by else None),
+        )
+
+
+def db_list_tournament_replays(
+    state: AppState, tournament_id: str
+) -> List[Dict[str, Any]]:
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT match_label, replay_url, submitted_by
+            FROM tournament_replays
+            WHERE tournament_id = ?
+            ORDER BY updated_ts DESC, match_label COLLATE NOCASE ASC;
+            """,
+            (tournament_id,),
+        )
+        rows = cur.fetchall() or []
+
+    entries: List[Dict[str, Any]] = []
+    for match_label, replay_url, submitted_by in rows:
+        entries.append(
+            {
+                "match_label": match_label,
+                "replay_url": replay_url,
+                "submitted_by": submitted_by,
+            }
+        )
+
     return entries
 
 # --- Helper functions for selling to shop ---
