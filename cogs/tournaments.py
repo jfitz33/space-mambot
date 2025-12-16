@@ -24,8 +24,11 @@ from core.cards_shop import fetch_card_details_by_id, find_card_name_by_id
 from core.deck_render import DeckCardEntry, render_deck_section_image
 from core.db import (
     db_get_collection,
+    db_get_tournament_decklist,
     db_list_user_tournament_decklists,
     db_save_tournament_decklist,
+    db_save_tournament_replay,
+    db_list_tournament_replays,
     db_stats_record_loss,
     db_stats_revert_result,
 )
@@ -268,6 +271,65 @@ class Tournaments(commands.Cog):
             summary = summary[: max_length - 1] + "…"
 
         return summary
+
+    @staticmethod
+    def _normalize_replay_url(url: str) -> str | None:
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            return url.strip()
+        return None
+
+    @staticmethod
+    def _participant_user_id(participant: dict) -> int | None:
+        misc = participant.get("misc") if isinstance(participant, dict) else None
+        if misc is None:
+            return None
+
+        try:
+            value = str(misc).strip()
+        except Exception:
+            return None
+
+        if not value:
+            return None
+
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _participant_display_name(participant: dict) -> str:
+        if not isinstance(participant, dict):
+            return "Unknown Player"
+
+        name = participant.get("name")
+        if isinstance(name, str):
+            cleaned = name.strip()
+            if cleaned:
+                return cleaned
+
+        return "Unknown Player"
+
+    @staticmethod
+    def _top_placements(
+        participants: list[dict], *, limit: int = 4
+    ) -> list[tuple[int, dict]]:
+        decorated: list[tuple[int, dict]] = []
+        for entry in participants:
+            if not isinstance(entry, dict):
+                continue
+
+            rank_raw = entry.get("final_rank")
+            try:
+                rank = int(rank_raw)
+            except (TypeError, ValueError):
+                continue
+
+            decorated.append((rank, entry))
+
+        decorated.sort(key=lambda pair: pair[0])
+        return decorated[:limit]
 
     def _get_challonge_credentials(self) -> tuple[str, str]:
         username = os.getenv("CHALLONGE_USERNAME")
@@ -1443,6 +1505,221 @@ class Tournaments(commands.Cog):
             )
 
     @app_commands.command(
+        name="tournament_replay",
+        description="Store a replay link for a tournament match.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.describe(
+        tournament_id="The Challonge tournament identifier (slug or ID).",
+        match_label="Description of the match, e.g., 'Top 8: Player A vs Player B'.",
+        replay_url="Link to the replay video.",
+    )
+    async def tournament_replay(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        match_label: str,
+        replay_url: str,
+    ) -> None:
+        label = (match_label or "").strip()
+        if not label:
+            await interaction.response.send_message(
+                "Please provide a short label for the replay (e.g., the round and players).",
+                ephemeral=True,
+            )
+            return
+
+        normalized_url = self._normalize_replay_url(replay_url)
+        if not normalized_url:
+            await interaction.response.send_message(
+                "Replay URLs must start with http:// or https:// and include a domain.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            tournament = await self._fetch_challonge_tournament(tournament_id)
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to load that Challonge tournament: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        if not tournament:
+            await interaction.followup.send(
+                "I couldn't find that tournament on Challonge.",
+                ephemeral=True,
+            )
+            return
+
+        resolved_identifier = self._resolve_tournament_identifier(tournament) or tournament_id
+        tournament_name = tournament.get("name") or tournament_id
+
+        try:
+            db_save_tournament_replay(
+                self.state,
+                resolved_identifier,
+                label,
+                normalized_url,
+                submitted_by=interaction.user.id,
+            )
+        except Exception:
+            self.logger.exception("Failed to store tournament replay link")
+            await interaction.followup.send(
+                "I couldn't store that replay link due to a database error. Please try again later.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"Stored replay for **{tournament_name}**: `{label}`.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="tournament_summary",
+        description="(Admin) Post a recap message for a completed tournament.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        tournament_id="The Challonge tournament identifier (slug or ID).",
+        champion_deck="Optional deck name to highlight for the champion.",
+    )
+    async def tournament_summary(
+        self,
+        interaction: discord.Interaction,
+        tournament_id: str,
+        champion_deck: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=False, thinking=True)
+
+        try:
+            tournament = await self._fetch_challonge_tournament(
+                tournament_id, include_participants=True
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to load that Challonge tournament: {exc}", ephemeral=False
+            )
+            return
+
+        if not tournament:
+            await interaction.followup.send(
+                "I couldn't find that tournament on Challonge.", ephemeral=False
+            )
+            return
+
+        resolved_identifier = self._resolve_tournament_identifier(tournament) or tournament_id
+        tournament_name = tournament.get("name") or tournament_id
+        tournament_state = (tournament.get("state") or "").strip().lower()
+        if tournament_state != "complete":
+            await interaction.followup.send(
+                "This tournament isn't marked complete on Challonge yet. Please finalize it before posting a recap.",
+                ephemeral=False,
+            )
+            return
+
+        participants = self._extract_tournament_participants(tournament)
+        placements = self._top_placements(participants, limit=4)
+        if not placements:
+            await interaction.followup.send(
+                "I couldn't determine final placements for that event.",
+                ephemeral=False,
+            )
+            return
+
+        placement_names = [self._participant_display_name(entry) for _, entry in placements]
+
+        def _format_top_cut(values: list[str]) -> str:
+            if not values:
+                return ""
+            if len(values) == 1:
+                return values[0]
+            if len(values) == 2:
+                return f"{values[0]} and {values[1]}"
+            return ", ".join(values[:-1]) + f", and {values[-1]}"
+
+        champion_label = (champion_deck or "their submitted deck").strip() or "their submitted deck"
+
+        lines: list[str] = []
+        lines.append(
+            f"Congratulations to our champion {placement_names[0]} on winning the {tournament_name} with {champion_label}!"
+        )
+
+        if len(placement_names) > 1:
+            lines.append(
+                f"Well played to our top cut of {_format_top_cut(placement_names[1:])}!"
+            )
+
+        lines.append("")
+        lines.append("----------------------------------------------------------------------------")
+
+        deck_entries: list[tuple[str, dict]] = []
+
+        for rank, participant in placements:
+            place_label = {1: "1st place", 2: "2nd place", 3: "3rd place", 4: "4th place"}.get(
+                rank, f"{rank}th place"
+            )
+            name = self._participant_display_name(participant)
+            lines.append(f"{place_label} - {name} {'Decklist' if rank != 1 else champion_label}")
+
+            user_id = self._participant_user_id(participant)
+            if user_id is not None:
+                deck_entry = db_get_tournament_decklist(
+                    self.state, resolved_identifier, user_id
+                )
+                if deck_entry:
+                    deck_entries.append((f"{place_label} - {name}", deck_entry))
+                    lines.append("Decklist posted below.")
+                else:
+                    lines.append("No decklist was submitted for this player.")
+            else:
+                lines.append("No decklist was submitted for this player.")
+
+            lines.append("")
+            lines.append("----------------------------------------------------------------------------")
+
+        replays = db_list_tournament_replays(self.state, resolved_identifier)
+        if replays:
+            lines.append("Top cut Film")
+            lines.append("")
+            for entry in replays:
+                match_label = entry.get("match_label") or "Replay"
+                replay_url = entry.get("replay_url") or ""
+                if replay_url:
+                    lines.append(f"[{match_label}]({replay_url})")
+                else:
+                    lines.append(match_label)
+
+        await interaction.followup.send("\n".join(lines), ephemeral=False)
+
+        target_channel = interaction.channel
+        if target_channel is None:
+            try:
+                target_channel = await interaction.user.create_dm()
+            except Exception:
+                target_channel = None
+
+        if target_channel is None:
+            self.logger.warning("No channel available to post decklists for tournament summary")
+            return
+
+        for heading, deck_entry in deck_entries:
+            try:
+                await self._send_labeled_decklist(
+                    channel=target_channel,
+                    label=f"{heading} — {tournament_name}",
+                    deck_entry=deck_entry,
+                )
+            except Exception:
+                self.logger.exception("Failed to post decklist during tournament_summary")
+
+    @app_commands.command(
         name="tournament_add_participant",
         description="Register a Discord member into a Challonge tournament.",
     )
@@ -1451,17 +1728,121 @@ class Tournaments(commands.Cog):
     @app_commands.describe(
         tournament_id="The Challonge tournament identifier (slug or ID).",
         member="Discord member to register.",
+        decklist_from_tournament_id=(
+            "Optional Challonge tournament identifier to copy this member's decklist from."
+        ),
+        decklist_file="Optional YDK decklist file to store for this tournament.",
     )
     async def tournament_add_participant(
         self,
         interaction: discord.Interaction,
         tournament_id: str,
         member: discord.Member,
+        decklist_from_tournament_id: str | None = None,
+        decklist_file: discord.Attachment | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+
+        if decklist_file is not None and decklist_from_tournament_id:
+            await interaction.followup.send(
+                "Please provide either a decklist file or a source tournament to copy from, not both.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            target_tournament = await self._fetch_challonge_tournament(
+                tournament_id, include_participants=True
+            )
+        except RuntimeError as exc:
+            await interaction.followup.send(
+                f"Failed to load that Challonge tournament: {exc}", ephemeral=True
+            )
+            return
+
+        if not target_tournament:
+            await interaction.followup.send(
+                "I couldn't find that tournament on Challonge.", ephemeral=True
+            )
+            return
+
+        target_identifier = (
+            self._resolve_tournament_identifier(target_tournament) or tournament_id
+        )
+        target_name = target_tournament.get("name") or tournament_id
+
+        decklist_sections: dict[str, list[str]] | None = None
+        decklist_status: str | None = None
+        if decklist_file is not None:
+            filename = (decklist_file.filename or "").lower()
+            if not filename.endswith(".ydk"):
+                await interaction.followup.send(
+                    "That file isn't a `.ydk` deck. Please try again with a valid YDK file.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                raw_bytes = await decklist_file.read()
+            except Exception:
+                self.logger.exception("Failed to read decklist file during tournament_add_participant")
+                await interaction.followup.send(
+                    "I couldn't read that file. Please try again later.", ephemeral=True
+                )
+                return
+
+            card_counts, invalid_lines, parsed_sections = _parse_ydk(
+                raw_bytes.decode("utf-8-sig", errors="ignore")
+            )
+
+            if not card_counts:
+                message = "I couldn't find any card IDs in that decklist file."
+                if invalid_lines:
+                    message += f" Example ignored line: `{invalid_lines[0]}`."
+                await interaction.followup.send(message, ephemeral=True)
+                return
+
+            decklist_sections = parsed_sections
+            decklist_status = "Saved their uploaded decklist for this event."
+
+        elif decklist_from_tournament_id:
+            try:
+                source_tournament = await self._fetch_challonge_tournament(
+                    decklist_from_tournament_id, include_participants=True
+                )
+            except RuntimeError as exc:
+                await interaction.followup.send(
+                    f"Failed to load the source tournament: {exc}", ephemeral=True
+                )
+                return
+
+            if not source_tournament:
+                await interaction.followup.send(
+                    "I couldn't find the tournament to copy the decklist from.",
+                    ephemeral=True,
+                )
+                return
+
+            source_identifier = (
+                self._resolve_tournament_identifier(source_tournament)
+                or decklist_from_tournament_id
+            )
+            source_decklist = db_get_tournament_decklist(
+                self.state, source_identifier, member.id
+            )
+            if not source_decklist:
+                await interaction.followup.send(
+                    "That member doesn't have a saved decklist for the source tournament.",
+                    ephemeral=True,
+                )
+                return
+
+            decklist_sections = source_decklist.get("deck_sections", {})
+            decklist_status = "Copied their decklist from the source tournament for this event."
+
         try:
             participant = await self._create_challonge_participant(
-                tournament_id,
+                target_identifier,
                 name=member.display_name,
                 discord_id=member.id,
             )
@@ -1469,11 +1850,28 @@ class Tournaments(commands.Cog):
             await interaction.followup.send(f"Failed to add participant: {exc}", ephemeral=True)
             return
 
+        if decklist_sections:
+            try:
+                db_save_tournament_decklist(
+                    self.state,
+                    target_identifier,
+                    member.id,
+                    tournament_name=target_name,
+                    deck_sections=decklist_sections,
+                )
+            except Exception:
+                self.logger.exception(
+                    "Failed to copy decklist while adding tournament participant"
+                )
+
         display_name = participant.get("name") or member.display_name
-        await interaction.followup.send(
-            f"Added **{display_name}** to Challonge tournament `{tournament_id}`.",
-            ephemeral=True,
-        )
+        message_lines = [
+            f"Added **{display_name}** to Challonge tournament `{target_identifier}`."
+        ]
+        if decklist_status:
+            message_lines.append(decklist_status)
+
+        await interaction.followup.send("\n".join(message_lines), ephemeral=True)
 
     @app_commands.command(
         name="challonge_add_role",
@@ -2316,6 +2714,22 @@ class Tournaments(commands.Cog):
             f"Decklist for {member.mention} in **{tournament_label}**",
             allowed_mentions=discord.AllowedMentions(users=True),
         )
+        await self._send_deck_images(channel, deck_sections, metadata)
+
+    async def _send_labeled_decklist(
+        self,
+        *,
+        channel: discord.abc.Messageable,
+        label: str,
+        deck_entry: dict,
+    ) -> None:
+        deck_sections = deck_entry.get("deck_sections") or {}
+        card_ids: list[str] = []
+        for section_cards in deck_sections.values():
+            card_ids.extend(section_cards or [])
+
+        metadata, _invalid = await self._resolve_card_metadata(card_ids, {})
+        await channel.send(label, allowed_mentions=discord.AllowedMentions.none())
         await self._send_deck_images(channel, deck_sections, metadata)
 
 
