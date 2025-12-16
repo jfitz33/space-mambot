@@ -4,6 +4,7 @@ from typing import List, Dict
 from discord.ext import commands
 from discord import app_commands
 from typing import Optional, Tuple
+from core.feature_flags import is_set1_week1_locked
 from core.state import AppState
 from core.cards_shop import (
     ensure_shop_index,
@@ -590,3 +591,12 @@ class CardsShop(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))
+
+    if is_set1_week1_locked():
+        for cmd_name in ("craft", "fragment", "fragment_bulk"):
+            for guild in (GUILD, None):
+                bot.tree.remove_command(
+                    cmd_name,
+                    type=discord.AppCommandType.chat_input,
+                    guild=guild,
+                )

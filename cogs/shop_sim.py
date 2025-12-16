@@ -6,6 +6,7 @@ from typing import List
 from discord.ext import commands
 from discord import app_commands
 
+from core.feature_flags import is_set1_week1_locked
 from core.state import AppState
 from core.cards_shop import ensure_shop_index
 from core.constants import (
@@ -141,6 +142,13 @@ class ShopSim(commands.Cog):
         Discord's embed text uses a fixed font and emoji size; there isn't an option
         to enlarge these without rendering them into an image first.
         """
+        if is_set1_week1_locked():
+            return discord.Embed(
+                title="🛍️ Welcome to the Mamshop",
+                description="Shop opening soon",
+                color=0x2b6cb0,
+            )
+        
         e = discord.Embed(
             title="🛍️ Welcome to the Mamshop",
             description=(

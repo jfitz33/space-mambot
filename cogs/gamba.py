@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.feature_flags import is_set1_week1_locked
 from core.cards_shop import card_label
 from core.constants import (
     CURRENT_ACTIVE_SET,
@@ -429,3 +430,9 @@ class Gamba(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Gamba(bot))
+
+    if is_set1_week1_locked():
+        for guild in (GUILD, None):
+            bot.tree.remove_command(
+                "gamba", type=discord.AppCommandType.chat_input, guild=guild
+            )
