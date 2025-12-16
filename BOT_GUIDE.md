@@ -62,12 +62,12 @@ Welcome to the Space Mambot Command Guide. Here you can find details for every c
 - **/shop_refresh** — Admin; manually refresh the pinned shop message/banner in the shop channel.
 
 ## Tournaments
-- **/tournament_create** `name` `format` `url_slug` — Create a Challonge tournament under the org; `url_slug` optional default is auto-generated; requires Manage Server.
+- **/tournament_create** `name` `format` `url_slug` `replays_required` — Create a Challonge tournament under the org; `url_slug` optional default is auto-generated; set `replays_required` to require replay links on match reports; requires Manage Server.
 - **/tournament_join** — Start a DM flow to submit your deck to a pending tournament; only works if a tournament is joinable.
 - **/tournament_view** — List active tournaments with bracket links.
 - **/tournament_standings** — Pick an active tournament to view standings.
-- **/tournament_loss** `opponent` — Report a tournament match loss to another member; requires an active match between you and them.
-- **/tournament_admin_loss** `loser` `winner` — Admin; report a result between two players for tournament matches.
+- **/tournament_report_match** `winner` `loser` `replay_url` — Report a tournament match result; either participant can use it; `replay_url` required when the tournament enforces replays.
+- **/tournament_admin_loss** `loser` `winner` `replay_url` — Admin; report a result between two players for tournament matches; accepts `replay_url` when replays are enforced.
 - **/tournament_revert_result** — Admin; roll back the most recent recorded tournament result for a match.
 - **/tournament_add_participant** `tournament` `member` — Admin; manually add a Discord member to a Challonge tournament.
 - **/tournament_shuffle_seeds** `tournament` — Admin; shuffle participant seeds before a tournament starts.

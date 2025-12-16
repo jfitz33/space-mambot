@@ -29,6 +29,8 @@ from core.db import (
     db_save_tournament_replay,
     db_list_tournament_replays,
     db_save_tournament_decklist,
+    db_get_tournament_settings,
+    db_set_tournament_settings,
     db_stats_record_loss,
     db_stats_revert_result,
 )
@@ -278,6 +280,91 @@ class Tournaments(commands.Cog):
         if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
             return url.strip()
         return None
+
+    def _tournament_requires_replay(self, tournament_id: str) -> bool:
+        try:
+            settings = db_get_tournament_settings(self.state, tournament_id)
+        except Exception:
+            self.logger.exception(
+                "Failed to load tournament settings for %s", tournament_id
+            )
+            return False
+
+        return bool(settings.get("replays_required")) if settings else False
+
+    @staticmethod
+    def _build_replay_label(
+        match_id: str,
+        winner: discord.Member,
+        loser: discord.Member,
+        *,
+        match_round: int | None = None,
+        final_round: int | None = None,
+    ) -> str:
+        stage = None
+        if isinstance(match_round, int) and isinstance(final_round, int):
+            if match_round == final_round:
+                stage = "Finals"
+            elif match_round == final_round - 1:
+                stage = "Top 4"
+
+        match_label = stage or f"Match {match_id}"
+        return f"{match_label}: {winner.display_name} vs {loser.display_name}"
+
+    def _validate_replay_requirement(
+        self, *, replay_url: str | None, replays_required: bool
+    ) -> tuple[bool, str | None, str | None]:
+        if replay_url:
+            normalized = self._normalize_replay_url(replay_url)
+            if not normalized:
+                return False, None, (
+                    "Replay URLs must start with http:// or https:// and include a domain."
+                )
+            return True, normalized, None
+
+        if replays_required:
+            return (
+                False,
+                None,
+                "This tournament requires a replay URL when reporting match results.",
+            )
+
+        return True, None, None
+
+    def _store_match_replay(
+        self,
+        *,
+        tournament_identifier: str,
+        match_id: str,
+        winner: discord.Member,
+        loser: discord.Member,
+        replay_url: str,
+        reporter: discord.abc.User | None,
+        match_round: int | None = None,
+        final_round: int | None = None,
+    ) -> bool:
+        try:
+            db_save_tournament_replay(
+                self.state,
+                tournament_identifier,
+                self._build_replay_label(
+                    match_id,
+                    winner,
+                    loser,
+                    match_round=match_round,
+                    final_round=final_round,
+                ),
+                replay_url,
+                submitted_by=reporter.id if reporter else None,
+            )
+            return True
+        except Exception:
+            self.logger.exception(
+                "Failed to store replay link for %s (match %s)",
+                tournament_identifier,
+                match_id,
+            )
+            return False
 
     @staticmethod
     def _participant_user_id(participant: dict) -> int | None:
@@ -599,7 +686,7 @@ class Tournaments(commands.Cog):
         *,
         loser: discord.Member,
         winner: discord.Member,
-    ) -> tuple[str, str, str, str, str] | None:
+    ) -> tuple[str, str, int | None, int | None, str, str, str] | None:
         """Locate an open Challonge match between ``loser`` and ``winner``."""
 
         for tournament in tournaments:
@@ -636,6 +723,13 @@ class Tournaments(commands.Cog):
             except RuntimeError:
                 continue
 
+            round_numbers = [
+                match.get("round")
+                for match in matches
+                if isinstance(match.get("round"), int)
+            ]
+            final_round = max(round_numbers) if round_numbers else None
+
             for match in matches:
                 match_state = (match.get("state") or "").strip().lower()
                 if match_state != "open":
@@ -654,6 +748,8 @@ class Tournaments(commands.Cog):
                 if match_id is None:
                     continue
 
+                match_round = match.get("round") if isinstance(match.get("round"), int) else None
+
                 tournament_name = (
                     detailed.get("name")
                     or tournament.get("name")
@@ -663,6 +759,8 @@ class Tournaments(commands.Cog):
                 return (
                     str(identifier),
                     str(match_id),
+                    match_round,
+                    final_round,
                     winner_id_str,
                     loser_id_str,
                     str(tournament_name),
@@ -918,6 +1016,9 @@ class Tournaments(commands.Cog):
         name="Name that will be shown on Challonge",
         format="Tournament format",
         url_slug="Optional URL slug. Only letters, numbers, and underscores.",
+        replays_required=(
+            "Whether a replay link is required when reporting match results"
+        ),
     )
     @app_commands.choices(
         format=[
@@ -932,6 +1033,7 @@ class Tournaments(commands.Cog):
         name: str,
         format: app_commands.Choice[str],
         url_slug: str | None = None,
+        replays_required: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
@@ -946,11 +1048,29 @@ class Tournaments(commands.Cog):
 
         url = tournament.get("full_challonge_url") or tournament.get("url")
         identifier = tournament.get("id") or url_slug or tournament.get("slug")
+        resolved_identifier = self._resolve_tournament_identifier(tournament)
+        if resolved_identifier is None and identifier is not None:
+            resolved_identifier = str(identifier)
         parts = [f"Created Challonge tournament **{tournament.get('name', name)}**."]
         if identifier:
             parts.append(f"Identifier: `{identifier}`")
         if url:
             parts.append(f"URL: {url}")
+        if resolved_identifier:
+            try:
+                db_set_tournament_settings(
+                    self.state,
+                    resolved_identifier,
+                    replays_required=bool(replays_required),
+                )
+            except Exception:
+                self.logger.exception(
+                    "Failed to persist tournament settings for %s", resolved_identifier
+                )
+        parts.append(
+            "Replay required for match reports: "
+            + ("Yes" if replays_required else "No")
+        )
         await interaction.followup.send("\n".join(parts), ephemeral=True)
 
     @app_commands.command(
@@ -1131,24 +1251,41 @@ class Tournaments(commands.Cog):
             )
 
     @app_commands.command(
-        name="tournament_loss",
-        description="Report a Challonge tournament loss to another player.",
+        name="tournament_report_match",
+        description="Report a Challonge tournament match result.",
     )
     @app_commands.guilds(GUILD)
-    @app_commands.describe(opponent="The player you lost to")
-    async def tournament_loss(
-        self, interaction: discord.Interaction, opponent: discord.Member
+    @app_commands.describe(
+        winner="Player who won the match",
+        loser="Player who lost the match",
+        replay_url=(
+            "Replay link for the match (required when the tournament enforces replays)"
+        ),
+    )
+    async def tournament_report_match(
+        self,
+        interaction: discord.Interaction,
+        winner: discord.Member,
+        loser: discord.Member,
+        replay_url: str | None = None,
     ) -> None:
-        caller = interaction.user
-        if opponent.id == caller.id:
+        reporter = interaction.user
+        if winner.id == loser.id:
             await interaction.response.send_message(
-                "You can’t record a loss to yourself.",
+                "You must choose two different players for the match.",
                 ephemeral=True,
             )
             return
-        if opponent.bot:
+        if winner.bot or loser.bot:
             await interaction.response.send_message(
-                "You can’t record a loss to a bot.",
+                "Bots cannot play matches.",
+                ephemeral=True,
+            )
+            return
+        if reporter.id not in {winner.id, loser.id}:
+            await interaction.response.send_message(
+                "Only players in the match can report the result. "
+                "Use /tournament_admin_loss if staff need to record it for you.",
                 ephemeral=True,
             )
             return
@@ -1166,34 +1303,74 @@ class Tournaments(commands.Cog):
 
         match_context = await self._resolve_open_match_context(
             tournaments,
-            loser=caller,
-            winner=opponent,
+            loser=loser,
+            winner=winner,
         )
 
         if match_context is None:
             await interaction.followup.send(
-                f"no active tournament match between {caller.display_name} and {opponent.display_name}",
+                 f"no active tournament match between {winner.display_name} and {loser.display_name}",
                 ephemeral=False,
             )
             return
 
-        tournament_identifier, match_id, winner_id_str, loser_id_str, tournament_name = (
-            match_context
+        (
+            tournament_identifier,
+            match_id,
+            match_round,
+            final_round,
+            winner_id_str,
+            loser_id_str,
+            tournament_name,
+        ) = match_context
+
+        replays_required = self._tournament_requires_replay(tournament_identifier)
+        valid_replay, normalized_replay_url, replay_error = self._validate_replay_requirement(
+            replay_url=replay_url,
+            replays_required=replays_required,
         )
 
-        await self._finalize_tournament_loss(
+        if not valid_replay:
+            await interaction.followup.send(
+                replay_error
+                or "Please include a valid replay link for this tournament match.",
+                ephemeral=False,
+            )
+            return
+
+        finalized = await self._finalize_tournament_loss(
             interaction,
             tournament_identifier=tournament_identifier,
             match_id=match_id,
             winner_id_str=winner_id_str,
             loser_id_str=loser_id_str,
-            loser=caller,
-            winner=opponent,
-            quest_context="tournament_loss",
-            reporter=caller,
+            loser=loser,
+            winner=winner,
+            quest_context="tournament_report_match",
+            reporter=reporter,
             tournament_name=tournament_name,
             announce_publicly=True,
         )
+
+        if not finalized:
+            return
+
+        if normalized_replay_url:
+            stored = self._store_match_replay(
+                tournament_identifier=tournament_identifier,
+                match_id=match_id,
+                winner=winner,
+                loser=loser,
+                replay_url=normalized_replay_url,
+                reporter=reporter,
+                match_round=match_round,
+                final_round=final_round,
+            )
+            if not stored:
+                await interaction.followup.send(
+                    "I recorded the result but couldn't save the replay link due to a database error.",
+                    ephemeral=False,
+                )
 
     @app_commands.command(
         name="tournament_admin_loss",
@@ -1205,12 +1382,16 @@ class Tournaments(commands.Cog):
     @app_commands.describe(
         loser="Player who lost the match",
         winner="Player who won the match",
+        replay_url=(
+            "Replay link for the match (required when the tournament enforces replays)"
+        ),
     )
     async def tournament_admin_loss(
         self,
         interaction: discord.Interaction,
         loser: discord.Member,
         winner: discord.Member,
+        replay_url: str | None = None,
     ) -> None:
         if loser.id == winner.id:
             await interaction.response.send_message(
@@ -1249,9 +1430,29 @@ class Tournaments(commands.Cog):
             )
             return
 
-        tournament_identifier, match_id, winner_id_str, loser_id_str, tournament_name = (
-            match_context
+        (
+            tournament_identifier,
+            match_id,
+            match_round,
+            final_round,
+            winner_id_str,
+            loser_id_str,
+            tournament_name,
+        ) = match_context
+
+        replays_required = self._tournament_requires_replay(tournament_identifier)
+        valid_replay, normalized_replay_url, replay_error = self._validate_replay_requirement(
+            replay_url=replay_url,
+            replays_required=replays_required,
         )
+
+        if not valid_replay:
+            await interaction.followup.send(
+                replay_error
+                or "Please include a valid replay link for this tournament match.",
+                ephemeral=False,
+            )
+            return
 
         await self._finalize_tournament_loss(
             interaction,
@@ -1266,6 +1467,23 @@ class Tournaments(commands.Cog):
             tournament_name=tournament_name,
             announce_publicly=True,
         )
+
+        if normalized_replay_url:
+            stored = self._store_match_replay(
+                tournament_identifier=tournament_identifier,
+                match_id=match_id,
+                winner=winner,
+                loser=loser,
+                replay_url=normalized_replay_url,
+                reporter=interaction.user,
+                match_round=match_round,
+                final_round=final_round,
+            )
+            if not stored:
+                await interaction.followup.send(
+                    "I recorded the result but couldn't save the replay link due to a database error.",
+                    ephemeral=False,
+                )
 
     @app_commands.command(
         name="tournament_revert_result",
@@ -1656,8 +1874,6 @@ class Tournaments(commands.Cog):
                 f"Well played to our top cut of {_format_top_cut(placement_names[1:])}!"
             )
 
-        lines.append("")
-        lines.append("----------------------------------------------------------------------------")
 
         deck_entries: list[tuple[str, dict]] = []
 
@@ -1666,7 +1882,6 @@ class Tournaments(commands.Cog):
                 rank, f"{rank}th place"
             )
             name = self._participant_display_name(participant)
-            lines.append(f"{place_label} - {name} {'Decklist' if rank != 1 else champion_label}")
 
             user_id = self._participant_user_id(participant)
             if user_id is not None:
@@ -1675,17 +1890,12 @@ class Tournaments(commands.Cog):
                 )
                 if deck_entry:
                     deck_entries.append((f"{place_label} - {name}", deck_entry))
-                    lines.append("Decklist posted below.")
-                else:
-                    lines.append("No decklist was submitted for this player.")
-            else:
-                lines.append("No decklist was submitted for this player.")
-
-            lines.append("")
-            lines.append("----------------------------------------------------------------------------")
 
         replays = db_list_tournament_replays(self.state, resolved_identifier)
         if replays:
+            lines.append("")
+            lines.append("")
+            lines.append("----------------------------------------------------------------------------")
             lines.append("Top cut Film")
             lines.append("")
             for entry in replays:
@@ -1695,6 +1905,7 @@ class Tournaments(commands.Cog):
                     lines.append(f"[{match_label}]({replay_url})")
                 else:
                     lines.append(match_label)
+            lines.append("----------------------------------------------------------------------------")
 
         await interaction.followup.send("\n".join(lines), ephemeral=False)
 

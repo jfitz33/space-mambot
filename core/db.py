@@ -92,6 +92,13 @@ def db_init(state: AppState):
             PRIMARY KEY (tournament_id, match_label)
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS tournament_settings (
+            tournament_id    TEXT NOT NULL PRIMARY KEY,
+            replays_required INTEGER NOT NULL DEFAULT 0,
+            updated_ts       REAL NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
 
@@ -380,6 +387,45 @@ def db_list_tournament_replays(
         )
 
     return entries
+
+def db_set_tournament_settings(
+    state: AppState, tournament_id: str, *, replays_required: bool
+) -> None:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO tournament_settings (
+                tournament_id, replays_required
+            ) VALUES (?, ?)
+            ON CONFLICT(tournament_id) DO UPDATE SET
+                replays_required=excluded.replays_required,
+                updated_ts=strftime('%s','now');
+            """,
+            (tournament_id, 1 if replays_required else 0),
+        )
+
+
+def db_get_tournament_settings(
+    state: AppState, tournament_id: str
+) -> Optional[Dict[str, Any]]:
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT replays_required
+            FROM tournament_settings
+            WHERE tournament_id = ?;
+            """,
+            (tournament_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        (replays_required,) = row
+        return {
+            "tournament_id": tournament_id,
+            "replays_required": bool(replays_required),
+        }
 
 # --- Helper functions for selling to shop ---
 
