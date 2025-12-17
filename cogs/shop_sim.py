@@ -56,13 +56,6 @@ def _shard_badge(state: AppState, set_id: int = CURRENT_ACTIVE_SET) -> str:
         return f"<{prefix}:rar_{shard_key}:{eid}>"
     return "💠"
 
-_NBSP = "\u00A0"  # non-breaking space to preserve padding in embeds
-
-
-def _nbsp(text: str) -> str:
-    """Swap standard spaces for non-breaking spaces so Discord preserves padding."""
-    return text.replace(" ", _NBSP)
-
 def _pretty_shard_name_for_set(set_id: int) -> str:
     return SHARD_SET_NAMES.get(set_id, f"Shards (Set {set_id})")
 
@@ -177,15 +170,28 @@ class ShopSim(commands.Cog):
 
         # Craft/fragment prices by rarity (shards)
         shard_badge = _shard_badge(self.state)
-        price_rows = [
-            _nbsp(f"**4**         {shard_badge} | **1**     {shard_badge}  -> {_rar_badge(self.state, 'common')} Common"),
-            _nbsp(f"**40**      {shard_badge} | **10**   {shard_badge}  -> {_rar_badge(self.state, 'rare')} Rare"),
-            _nbsp(f"**100**    {shard_badge} | **25**  {shard_badge}  -> {_rar_badge(self.state, 'super')} Super"),
-            _nbsp(f"**300**   {shard_badge} | **75**   {shard_badge}  -> {_rar_badge(self.state, 'ultra')} Ultra"),
-            _nbsp(f"**1500** {shard_badge} | **375** {shard_badge}  -> {_rar_badge(self.state, 'secret')} Secret"),
-        ]
+        craft_rows: list[str] = []
+        fragment_rows: list[str] = []
+        result_rows: list[str] = []
 
-        e.add_field(name="Craft | Fragment", value="\n".join(price_rows) or "—", inline=False)
+        for rarity in RARITY_ORDER:
+            craft_cost = CRAFT_COST_BY_RARITY.get(rarity)
+            fragment_yield = SHARD_YIELD_BY_RARITY.get(rarity)
+            if craft_cost is None or fragment_yield is None:
+                continue
+
+            rarity_label = rarity.title()
+            badge = _rar_badge(self.state, rarity)
+            craft_rows.append(f"{craft_cost} {shard_badge}")
+            fragment_rows.append(f"| {fragment_yield} {shard_badge}")
+            result_rows.append(f"→ {badge} {rarity_label}")
+
+        if craft_rows:
+            e.add_field(name="Craft", value="\n".join(craft_rows), inline=True)
+            e.add_field(name="Fragment", value="\n".join(fragment_rows), inline=True)
+            e.add_field(name="Result", value="\n".join(result_rows), inline=True)
+        else:
+            e.add_field(name="Craft | Fragment", value="—", inline=False)
 
         # Sales section (compact format)
         if sales:
