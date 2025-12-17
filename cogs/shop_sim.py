@@ -18,7 +18,8 @@ from core.constants import (
     BUNDLE_BOX_COST,
     TIN_COST,
     RARITY_ORDER,
-    SALE_LAYOUT
+    SALE_LAYOUT,
+    CURRENT_ACTIVE_SET,
 )
 from core.currency import SHARD_SET_NAMES
 from core.images import mambuck_badge
@@ -44,13 +45,15 @@ def _rar_badge(state: AppState, rarity: str) -> str:
     short = {"common":"C","rare":"R","super":"SR","ultra":"UR","secret":"SEC","starlight":"SL"}.get(key, key[:1].upper())
     return f"[{short}]"
 
-def _shard_badge(state: AppState) -> str:
+def _shard_badge(state: AppState, set_id: int = CURRENT_ACTIVE_SET) -> str:
     rid = getattr(state, "rarity_emoji_ids", {}) or {}
     anim = getattr(state, "rarity_emoji_animated", {}) or {}
-    eid = rid.get("frostfire")
+    shard_key = {1: "frostfire", 2: "sandstorm", 3: "temporal"}.get(set_id, "frostfire")
+
+    eid = rid.get(shard_key) or rid.get("frostfire")
     if eid:
-        prefix = "a" if anim.get("frostfire") else ""
-        return f"<{prefix}:rar_frostfire:{eid}>"
+        prefix = "a" if anim.get(shard_key) else ""
+        return f"<{prefix}:rar_{shard_key}:{eid}>"
     return "💠"
 
 _NBSP = "\u00A0"  # non-breaking space to preserve padding in embeds
@@ -175,10 +178,10 @@ class ShopSim(commands.Cog):
         # Craft/fragment prices by rarity (shards)
         shard_badge = _shard_badge(self.state)
         price_rows = [
-            _nbsp(f"**4**         {shard_badge} | **1**      {shard_badge}  -> {_rar_badge(self.state, 'common')} Common"),
+            _nbsp(f"**4**         {shard_badge} | **1**     {shard_badge}  -> {_rar_badge(self.state, 'common')} Common"),
             _nbsp(f"**40**      {shard_badge} | **10**   {shard_badge}  -> {_rar_badge(self.state, 'rare')} Rare"),
-            _nbsp(f"**100**      {shard_badge} | **25**   {shard_badge}  -> {_rar_badge(self.state, 'super')} Super"),
-            _nbsp(f"**300**   {shard_badge} | **75** {shard_badge}  -> {_rar_badge(self.state, 'ultra')} Ultra"),
+            _nbsp(f"**100**    {shard_badge} | **25**  {shard_badge}  -> {_rar_badge(self.state, 'super')} Super"),
+            _nbsp(f"**300**   {shard_badge} | **75**   {shard_badge}  -> {_rar_badge(self.state, 'ultra')} Ultra"),
             _nbsp(f"**1500** {shard_badge} | **375** {shard_badge}  -> {_rar_badge(self.state, 'secret')} Secret"),
         ]
 
@@ -195,7 +198,7 @@ class ShopSim(commands.Cog):
             }
             if discounts:
                 sale_title = (
-                    f"🔥 On sale today for **{discounts.pop()}%** off!"
+                    f"🔥 Today's sales, craft for **{discounts.pop()}%** off!"
                     if len(discounts) == 1 else
                     f"🔥 On sale today for **up to {max(discounts)}%** off!"
                 )
@@ -213,7 +216,7 @@ class ShopSim(commands.Cog):
                     badge = _rar_badge(self.state, rarity)
                     name = row.get("card_name", "?")
                     price = int(row.get("price_shards", 0))
-                    lines.append(f"{badge} {name} -> {shard_badge} **{price} shards**")
+                    lines.append(f"{badge} {name} -> **{price}**{shard_badge}")
                 
             # Include any leftover rarities (legacy data) at the end
             for rarity, rows in sales.items():

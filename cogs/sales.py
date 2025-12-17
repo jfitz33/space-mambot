@@ -24,6 +24,7 @@ from core.constants import (
     PACKS_BY_SET,
     SALE_DISCOUNT_PCT,
     SALE_LAYOUT,
+    CURRENT_ACTIVE_SET,
     pack_names_for_set,
 )
 from core.cards_shop import get_card_rarity  # normalizes rarity across your data
@@ -127,8 +128,13 @@ class Sales(commands.Cog):
         # Pre-index all cards by rarity
         buckets: Dict[str, List[Dict[str, Any]]] = {r: [] for r in TARGET_RARITIES}
 
+        active_set_id = CURRENT_ACTIVE_SET if CURRENT_ACTIVE_SET in PACKS_BY_SET else None
         latest_set_id = max(PACKS_BY_SET) if PACKS_BY_SET else None
-        allowed_pack_names = set(pack_names_for_set(self.state, latest_set_id)) if latest_set_id else set()
+        allowed_pack_names = set(pack_names_for_set(self.state, active_set_id)) if active_set_id else set()
+
+        # Fallback to the latest available set if the configured set is missing
+        if not allowed_pack_names and latest_set_id and latest_set_id != active_set_id:
+            allowed_pack_names = set(pack_names_for_set(self.state, latest_set_id))
         if not allowed_pack_names:
             return out
 
