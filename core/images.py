@@ -19,6 +19,7 @@ RARITY_FILES: Dict[str, str] = {
     "frostfire": ("frostfire.gif", "frostfire.png"),
     "sandstorm": ("sandstorm.gif", "sandstorm.png"),
     "temporal": ("temporal.gif", "temporal.png"),
+    "mambuck": ("mambuck.gif", "mambuck.png"),
 }
 
 FALLBACK_BADGES: Dict[str, str] = {
@@ -27,6 +28,7 @@ FALLBACK_BADGES: Dict[str, str] = {
     "super":  "🔵",
     "ultra":  "🟢",
     "secret": "⚪",
+    "mambuck": "💰",
 }
 
 PACK_CARD_WIDTH = 180
@@ -55,6 +57,7 @@ def rarity_badge(state_or_bot, rarity: str) -> str:
         "sr": "super", "super": "super", "super rare": "super",
         "ur": "ultra", "ultra": "ultra", "ultra rare": "ultra",
         "secr": "secret", "secret": "secret", "secret rare": "secret",
+        "mb": "mambuck", "mambuck": "mambuck", "mambucks": "mambuck",
     }
     key = ALIASES.get(r, r)  # default to r if already canonical
 
@@ -78,6 +81,11 @@ def _images_dir() -> Path:
     # Resolve relative to the repository root (this file is core/images.py)
     # repo_root / images / rarity_logos
     return Path(__file__).resolve().parents[1] / "images" / "rarity_logos"
+
+def mambuck_badge(state_or_bot) -> str:
+    """Return the mambuck emoji or a fallback icon via the rarity badge cache."""
+
+    return rarity_badge(state_or_bot, "mambuck")
 
 async def ensure_rarity_emojis(
     bot: discord.Client,

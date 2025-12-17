@@ -21,6 +21,7 @@ from core.constants import (
     SALE_LAYOUT
 )
 from core.currency import SHARD_SET_NAMES
+from core.images import mambuck_badge
 from core.db import db_sales_get_for_day, db_shop_banner_load, db_shop_banner_store
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -159,9 +160,15 @@ class ShopSim(commands.Cog):
         )
 
         # Prices (packs/boxes)
+        mambuck_icon = mambuck_badge(self.state)
         e.add_field(
             name="Sealed Products",
-            value=f"• Pack: **{PACK_COST} mambucks**\n• Box (24 packs): **{BOX_COST} mambucks**\n• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} mambucks**\n• Tin (1 promo card and 5 packs): **{TIN_COST} mambucks**",
+            value=(
+                f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**\n"
+                f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**\n"
+                f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**\n"
+                f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**"
+            ),
             inline=False,
         )
 

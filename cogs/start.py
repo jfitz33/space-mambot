@@ -23,6 +23,9 @@ from core.db import (
     db_wallet_add,
 )
 from core.images import ensure_rarity_emojis
+from core.wallet_api import credit_mambucks, add_shards
+from core.constants import TEAM_ROLE_MAPPING, TEAM_ROLE_NAMES, CURRENT_ACTIVE_SET
+from core.currency import mambucks_label, shards_label
 from core.wallet_api import get_mambucks, credit_mambucks, get_shards, add_shards
 from core.constants import PACKS_BY_SET, TEAM_ROLE_MAPPING, TEAM_ROLE_NAMES
 from core.currency import mambucks_label, shard_set_name
@@ -202,10 +205,10 @@ class StarterDeckSelectView(View):
             catchup_lines: list[str] = []
             catchup_note = (
                 "Because you joined after day 1 and missed out on daily rewards, "
-                "I've awarded you these packs and mambucks to catch you up!"
+                "I've awarded you these catch-up rewards!"
             )
 
-            if os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1":
+            if CURRENT_ACTIVE_SET == 1:
                 pack_catchup_total = db_daily_quest_pack_get_total(self.state, WEEK1_QUEST_ID)
                 if pack_catchup_total > 0:
                     pack_ack = await self.state.shop.grant_pack(
@@ -218,6 +221,18 @@ class StarterDeckSelectView(View):
                 new_wallet = credit_mambucks(self.state, self.member.id, daily_total)
                 catchup_lines.append(
                     f"Credited {mambucks_label(daily_total)} (new total: {mambucks_label(new_wallet)})."
+                )
+            
+            if CURRENT_ACTIVE_SET in (2, 3):
+                frostfire_total = add_shards(self.state, self.member.id, 1, 35000)
+                catchup_lines.append(
+                    f"Credited {shards_label(35000, 1)} (new total: {shards_label(frostfire_total, 1)})."
+                )
+
+            if CURRENT_ACTIVE_SET == 3:
+                sandstorm_total = add_shards(self.state, self.member.id, 2, 35000)
+                catchup_lines.append(
+                    f"Credited {shards_label(35000, 2)} (new total: {shards_label(sandstorm_total, 2)})."
                 )
 
             # (D) Post a succinct summary; if DMs failed, fall back with embeds in-channel

@@ -17,7 +17,8 @@ from core.constants import (
     GAMBA_PRIZES,
     set_id_for_pack,
 )
-from core.currency import mambucks_label, shards_label
+from core.currency import shards_label
+from core.images import mambuck_badge
 from core.db import (
     db_add_cards,
     db_shards_add,
@@ -209,7 +210,7 @@ def _rarity_badge_tokens(state) -> dict[str, str]:
             return f"<{prefix}:rar_{key}:{eid}>"
         return fallback
 
-    return {
+    tokens = {
         "super": badge("super", ":rar_super:"),
         "ultra": badge("ultra", ":rar_ultra:"),
         "secret": badge("secret", ":rar_secret:"),
@@ -218,12 +219,23 @@ def _rarity_badge_tokens(state) -> dict[str, str]:
         "temporal": badge("temporal", ":rar_temporal:"),
     }
 
+    tokens["mambuck"] = badge("mambuck", mambuck_badge(state))
+
+    return tokens
+
 
 def _render_prize_description(prize: GambaPrize, state) -> str:
     desc = prize.description
     badges = _rarity_badge_tokens(state)
     for token, badge in badges.items():
         desc = desc.replace(f":rar_{token}:", badge)
+    
+    if prize.prize_type == "mambucks":
+        icon = badges.get("mambuck", mambuck_badge(state))
+        amount = int(prize.amount or 0)
+        if amount:
+            return f"{amount} {icon} Mambucks"
+        return f"{icon} {desc}"
     return desc
 
 def _shard_badge_for_set(state, set_id: int) -> str:
@@ -261,7 +273,8 @@ async def _resolve_and_award_prize(state, user_id: int, prize: GambaPrize) -> st
                 db_wallet_add(state, user_id, d_mambucks=amount)
             except Exception as exc:
                 print(f"[gamba] failed to add mambucks: {exc}")
-        return f"💰 {mambucks_label(amount)}"
+        icon = mambuck_badge(state)
+        return f"{amount} {icon} Mambucks"
 
     return prize.description
 

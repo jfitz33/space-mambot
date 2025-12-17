@@ -7,6 +7,7 @@ from discord import app_commands
 from core.state import AppState
 from core.db import db_wallet_get, db_shards_get
 from core.constants import PACKS_BY_SET
+from core.images import mambuck_badge
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -61,7 +62,8 @@ class Wallet(commands.Cog):
             embed.set_thumbnail(url=target.display_avatar.url)
 
         # Field 1: Mambucks
-        embed.add_field(name="Mambucks", value=f"**{mambucks}**", inline=True)
+        icon = mambuck_badge(self.state)
+        embed.add_field(name="Mambucks", value=f"**{icon} {mambucks}**", inline=True)
         # Field 2: Shards (multi-line)
         embed.add_field(name="Shards", value=shards_value, inline=True)
 
