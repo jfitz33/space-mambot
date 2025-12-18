@@ -163,7 +163,31 @@ class Sales(commands.Cog):
             if not candidates or count <= 0:
                 continue
 
-            picks = random.sample(candidates, k=min(count, len(candidates)))
+            picks: List[Dict[str, Any]] = []
+            # If we have two packs for the active set and multiple slots, try to split evenly.
+            pack_list = sorted(list(allowed_pack_names))
+            if len(pack_list) == 2 and count > 1:
+                per_pack_counts = [count // 2, count // 2]
+                for i in range(count - sum(per_pack_counts)):
+                    per_pack_counts[i % 2] += 1
+
+                remaining_pool = candidates[:]
+                for pack_name, target_count in zip(pack_list, per_pack_counts):
+                    pack_pool = [c for c in remaining_pool if c.get("pack") == pack_name]
+                    if not pack_pool or target_count <= 0:
+                        continue
+                    take = min(target_count, len(pack_pool))
+                    choices = random.sample(pack_pool, k=take)
+                    picks.extend(choices)
+                    for choice in choices:
+                        if choice in remaining_pool:
+                            remaining_pool.remove(choice)
+
+                remaining_slots = min(count, len(candidates)) - len(picks)
+                if remaining_slots > 0 and remaining_pool:
+                    picks.extend(random.sample(remaining_pool, k=min(remaining_slots, len(remaining_pool))))
+            else:
+                picks = random.sample(candidates, k=min(count, len(candidates)))
 
             for choice in picks:
                 card = choice["card"]

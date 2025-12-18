@@ -39,7 +39,7 @@ CURRENT_ACTIVE_SET = _parse_active_set_env()
 
 # Daily sale layout: (rarity, number of entries)
 SALE_LAYOUT = [
-    ("ultra", 3),
+    ("ultra", 4),
     ("secret", 1),
 ]
 

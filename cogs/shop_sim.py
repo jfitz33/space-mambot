@@ -17,11 +17,16 @@ from core.constants import (
     SHARD_YIELD_BY_RARITY,
     BUNDLE_BOX_COST,
     TIN_COST,
+    PACK_SHARD_COST,
+    BOX_SHARD_COST,
+    BUNDLE_BOX_SHARD_COST,
+    TIN_SHARD_COST,
     RARITY_ORDER,
     SALE_LAYOUT,
     CURRENT_ACTIVE_SET,
     set_id_for_pack,
 )
+from core.purchase_options import PACK_SHARD_ENABLED_SETS
 from core.currency import SHARD_SET_NAMES
 from core.images import mambuck_badge
 from core.db import db_sales_get_for_day, db_shop_banner_load, db_shop_banner_store
@@ -158,7 +163,10 @@ class ShopSim(commands.Cog):
 
         # Prices (packs/boxes)
         mambuck_icon = mambuck_badge(self.state)
+        shard_icon = _shard_badge(self.state)
+        indent = "\u2003\u2003"  # use em-spaces to preserve indentation in Discord
         pack_names = sorted((self.state.packs_index or {}).keys(), key=str.casefold)
+        shard_set_labels: list[str] = []
         if pack_names:
             packs_by_set: dict[int | None, list[str]] = {}
             for name in pack_names:
@@ -173,21 +181,41 @@ class ShopSim(commands.Cog):
             for sid in ordered_set_ids:
                 label = f"Set {sid}" if sid is not None else "Other"
                 names = ", ".join(sorted(packs_by_set.get(sid, []), key=str.casefold))
-                indent = "\u2003\u2003"  # use em-spaces to preserve indentation in Discord
                 pack_lines.append(f"{indent}• {label}: {names}")
+            shard_set_labels = [f"Set {sid}" for sid in ordered_set_ids if sid is not None]
             pack_text = "\n".join(pack_lines)
         else:
             pack_text = "• Available packs: None"
+
+        shard_enabled_sets = sorted(PACK_SHARD_ENABLED_SETS)
+        shard_set_labels = [f"Set {sid}" for sid in shard_enabled_sets]
+        shard_icons = "".join(_shard_badge(self.state, sid) for sid in shard_enabled_sets)
+        shard_section_lines: list[str] = []
+        if shard_enabled_sets:
+            shard_sets_text = ", ".join(shard_set_labels)
+            shard_section_lines.append(f"• Available for purchase via shards: {shard_sets_text}")
+            shard_section_lines.append(f"{indent}• Pack: **{PACK_SHARD_COST}**{shard_icons}")
+            shard_section_lines.append(f"{indent}• Box (24 packs): **{BOX_SHARD_COST}**{shard_icons}")
+            shard_section_lines.append(f"{indent}• Bundle (1 box of each pack): **{BUNDLE_BOX_SHARD_COST}**{shard_icons}")
+            shard_section_lines.append(f"{indent}• Tin (1 promo card and 5 packs): **{TIN_SHARD_COST}**{shard_icons}")
+
+        shard_section_text = "\n".join(shard_section_lines)
+        pricing_lines = [
+            "",
+            pack_text,
+            f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**",
+            f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**",
+            #f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**",
+            f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**",
+        ]
+
+        if shard_section_text:
+            pricing_lines.append(shard_section_text)
+
+        pricing_value = "\n".join(pricing_lines)
         e.add_field(
             name="📦 Sealed Products 📦",
-            value=(
-                "\n"
-                f"{pack_text}\n"
-                f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**\n"
-                f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**\n"
-                f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**\n"
-                f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**"
-            ),
+            value=pricing_value,
             inline=False,
         )
 

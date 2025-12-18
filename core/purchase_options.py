@@ -25,7 +25,7 @@ def _parse_shard_enabled_sets(env_value: str | None) -> set[int]:
 
 
 # Comma-separated set IDs (e.g., "1,2") that are allowed to use shards for packs/boxes.
-_PACK_SHARD_ENABLED_SETS = _parse_shard_enabled_sets(os.getenv("PACK_SHARD_ENABLED_SETS", ""))
+PACK_SHARD_ENABLED_SETS = _parse_shard_enabled_sets(os.getenv("PACK_SHARD_ENABLED_SETS", ""))
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ def payment_options_for_set(
             raise ValueError("mambuck_cost is required when allow_mambucks=True")
         options.append(PaymentOption(currency="mambucks", amount=int(mambuck_cost)))
 
-    shard_enabled = set(extra_shard_sets or set()) | _PACK_SHARD_ENABLED_SETS
+    shard_enabled = set(extra_shard_sets or set()) | PACK_SHARD_ENABLED_SETS
     effective_shard_cost = shard_cost if shard_cost is not None else mambuck_cost
     if set_id is not None and int(set_id) in shard_enabled and effective_shard_cost is not None:
         options.append(
