@@ -167,13 +167,19 @@ class DuelQueue(commands.Cog):
                 age = datetime.utcnow() - waiting.joined_at
                 if age > STALE_WAIT:
                     channel_id = channel.id if isinstance(channel, discord.TextChannel) else None
-                    await self._request_confirmation(waiting.user_id, challenger.user_id, channel_id, guild)
-                    return
+                    waiting_user_id = waiting.user_id
+                    challenger_id = challenger.user_id
+                    should_confirm = True
+                else:
+                    user1_id, user2_id = waiting.user_id, challenger.user_id
+                    self.queue = self.queue[2:]
+                    self.active_pairs[user1_id] = user2_id
+                    self.active_pairs[user2_id] = user1_id
+                    should_confirm = False
 
-                user1_id, user2_id = waiting.user_id, challenger.user_id
-                self.queue = self.queue[2:]
-                self.active_pairs[user1_id] = user2_id
-                self.active_pairs[user2_id] = user1_id
+            if should_confirm:
+                await self._request_confirmation(waiting_user_id, challenger_id, channel_id, guild)
+                return
 
             await self._announce_pair(user1_id, user2_id, channel if isinstance(channel, discord.TextChannel) else None)
 

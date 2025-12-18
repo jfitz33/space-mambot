@@ -1,6 +1,8 @@
 from __future__ import annotations
 from collections import Counter, defaultdict
+from copy import deepcopy
 from functools import partial
+from pathlib import Path
 
 import discord, asyncio
 from discord.ui import View, Select, button, Button
@@ -38,6 +40,60 @@ from typing import List, Tuple, Optional, Literal, Any
 
 ORDER = {r: i for i, r in enumerate(RARITY_ORDER)}
 BUNDLE_VALUE_PREFIX = "__bundle__"
+PACK_IMAGE_DIR = Path(__file__).resolve().parent.parent / "images" / "pack_images"
+
+
+def _pack_image_path(pack_name: str) -> Path | None:
+    if not pack_name:
+        return None
+    base_dir = PACK_IMAGE_DIR
+    if not base_dir.exists():
+        return None
+
+    normalized = pack_name.strip().replace("/", "_")
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in normalized)
+    slug = "_".join(filter(None, slug.split("_")))
+
+    candidates = {
+        normalized,
+        normalized.replace(" ", "_"),
+        normalized.replace(" ", "-"),
+        normalized.lower(),
+        slug,
+    }
+
+    for stem in candidates:
+        candidate = base_dir / f"{stem}.png"
+        if candidate.exists():
+            return candidate
+
+    try:
+        target_stems = {normalized.casefold(), slug.casefold()}
+        for candidate in base_dir.glob("*.png"):
+            if candidate.stem.casefold() in target_stems:
+                return candidate
+    except Exception:
+        pass
+    return None
+
+
+def _pack_confirmation_embed(pack_name: str, description: str) -> tuple[discord.Embed | None, list[discord.File]]:
+    image_path = _pack_image_path(pack_name)
+    if not image_path:
+        return None, []
+
+    embed = discord.Embed(title=pack_name, description=description)
+    file = discord.File(str(image_path), filename=image_path.name)
+    embed.set_image(url=f"attachment://{image_path.name}")
+    return embed, [file]
+
+
+def _close_files(files: list[discord.File] | None) -> None:
+    for file in files or []:
+        try:
+            file.close()
+        except Exception:
+            pass
 
 def _coerce_set_id(value) -> int | None:
     if isinstance(value, int):
@@ -279,6 +335,17 @@ class PacksDropdown(discord.ui.Select):
         value = self.values[0]
         if value == "__none__":
             return await interaction.response.send_message("No packs are configured.", ephemeral=True)
+        
+        # Disable the dropdown while we fetch the confirmation view (and any pack art)
+        # so the user can't spam multiple selections.
+        self.disabled = True
+        try:
+            await interaction.response.edit_message(view=self.parent_view)
+        except Exception:
+            try:
+                await interaction.response.defer()
+            except Exception:
+                pass
         # Hand off to the view to branch pack vs box
         await self.parent_view._handle_pack_choice(interaction, value)
 
@@ -325,6 +392,8 @@ class ConfirmSpendView(discord.ui.View):
         interaction: discord.Interaction,
         *,
         content: str | None = None,
+        embeds: list[discord.Embed] | None = None,
+        attachments: list[discord.File] | None = None,
         view: discord.ui.View | None = None,
     ) -> None:
         """Safely edit the original interaction message.
@@ -335,15 +404,21 @@ class ConfirmSpendView(discord.ui.View):
         triggering the refund path in the caller.
         """
 
+        kwargs = {"content": content, "view": view}
+        if embeds is not None:
+            kwargs["embeds"] = embeds
+        if attachments is not None:
+            kwargs["attachments"] = attachments
+
         try:
             if not interaction.response.is_done():
-                await interaction.response.edit_message(content=content, view=view)
+                await interaction.response.edit_message(**kwargs)
             else:
-                await interaction.edit_original_response(content=content, view=view)
+                await interaction.edit_original_response(**kwargs)
         except Exception:
             try:
                 if interaction.message:
-                    await interaction.message.edit(content=content, view=view)
+                    await interaction.message.edit(**kwargs)
             except Exception:
                 pass
 
@@ -371,6 +446,8 @@ class ConfirmSpendView(discord.ui.View):
         content: str | None = None,
         *,
         delete_message: bool = False,
+        embeds: list[discord.Embed] | None = None,
+        attachments: list[discord.File] | None = None,
     ):
         self.stop()
         for item in self.children:
@@ -379,7 +456,13 @@ class ConfirmSpendView(discord.ui.View):
         if delete_message:
             deleted = await self._delete_interaction_message(interaction)
         if not deleted:
-            await self._edit_interaction_message(interaction, content=content, view=None)
+            await self._edit_interaction_message(
+                interaction,
+                content=content,
+                embeds=embeds,
+                attachments=attachments,
+                view=None,
+            )
 
     async def _handle_payment(self, option: PaymentOption, interaction: discord.Interaction):
         if interaction.user.id != self.requester.id:
@@ -387,15 +470,20 @@ class ConfirmSpendView(discord.ui.View):
 
         if self._processing:
             try:
-                await interaction.response.defer_update()
+                await interaction.response.defer(ephemeral=True)
             except Exception:
                 pass
             return
         self._processing = True
 
+        # Acknowledge the interaction before we edit the message, so Discord
+        # doesn't show "interaction failed" while we swap out the buttons.
         if not interaction.response.is_done():
             try:
                 await interaction.response.defer(ephemeral=True)
+            except discord.HTTPException as e:
+                if e.code in {10062, 40060}:  # stale/expired
+                    return
             except Exception:
                 pass
 
@@ -403,12 +491,22 @@ class ConfirmSpendView(discord.ui.View):
 
         # Disable buttons and show the processing state on the message so that
         # repeated clicks do not trigger refunds.
-        for item in self.children:
-            item.disabled = True
+        status_view = discord.ui.View()
+        status_view.add_item(
+            discord.ui.Button(
+                label="Sending you your packs via dm",
+                style=discord.ButtonStyle.secondary,
+                disabled=True,
+            )
+        )
+        current_embeds = [deepcopy(e) for e in (getattr(interaction.message, "embeds", []) or [])]
+        current_content = getattr(interaction.message, "content", None)
         await self._edit_interaction_message(
             interaction,
-            content=f"Processing your purchase of {desc}…",
-            view=self,
+            content=current_content,
+            embeds=current_embeds or None,
+            attachments=[],
+            view=status_view,
         )
 
         balance_after: str | None = None
@@ -461,7 +559,7 @@ class ConfirmSpendView(discord.ui.View):
     async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
-        await self.remove_ui(interaction, content="Cancelled.")
+        await self.remove_ui(interaction, content="Cancelled.", embeds=[], attachments=[])
 
 
 class ConfirmBuyCardView(discord.ui.View):
@@ -1005,22 +1103,31 @@ class PacksSelectView(discord.ui.View):
         self.bundle_lookup: dict[str, dict] = {}
         self.add_item(PacksDropdown(self))
 
+    async def _send_ephemeral(self, interaction: discord.Interaction, content: str) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(content, ephemeral=True)
+            else:
+                await interaction.followup.send(content, ephemeral=True)
+        except Exception:
+            pass
+
     async def _handle_pack_choice(self, interaction: discord.Interaction, pack_name: str):
         bundle_info = self.bundle_lookup.get(pack_name)
         if bundle_info:
             bundle_name = bundle_info.get("name", "Bundle")
             if not self.include_bundle:
-                await interaction.response.send_message(
+                await self._send_ephemeral(
+                    interaction,
                     f"The {bundle_name} is only available when opening boxes.",
-                    ephemeral=True,
                 )
                 return
 
             pack_entries = bundle_info.get("packs") or []
             if not pack_entries:
-                await interaction.response.send_message(
+                await self._send_ephemeral(
+                    interaction,
                     f"No packs are available for the {bundle_name}.",
-                    ephemeral=True,
                 )
                 return
 
@@ -1058,7 +1165,7 @@ class PacksSelectView(discord.ui.View):
             if preview_names:
                 message += f"\nIncludes: {preview_names}"
 
-            await interaction.response.edit_message(content=message, view=confirm_view)
+            await self._send_pack_confirmation(interaction, confirm_view, pack_name, message)
             return
 
         if self.mode == "box":
@@ -1078,17 +1185,11 @@ class PacksSelectView(discord.ui.View):
                 on_confirm=self._open_box_and_render,
                 payment_options=payment_opts,
             )
-            await interaction.response.edit_message(
-                content=(
-                    f"Open a **box** of **{pack_name}**?\n"
-                    f"Payment options:\n{payment_text}\n"
-                    f"That’s **{PACKS_IN_BOX}** packs with guarantees:\n"
-                    f"• Packs 1–18: Super Rare\n"
-                    f"• Packs 19–23: Ultra Rare\n"
-                    f"• Pack 24: Secret Rare"
-                ),
-                view=confirm_view
+            confirmation_text = (
+                f"Open a **box** of **{pack_name}**?\n"
+                f"Payment options:\n{payment_text}\n"
             )
+            await self._send_pack_confirmation(interaction, confirm_view, pack_name, confirmation_text)
         else:
             set_id = set_id_for_pack(pack_name)
             total_cost_mambucks = self.amount * PACK_COST
@@ -1107,13 +1208,62 @@ class PacksSelectView(discord.ui.View):
                 on_confirm=self._open_and_render,
                 payment_options=payment_opts,
             )
-            await interaction.response.edit_message(
-                content=(
-                    f"Open **{self.amount}** pack(s) of **{pack_name}**?\n"
-                    f"Payment options:\n{payment_text}"
-                ),
-                view=confirm_view
+            confirmation_text = (
+                f"Open **{self.amount}** pack(s) of **{pack_name}**?\n"
+                f"Payment options:\n{payment_text}"
             )
+            await self._send_pack_confirmation(interaction, confirm_view, pack_name, confirmation_text)
+
+    async def _send_pack_confirmation(
+        self,
+        interaction: discord.Interaction,
+        view: discord.ui.View,
+        pack_name: str,
+        confirmation_text: str,
+    ) -> None:
+        embed, files = _pack_confirmation_embed(pack_name, confirmation_text)
+
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer()
+            except discord.HTTPException as e:
+                if e.code in {10062, 40060}:  # stale/expired interaction
+                    await self._handle_stale_interaction(interaction)
+                    _close_files(files)
+                    return
+                _close_files(files)
+                raise
+
+        try:
+            if embed:
+                await interaction.edit_original_response(
+                    content=None,
+                    embeds=[embed],
+                    attachments=files,
+                    view=view,
+                )
+            else:
+                await interaction.edit_original_response(
+                    content=confirmation_text,
+                    view=view,
+                )
+        except discord.HTTPException as e:
+            _close_files(files)
+            if e.code in {10062, 40060}:  # stale/expired interaction
+                await self._handle_stale_interaction(interaction)
+                return
+            raise
+
+    async def _handle_stale_interaction(self, interaction: discord.Interaction) -> None:
+        try:
+            await interaction.followup.send(
+                "⚠️ That selection expired. Please rerun the command and try again.",
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        except Exception:
+            # Nothing else to do; interaction token is likely invalid.
+            pass
 
     async def _open_and_render(self, interaction: discord.Interaction, state, requester, pack_name: str, amount: int):
         # ConfirmSpendView has already charged the user and will refund on exceptions.
