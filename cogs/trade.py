@@ -575,12 +575,12 @@ class Trade(commands.Cog):
         )
 
     @app_commands.command(
-        name="binder_display",
+        name="binder",
         description="Show a player's binder in this channel."
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(user="Player whose binder to show (defaults to you)")
-    async def binder_display(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
+    async def binder(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
         target = user or interaction.user
         rows = db_binder_list(self.state, target.id)
         embeds = await self._build_collection_style_embeds(

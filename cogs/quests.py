@@ -25,7 +25,7 @@ class Quests(commands.Cog):
         # today in case the bot was restarted and missed the regular scheduler.
         await self.qm.fast_forward_daily_rollovers(now_et().date())
 
-    @app_commands.command(name="daily_duel", description="View your daily duel progress and claim reward(s)")
+    @app_commands.command(name="daily", description="View your daily duel progress and claim reward(s)")
     @app_commands.guilds(GUILD)
     async def quests(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
