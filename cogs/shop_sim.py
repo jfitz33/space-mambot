@@ -150,7 +150,7 @@ class ShopSim(commands.Cog):
             title="🛍️ Welcome to the Mamshop",
             description=(
                 "Use **/pack** or **/box** to buy packs!\n"
-                "Use **/fragment** to convert cards into shards, and **/craft** to turn shards into cards!\n"
+                "Use **/fragment** to convert cards into shards, and **/craft** to turn shards into cards!\n\n"
             ),
             color=0x2b6cb0,
         )
@@ -160,6 +160,7 @@ class ShopSim(commands.Cog):
         e.add_field(
             name="Sealed Products",
             value=(
+                "\n"
                 f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**\n"
                 f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**\n"
                 f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**\n"
@@ -170,9 +171,8 @@ class ShopSim(commands.Cog):
 
         # Craft/fragment prices by rarity (shards)
         shard_badge = _shard_badge(self.state)
-        craft_rows: list[str] = []
-        fragment_rows: list[str] = []
-        result_rows: list[str] = []
+        emoji_sized_space = "\u2800"  # Braille blank; roughly emoji-width whitespace for alignment
+        table_rows: list[tuple[str, str, str]] = []
 
         for rarity in RARITY_ORDER:
             craft_cost = CRAFT_COST_BY_RARITY.get(rarity)
@@ -182,16 +182,39 @@ class ShopSim(commands.Cog):
 
             rarity_label = rarity.title()
             badge = _rar_badge(self.state, rarity)
-            craft_rows.append(f"{craft_cost} {shard_badge}")
-            fragment_rows.append(f"| {fragment_yield} {shard_badge}")
-            result_rows.append(f"→ {badge} {rarity_label}")
+            rarity_cell = f"{badge} {rarity_label}"
+            craft_cell = f"{craft_cost} {shard_badge}"
+            fragment_cell = f"{fragment_yield} {shard_badge}"
+            table_rows.append((rarity_cell, craft_cell, fragment_cell))
 
-        if craft_rows:
-            e.add_field(name="Craft", value="\n".join(craft_rows), inline=True)
-            e.add_field(name="Fragment", value="\n".join(fragment_rows), inline=True)
-            e.add_field(name="Result", value="\n".join(result_rows), inline=True)
+        if table_rows:
+            rarity_width = max(len("Rarity"), *(len(rarity.split(" ", 1)[1]) for rarity, _, _ in table_rows))
+            craft_width = max(len("Craft"), *(len(cost.split(" ", 1)[0]) for _, cost, _ in table_rows))
+            frag_width = max(len("Fragment"), *(len(frag.split(" ", 1)[0]) for _, _, frag in table_rows))
+
+            def _row_to_line(cells: tuple[str, str, str]) -> str:
+                rarity_cell, craft_cell, frag_cell = cells
+                rarity_label = rarity_cell.split(" ", 1)[1]
+                badge = rarity_cell.split(" ", 1)[0]
+                rarity_txt = rarity_label.ljust(rarity_width)
+                craft_txt = craft_cell.split(" ", 1)[0].rjust(craft_width)
+                frag_txt = frag_cell.split(" ", 1)[0].rjust(frag_width)
+                return (
+                    f"{badge} `{rarity_txt}` "
+                    f"`{craft_txt}` {shard_badge} "
+                    f"`{frag_txt}` {shard_badge}"
+                )
+
+            header_spacing = emoji_sized_space
+            header = (
+                f"{header_spacing}{header_spacing} `{'Rarity'.ljust(rarity_width)}` "
+                f"`{'Craft'.rjust(craft_width)}` {header_spacing} "
+                f"{header_spacing}`{'Fragment'.rjust(frag_width)}` {header_spacing}"
+            )
+            lines = [header] + [_row_to_line(row) for row in table_rows]
+            e.add_field(name="Crafting & Fragmenting", value="\n".join(lines), inline=False)
         else:
-            e.add_field(name="Craft | Fragment", value="—", inline=False)
+            e.add_field(name="Rarity | Craft | Fragment", value="—", inline=False)
 
         # Sales section (compact format)
         if sales:
@@ -235,7 +258,7 @@ class ShopSim(commands.Cog):
                     lines.append(f"{badge} {name} -> {shard_badge} **{price} shards**")
 
             if lines:
-                e.add_field(name=sale_title, value="\n".join(lines), inline=False)
+                e.add_field(name=sale_title, value="\n" + "\n".join(lines), inline=False)
 
         e.set_footer(text="Check back tomorrow for new deals!")
         return e
