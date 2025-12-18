@@ -20,7 +20,7 @@ from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_quests_from_json
 from core.tins import load_tins_from_json
 from core.pack_rewards import PackRewardHelper
-
+from core.constants import TEAM_ROLE_NAMES, TEAM_SETS
 
 logging.basicConfig(
     level=logging.INFO,  # keep most modules at INFO
@@ -44,15 +44,104 @@ if not os.path.isabs(DB_PATH):
 if not os.path.isabs(PACKS_DIR):
     PACKS_DIR = str((BASE_DIR / PACKS_DIR).resolve())
 
+class MamboCommandTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await starter_role_gate(interaction)
+
+
+class MamboBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        # Register prefix checks here; slash checks are handled by MamboCommandTree.
+        self.add_check(starter_role_gate_prefix)
+
 # Use default intents (message_content not needed for slash cmds, but default avoids warnings)
 intents = discord.Intents.default()
 intents.members = True           # needed for role.members to populate
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = MamboBot(command_prefix="!", intents=intents, tree_cls=MamboCommandTree)
 tree = bot.tree
 
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 bot.state.banlist_path = str((BASE_DIR / "data" / "banlist.json").resolve())
 bot.state.tins_path = str((BASE_DIR / "data" / "tins.json").resolve())
+
+STARTER_ROLES = TEAM_ROLE_NAMES
+TEAM_DISPLAY_ROLE_NAMES = {
+    team_cfg.get("display")
+    for set_cfg in TEAM_SETS.values()
+    for team_cfg in set_cfg.get("teams", {}).values()
+    if team_cfg.get("display")
+}
+
+
+def _member_has_starter_role(member: discord.Member | None) -> bool:
+    if not member:
+        return False
+    return any(
+        role.name in STARTER_ROLES or role.name in TEAM_DISPLAY_ROLE_NAMES
+        for role in getattr(member, "roles", [])
+    )
+
+
+async def _resolve_member(guild: discord.Guild, user: discord.abc.User) -> discord.Member | None:
+    member: discord.Member | None = user if isinstance(user, discord.Member) else None
+    if member:
+        return member
+
+    # Prefer cache when intents are available.
+    member = guild.get_member(user.id)
+    if member:
+        return member
+
+    # Fallback to API; handle missing intent/permissions gracefully by returning None.
+    try:
+        return await guild.fetch_member(user.id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+
+
+async def starter_role_gate(interaction: discord.Interaction) -> bool:
+    # Allow DM commands to proceed; adjust to False if you want to block DMs.
+    if not interaction.guild:
+        return True
+
+    # Admins bypass the gate.
+    if interaction.user.guild_permissions.administrator:
+        return True
+
+    # Let /start through so users can claim their starter role.
+    cmd = interaction.command
+    if isinstance(cmd, app_commands.Command) and cmd.name == "start":
+        return True
+
+    # Check for required starter roles (e.g., Fire/Water) sourced from constants.
+    member = await _resolve_member(interaction.guild, interaction.user)
+    if _member_has_starter_role(member):
+        return True
+
+    message = "Please run `/start` first to receive your starter role (Fire or Water)."
+    try:
+        await interaction.response.send_message(message, ephemeral=True)
+    except discord.InteractionResponded:
+        await interaction.followup.send(message, ephemeral=True)
+    return False
+
+
+async def starter_role_gate_prefix(ctx: commands.Context) -> bool:
+    # Allow DMs to continue for legacy/prefix commands if any exist.
+    if not ctx.guild:
+        return True
+
+    # Admins bypass the gate.
+    if ctx.author.guild_permissions.administrator:
+        return True
+
+    # Reuse the same member/role logic as the slash gate.
+    member = await _resolve_member(ctx.guild, ctx.author)
+    if _member_has_starter_role(member):
+        return True
+
+    await ctx.send("Please run `/start` first to receive your starter role (Fire or Water).", delete_after=10)
+    return False
 
 def _select_quests_path(base_dir: Path) -> Path:
     """Choose quests.json for normal mode or quests_week1.json for launch week."""
