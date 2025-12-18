@@ -20,6 +20,7 @@ from core.constants import (
     RARITY_ORDER,
     SALE_LAYOUT,
     CURRENT_ACTIVE_SET,
+    set_id_for_pack,
 )
 from core.currency import SHARD_SET_NAMES
 from core.images import mambuck_badge
@@ -157,10 +158,31 @@ class ShopSim(commands.Cog):
 
         # Prices (packs/boxes)
         mambuck_icon = mambuck_badge(self.state)
+        pack_names = sorted((self.state.packs_index or {}).keys(), key=str.casefold)
+        if pack_names:
+            packs_by_set: dict[int | None, list[str]] = {}
+            for name in pack_names:
+                sid = set_id_for_pack(name)
+                packs_by_set.setdefault(sid, []).append(name)
+
+            ordered_set_ids = sorted([sid for sid in packs_by_set.keys() if sid is not None])
+            if None in packs_by_set:
+                ordered_set_ids.append(None)
+
+            pack_lines = ["• Available packs:"]
+            for sid in ordered_set_ids:
+                label = f"Set {sid}" if sid is not None else "Other"
+                names = ", ".join(sorted(packs_by_set.get(sid, []), key=str.casefold))
+                indent = "\u2003\u2003"  # use em-spaces to preserve indentation in Discord
+                pack_lines.append(f"{indent}• {label}: {names}")
+            pack_text = "\n".join(pack_lines)
+        else:
+            pack_text = "• Available packs: None"
         e.add_field(
-            name="Sealed Products",
+            name="📦 Sealed Products 📦",
             value=(
                 "\n"
+                f"{pack_text}\n"
                 f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**\n"
                 f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**\n"
                 f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**\n"
@@ -212,7 +234,7 @@ class ShopSim(commands.Cog):
                 f"{header_spacing}`{'Fragment'.rjust(frag_width)}` {header_spacing}"
             )
             lines = [header] + [_row_to_line(row) for row in table_rows]
-            e.add_field(name="Crafting & Fragmenting", value="\n".join(lines), inline=False)
+            e.add_field(name="💎 Crafting & Fragmenting 💎", value="\n".join(lines), inline=False)
         else:
             e.add_field(name="Rarity | Craft | Fragment", value="—", inline=False)
 
@@ -227,12 +249,12 @@ class ShopSim(commands.Cog):
             }
             if discounts:
                 sale_title = (
-                    f"🔥 Today's sales, craft for **{discounts.pop()}%** off!"
+                    f"🔥 Today's sales, craft for **{discounts.pop()}%** off! 🔥"
                     if len(discounts) == 1 else
-                    f"🔥 On sale today for **up to {max(discounts)}%** off!"
+                    f"🔥 On sale today for **up to {max(discounts)}%** off! 🔥"
                 )
             else:
-                sale_title = "🔥 On sale today!"
+                sale_title = "🔥 On sale today! 🔥"
 
             lines = []
             
@@ -245,7 +267,7 @@ class ShopSim(commands.Cog):
                     badge = _rar_badge(self.state, rarity)
                     name = row.get("card_name", "?")
                     price = int(row.get("price_shards", 0))
-                    lines.append(f"{badge} {name} -> **{price}**{shard_badge}")
+                    lines.append(f"{badge} {name}")
                 
             # Include any leftover rarities (legacy data) at the end
             for rarity, rows in sales.items():
@@ -255,7 +277,7 @@ class ShopSim(commands.Cog):
                     badge = _rar_badge(self.state, rarity)
                     name = row.get("card_name", "?")
                     price = int(row.get("price_shards", 0))
-                    lines.append(f"{badge} {name} -> {shard_badge} **{price} shards**")
+                    lines.append(f"{badge} {name}")
 
             if lines:
                 e.add_field(name=sale_title, value="\n" + "\n".join(lines), inline=False)
