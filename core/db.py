@@ -2143,6 +2143,21 @@ def db_init_user_stats(state):
         );
         """)
 
+
+def db_init_user_set_wins(state):
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_set_wins (
+                user_id    TEXT NOT NULL,
+                set_id     INTEGER NOT NULL,
+                wins       INTEGER NOT NULL DEFAULT 0,
+                updated_ts INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, set_id)
+            );
+            """
+        )
+
 def db_stats_get(state, user_id: int) -> dict:
     with sqlite3.connect(state.db_path) as conn:
         row = conn.execute(
@@ -2152,6 +2167,47 @@ def db_stats_get(state, user_id: int) -> dict:
     if not row:
         return {"wins": 0, "losses": 0, "games": 0}
     return {"wins": int(row[0] or 0), "losses": int(row[1] or 0), "games": int(row[2] or 0)}
+
+
+def db_user_set_wins_add(state, user_id: int, set_id: int, delta: int) -> int:
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO user_set_wins (user_id, set_id, updated_ts) VALUES (?,?,?)",
+            (str(user_id), int(set_id), now),
+        )
+        conn.execute(
+            """
+            UPDATE user_set_wins
+               SET wins = MAX(0, wins + ?),
+                   updated_ts = ?
+             WHERE user_id = ? AND set_id = ?
+            """,
+            (int(delta), now, str(user_id), int(set_id)),
+        )
+        (wins,) = conn.execute(
+            "SELECT wins FROM user_set_wins WHERE user_id=? AND set_id=?",
+            (str(user_id), int(set_id)),
+        ).fetchone()
+    return int(wins or 0)
+
+
+def db_user_set_wins_get(state, user_id: int, set_id: int) -> int:
+    with sqlite3.connect(state.db_path) as conn:
+        row = conn.execute(
+            "SELECT wins FROM user_set_wins WHERE user_id=? AND set_id=?",
+            (str(user_id), int(set_id)),
+        ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def db_user_set_wins_for_set(state, set_id: int) -> dict[int, int]:
+    with sqlite3.connect(state.db_path) as conn:
+        rows = conn.execute(
+            "SELECT user_id, wins FROM user_set_wins WHERE set_id=?",
+            (int(set_id),),
+        ).fetchall()
+    return {int(user_id): int(wins or 0) for user_id, wins in rows}
 
 
 def db_stats_reset(state, user_id: int) -> dict[str, int]:
@@ -2168,13 +2224,16 @@ def db_stats_reset(state, user_id: int) -> dict[str, int]:
     return {"stats_rows": int(stats_deleted or 0), "match_rows": int(match_deleted or 0)}
 
 
-def db_stats_record_loss(state, loser_id: int, winner_id: int) -> tuple[dict, dict]:
+def db_stats_record_loss(state, loser_id: int, winner_id: int, set_id: int | None = None) -> tuple[dict, dict]:
     """
     Record a single match where `loser_id` lost to `winner_id`.
     Updates user_stats and appends to match_log atomically.
     Returns (loser_stats_after, winner_stats_after).
     """
+    from core.constants import CURRENT_ACTIVE_SET
+
     now = int(time.time())
+    set_id = int(set_id or CURRENT_ACTIVE_SET)
     with sqlite3.connect(state.db_path) as conn, conn:
         # ensure rows exist
         conn.execute("INSERT OR IGNORE INTO user_stats (user_id, updated_ts) VALUES (?,?)", (str(loser_id), now))
@@ -2196,8 +2255,8 @@ def db_stats_record_loss(state, loser_id: int, winner_id: int) -> tuple[dict, di
 
         # log the match
         conn.execute(
-            "INSERT INTO match_log (ts, winner_id, loser_id) VALUES (?,?,?)",
-            (now, str(winner_id), str(loser_id)),
+            "INSERT INTO match_log (ts, winner_id, loser_id, set_id) VALUES (?,?,?,?)",
+            (now, str(winner_id), str(loser_id), set_id),
         )
 
         lrow = conn.execute("SELECT wins, losses, games FROM user_stats WHERE user_id=?", (str(loser_id),)).fetchone()
@@ -2205,6 +2264,8 @@ def db_stats_record_loss(state, loser_id: int, winner_id: int) -> tuple[dict, di
 
     loser = {"wins": int(lrow[0]), "losses": int(lrow[1]), "games": int(lrow[2])}
     winner = {"wins": int(wrow[0]), "losses": int(wrow[1]), "games": int(wrow[2])}
+
+    db_user_set_wins_add(state, winner_id, set_id, 1)
     return loser, winner
 
 
@@ -2217,13 +2278,14 @@ def db_stats_revert_result(state, loser_id: int, winner_id: int) -> tuple[dict, 
     now = int(time.time())
     with sqlite3.connect(state.db_path) as conn, conn:
         row = conn.execute(
-            "SELECT id FROM match_log WHERE winner_id=? AND loser_id=? ORDER BY id DESC LIMIT 1",
+            "SELECT id, set_id FROM match_log WHERE winner_id=? AND loser_id=? ORDER BY id DESC LIMIT 1",
             (str(winner_id), str(loser_id)),
         ).fetchone()
         if not row:
             return None, None
 
         match_id = int(row[0])
+        set_id = int(row[1]) if len(row) > 1 else 1
 
         # ensure stat rows exist before applying updates
         conn.execute(
@@ -2272,6 +2334,8 @@ def db_stats_revert_result(state, loser_id: int, winner_id: int) -> tuple[dict, 
 
     loser = {"wins": int(lrow[0] or 0), "losses": int(lrow[1] or 0), "games": int(lrow[2] or 0)}
     winner = {"wins": int(wrow[0] or 0), "losses": int(wrow[1] or 0), "games": int(wrow[2] or 0)}
+
+    db_user_set_wins_add(state, winner_id, set_id, -1)
     return loser, winner
 
 def db_init_match_log(state):
@@ -2281,18 +2345,27 @@ def db_init_match_log(state):
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             ts        INTEGER NOT NULL,
             winner_id TEXT NOT NULL,
-            loser_id  TEXT NOT NULL
+            loser_id  TEXT NOT NULL,
+            set_id    INTEGER NOT NULL DEFAULT 1
         );
         """)
+        # Ensure set_id exists for older schemas
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(match_log)")}
+        if "set_id" not in cols:
+            conn.execute("ALTER TABLE match_log ADD COLUMN set_id INTEGER NOT NULL DEFAULT 1;")
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_match_log_pair ON match_log(winner_id, loser_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_match_log_ts ON match_log(ts);")
 
-def db_match_log_insert(state, winner_id: int, loser_id: int):
+def db_match_log_insert(state, winner_id: int, loser_id: int, set_id: int | None = None):
+    from core.constants import CURRENT_ACTIVE_SET
+
     now = int(time.time())
+    set_id = int(set_id or CURRENT_ACTIVE_SET)
     with sqlite3.connect(state.db_path) as conn, conn:
         conn.execute(
-            "INSERT INTO match_log (ts, winner_id, loser_id) VALUES (?,?,?)",
-            (now, str(winner_id), str(loser_id)),
+            "INSERT INTO match_log (ts, winner_id, loser_id, set_id) VALUES (?,?,?,?)",
+            (now, str(winner_id), str(loser_id), set_id),
         )
 
 def db_match_h2h(state, a_id: int, b_id: int) -> dict:
