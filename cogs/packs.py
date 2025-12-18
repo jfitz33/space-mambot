@@ -84,12 +84,13 @@ async def ac_pack_name_choices(interaction: discord.Interaction, current: str) -
 
 class TinSelectionView(discord.ui.View):
     def __init__(self, state, requester: discord.Member):
-        super().__init__(timeout=120)
+        super().__init__(timeout=60)
         self.state = state
         self.requester = requester
         self.selected_tin: str | None = None
         self.selected_promo: dict | None = None
         self.selected_pack: str | None = None
+        self.message: discord.Message | None = None
 
         self.tin_select = TinDropdown(self)
         self.promo_select = PromoDropdown(self)
@@ -148,7 +149,21 @@ class TinSelectionView(discord.ui.View):
             f"Payment options:\n{payment_text}"
         )
 
-        await interaction.response.edit_message(content=prompt, view=confirm_view)
+        # Capture the current message so the confirmation view has a reference for timeout cleanup
+        confirm_view.message = interaction.message or self.message
+
+        self.stop()
+        msg = await interaction.response.edit_message(content=prompt, view=confirm_view)
+        if msg:
+            confirm_view.message = msg
+
+    async def on_timeout(self):
+        if not self.message:
+            return
+        try:
+            await self.message.edit(content="Command timed out", view=None, embeds=[], attachments=[])
+        except Exception:
+            pass
 
 
 class TinDropdown(discord.ui.Select):
@@ -524,7 +539,9 @@ class Packs(commands.Cog):
                 raise
 
         try:
-            await interaction.edit_original_response(content=message, view=view)
+            msg = await interaction.edit_original_response(content=message, view=view)
+            if hasattr(view, "message"):
+                view.message = msg
         except discord.HTTPException as e:
             if e.code in {10062, 40060}:
                 logger.warning("Pack selection interaction expired before send; skipping message: %s", e)

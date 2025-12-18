@@ -41,7 +41,7 @@ from typing import List, Tuple, Optional, Literal, Any
 ORDER = {r: i for i, r in enumerate(RARITY_ORDER)}
 BUNDLE_VALUE_PREFIX = "__bundle__"
 PACK_IMAGE_DIR = Path(__file__).resolve().parent.parent / "images" / "pack_images"
-
+TIMEOUT_MESSAGE = "Command timed out"
 
 def _pack_image_path(pack_name: str) -> Path | None:
     if not pack_name:
@@ -94,6 +94,15 @@ def _close_files(files: list[discord.File] | None) -> None:
             file.close()
         except Exception:
             pass
+
+async def _replace_with_timeout_message(message: discord.Message | None) -> None:
+    if not message:
+        return
+
+    try:
+        await message.edit(content=TIMEOUT_MESSAGE, view=None, embeds=[], attachments=[])
+    except Exception:
+        pass
 
 def _coerce_set_id(value) -> int | None:
     if isinstance(value, int):
@@ -339,6 +348,7 @@ class PacksDropdown(discord.ui.Select):
         # Disable the dropdown while we fetch the confirmation view (and any pack art)
         # so the user can't spam multiple selections.
         self.disabled = True
+        self.placeholder = "Loading Pack Data..."
         try:
             await interaction.response.edit_message(view=self.parent_view)
         except Exception:
@@ -360,7 +370,7 @@ class ConfirmSpendView(discord.ui.View):
         total_cost: int | None = None,
         payment_options: list[PaymentOption] | None = None,
         *,
-        timeout: float = 90,
+        timeout: float = 60,
         display_description: str | None = None,
     ):
         super().__init__(timeout=timeout)
@@ -373,6 +383,8 @@ class ConfirmSpendView(discord.ui.View):
         self.payment_options: list[PaymentOption] = list(payment_options or [])
         self.display_description = display_description
         self._processing = False
+        self.message: discord.Message | None = None
+        self._timeout_task: asyncio.Task | None = None
 
         if not self.payment_options:
             # fallback if you still use PACK_COST * amount pattern elsewhere
@@ -464,6 +476,27 @@ class ConfirmSpendView(discord.ui.View):
                 view=None,
             )
 
+    async def on_timeout(self):
+        await _replace_with_timeout_message(self.message)
+
+    def _attach_message(self, message: discord.Message | None) -> None:
+        if not message:
+            return
+        self.message = message
+        if self._timeout_task is None:
+            self._timeout_task = asyncio.create_task(self._timeout_fallback())
+
+    async def _timeout_fallback(self) -> None:
+        try:
+            await asyncio.sleep(self.timeout or 60)
+            if self.is_finished():
+                return
+            await _replace_with_timeout_message(self.message)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
     async def _handle_payment(self, option: PaymentOption, interaction: discord.Interaction):
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
@@ -491,22 +524,26 @@ class ConfirmSpendView(discord.ui.View):
 
         # Disable buttons and show the processing state on the message so that
         # repeated clicks do not trigger refunds.
-        status_view = discord.ui.View()
-        status_view.add_item(
-            discord.ui.Button(
-                label="Sending you your packs via dm",
-                style=discord.ButtonStyle.secondary,
-                disabled=True,
-            )
-        )
         current_embeds = [deepcopy(e) for e in (getattr(interaction.message, "embeds", []) or [])]
         current_content = getattr(interaction.message, "content", None)
+        status_message = "Sending you your packs via DM"
+
+        if current_embeds:
+            footer_icon = None
+            if current_embeds[0].footer and current_embeds[0].footer.icon_url:
+                footer_icon = current_embeds[0].footer.icon_url
+            existing_footer = (current_embeds[0].footer.text or "") if current_embeds[0].footer else ""
+            footer_text = status_message if not existing_footer else f"{existing_footer} • {status_message}"
+            current_embeds[0].set_footer(text=footer_text, icon_url=footer_icon)
+        else:
+            combined = "\n".join(filter(None, [current_content, status_message]))
+            current_content = combined or None
         await self._edit_interaction_message(
             interaction,
             content=current_content,
             embeds=current_embeds or None,
             attachments=[],
-            view=status_view,
+            view=None,
         )
 
         balance_after: str | None = None
@@ -1093,7 +1130,7 @@ class PackResultsPaginator(View):
         await interaction.response.edit_message(embed=self._embed_for_index(), view=self)
 
 class PacksSelectView(discord.ui.View):
-    def __init__(self, state, requester: discord.Member, amount: int, mode: Literal["pack","box"]="pack", *, timeout: float=90):
+    def __init__(self, state, requester: discord.Member, amount: int, mode: Literal["pack","box"]="pack", *, timeout: float=60):
         super().__init__(timeout=timeout)
         self.state = state
         self.requester = requester
@@ -1101,6 +1138,7 @@ class PacksSelectView(discord.ui.View):
         self.mode = mode
         self.include_bundle = mode == "box"
         self.bundle_lookup: dict[str, dict] = {}
+        self.message: discord.Message | None = None
         self.add_item(PacksDropdown(self))
 
     async def _send_ephemeral(self, interaction: discord.Interaction, content: str) -> None:
@@ -1166,6 +1204,7 @@ class PacksSelectView(discord.ui.View):
                 message += f"\nIncludes: {preview_names}"
 
             await self._send_pack_confirmation(interaction, confirm_view, pack_name, message)
+            self.stop()
             return
 
         if self.mode == "box":
@@ -1190,6 +1229,7 @@ class PacksSelectView(discord.ui.View):
                 f"Payment options:\n{payment_text}\n"
             )
             await self._send_pack_confirmation(interaction, confirm_view, pack_name, confirmation_text)
+            self.stop()
         else:
             set_id = set_id_for_pack(pack_name)
             total_cost_mambucks = self.amount * PACK_COST
@@ -1213,6 +1253,10 @@ class PacksSelectView(discord.ui.View):
                 f"Payment options:\n{payment_text}"
             )
             await self._send_pack_confirmation(interaction, confirm_view, pack_name, confirmation_text)
+            self.stop()
+    
+    async def on_timeout(self):
+        await _replace_with_timeout_message(self.message)
 
     async def _send_pack_confirmation(
         self,
@@ -1236,17 +1280,23 @@ class PacksSelectView(discord.ui.View):
 
         try:
             if embed:
-                await interaction.edit_original_response(
+                message = await interaction.edit_original_response(
                     content=None,
                     embeds=[embed],
                     attachments=files,
                     view=view,
                 )
             else:
-                await interaction.edit_original_response(
+                message = await interaction.edit_original_response(
                     content=confirmation_text,
                     view=view,
                 )
+            if not message and interaction.message:
+                message = interaction.message
+            if isinstance(view, ConfirmSpendView):
+                view._attach_message(message)
+            elif isinstance(view, discord.ui.View):
+                setattr(view, "message", message)
         except discord.HTTPException as e:
             _close_files(files)
             if e.code in {10062, 40060}:  # stale/expired interaction
