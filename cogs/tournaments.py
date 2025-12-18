@@ -35,6 +35,7 @@ from core.db import (
     db_stats_revert_result,
 )
 from core.state import AppState
+from core.constants import CURRENT_ACTIVE_SET
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -804,6 +805,7 @@ class Tournaments(commands.Cog):
             self.state,
             loser_id=loser.id,
             winner_id=winner.id,
+            set_id=CURRENT_ACTIVE_SET,
         )
 
         quests = interaction.client.get_cog("Quests")
@@ -1653,6 +1655,7 @@ class Tournaments(commands.Cog):
                     self.state,
                     loser_id=loser.id,
                     winner_id=winner.id,
+                    set_id=CURRENT_ACTIVE_SET,
                 )
 
                 message = (

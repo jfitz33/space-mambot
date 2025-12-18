@@ -8,10 +8,17 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from core.state import AppState
-from core.db import (db_init, db_init_trades, db_init_wallet, 
-                     db_wallet_migrate_to_mambucks_and_shards_per_set, 
-                     db_init_user_stats, db_init_shard_overrides,
-                     db_init_daily_sales, db_init_wheel_tokens)
+from core.db import (
+    db_init,
+    db_init_trades,
+    db_init_wallet,
+    db_wallet_migrate_to_mambucks_and_shards_per_set,
+    db_init_user_stats,
+    db_init_user_set_wins,
+    db_init_shard_overrides,
+    db_init_daily_sales,
+    db_init_wheel_tokens,
+)
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
 from core.cards_shop import ensure_shop_index, reset_shop_index
@@ -172,6 +179,7 @@ async def on_ready():
     bot.state.quests_json_path = str(quests_json_path)
     await db_seed_quests_from_json(bot.state, str(quests_json_path), deactivate_missing=True)
     db_init_user_stats(bot.state)
+    db_init_user_set_wins(bot.state)
     load_packs_from_csv(bot.state)
     bot.state.starters_dir = "starters_csv"  # put your starter CSVs here
     bot.state.shop = PackRewardHelper(bot.state, bot)

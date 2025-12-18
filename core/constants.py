@@ -37,6 +37,9 @@ def _parse_active_set_env() -> int:
 
 CURRENT_ACTIVE_SET = _parse_active_set_env()
 
+# Total duel team points to distribute during set recap splits
+DUEL_TEAM_POINTS_TOTAL = 1500
+
 # Daily sale layout: (rarity, number of entries)
 SALE_LAYOUT = [
     ("ultra", 4),

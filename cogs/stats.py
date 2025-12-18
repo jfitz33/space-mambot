@@ -5,11 +5,11 @@ from discord import app_commands
 
 from core.state import AppState
 from core.db import (
-    db_init_user_stats, db_init_match_log,
+    db_init_user_stats, db_init_match_log, db_init_user_set_wins,
     db_stats_get, db_stats_record_loss,
     db_match_h2h, db_team_points_for_user,
 )
-from core.constants import TEAM_ROLE_NAMES
+from core.constants import CURRENT_ACTIVE_SET, TEAM_ROLE_NAMES
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -25,6 +25,7 @@ class Stats(commands.Cog):
     async def cog_load(self):
         db_init_user_stats(self.state)
         db_init_match_log(self.state)
+        db_init_user_set_wins(self.state)
 
     @app_commands.command(name="loss", description="Record a loss to another player (updates both players' stats).")
     @app_commands.guilds(GUILD)
@@ -53,7 +54,12 @@ class Stats(commands.Cog):
         await interaction.response.defer(ephemeral=False, thinking=True)
 
         # Atomically update stats + log match
-        loser_after, winner_after = db_stats_record_loss(self.state, loser_id=caller.id, winner_id=opponent.id)
+        loser_after, winner_after = db_stats_record_loss(
+            self.state,
+            loser_id=caller.id,
+            winner_id=opponent.id,
+            set_id=CURRENT_ACTIVE_SET,
+        )
 
         # Optional quest ticks using your QuestManager wrappers/IDs
         quests = interaction.client.get_cog("Quests")

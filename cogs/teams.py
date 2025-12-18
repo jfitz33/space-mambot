@@ -1,6 +1,7 @@
 # cogs/teams.py
 import asyncio
 import os
+from collections import defaultdict
 from typing import Iterable
 
 import discord
@@ -14,9 +15,16 @@ from core.db import (
     db_team_points_top,
     db_team_tracker_load,
     db_team_tracker_store,
+    db_user_set_wins_for_set,
 )
 from core.state import AppState
-from core.constants import TEAM_ROLE_NAMES, TEAM_SETS, latest_team_set_id
+from core.constants import (
+    CURRENT_ACTIVE_SET,
+    DUEL_TEAM_POINTS_TOTAL,
+    TEAM_ROLE_NAMES,
+    TEAM_SETS,
+    latest_team_set_id,
+)
 from core.packs import open_pack_from_csv, open_pack_with_guaranteed_top_from_csv
 from core.views import _pack_embed_for_cards
 
@@ -269,6 +277,22 @@ class Teams(commands.Cog):
         async with self._update_lock:
             await self._refresh_tracker(guild, channel=channel)
 
+    async def _get_tracker_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        channel = discord.utils.get(guild.text_channels, name=TEAM_CHANNEL_NAME)
+        if channel:
+            return channel
+
+        bot_member = guild.get_member(self.bot.user.id) if self.bot.user else None
+        if not bot_member and self.bot.user:
+            try:
+                bot_member = await guild.fetch_member(self.bot.user.id)
+            except Exception:
+                bot_member = None
+
+        if bot_member:
+            return await self._ensure_tracker_channel(guild, bot_member)
+        return None
+
     async def _refresh_tracker(self, guild: discord.Guild, channel: discord.TextChannel | None = None):
         if not guild:
             return
@@ -420,6 +444,129 @@ class Teams(commands.Cog):
         await interaction.followup.send(
             f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
             f"They now have **{new_total:,}** points.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_split_points",
+        description="(Admin) Split duel team points based on wins for the active set.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_split_points(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild = interaction.guild
+        set_id = CURRENT_ACTIVE_SET
+        wins_by_user = db_user_set_wins_for_set(self.state, set_id)
+        if not wins_by_user:
+            await interaction.followup.send(
+                "No duel wins recorded for the current set; nothing to distribute.",
+                ephemeral=True,
+            )
+            return
+
+        active_team_names = set(_get_active_team_names())
+        allocations: list[dict] = []
+        team_wins: defaultdict[str, int] = defaultdict(int)
+
+        for member in guild.members:
+            team_name = self._resolve_member_team(member)
+            if not team_name or team_name not in active_team_names:
+                continue
+
+            wins = wins_by_user.get(member.id, 0)
+            if wins <= 0:
+                continue
+
+            team_wins[team_name] += wins
+            allocations.append({"member": member, "team": team_name, "wins": wins})
+
+        total_wins = sum(team_wins.values())
+        if total_wins <= 0:
+            await interaction.followup.send(
+                "No duel wins recorded for any active team members in the current set.",
+                ephemeral=True,
+            )
+            return
+
+        total_points = DUEL_TEAM_POINTS_TOTAL
+        distributed: list[dict] = []
+        for entry in allocations:
+            exact = (total_points * entry["wins"]) / total_wins
+            base_points = int(exact)
+            distributed.append(
+                {
+                    "member": entry["member"],
+                    "team": entry["team"],
+                    "wins": entry["wins"],
+                    "points": base_points,
+                    "fraction": exact - base_points,
+                }
+            )
+
+        remainder = total_points - sum(item["points"] for item in distributed)
+        if remainder > 0 and distributed:
+            sorted_entries = sorted(distributed, key=lambda i: i["fraction"], reverse=True)
+            for idx in range(remainder):
+                sorted_entries[idx % len(sorted_entries)]["points"] += 1
+
+        team_points_awarded: defaultdict[str, int] = defaultdict(int)
+        awarded_members = 0
+        for entry in distributed:
+            points = int(entry["points"])
+            if points <= 0:
+                continue
+            team_points_awarded[entry["team"]] += points
+            awarded_members += 1
+            db_team_points_add(
+                self.state,
+                guild.id,
+                entry["member"].id,
+                entry["team"],
+                points,
+            )
+
+        channel = await self._get_tracker_channel(guild)
+        await self._ensure_message_exists(guild, channel=channel)
+
+        description = (
+            f"Distributed **{total_points:,}** duel team points based on wins in set **{set_id}**."
+        )
+        embed = discord.Embed(
+            title="Team Point Split",
+            description=description,
+            color=discord.Color.gold(),
+        )
+        for team_name in _get_active_team_names():
+            wins = team_wins.get(team_name, 0)
+            points = team_points_awarded.get(team_name, 0)
+            embed.add_field(
+                name=f"{team_name} — {points:,} pts",
+                value=f"Wins: **{wins:,}**",
+                inline=True,
+            )
+
+        tracker_note = ""
+        try:
+            if channel:
+                await channel.send(embed=embed)
+                tracker_note = f" Results posted to {channel.mention}."
+            else:
+                tracker_note = " Could not find the team tracker channel to post results."
+        except Exception:
+            tracker_note = " Encountered an error while posting results to the tracker channel."
+
+        await interaction.followup.send(
+            (
+                f"Split complete. Awarded points to **{awarded_members}** member"
+                f"{'s' if awarded_members != 1 else ''}.{tracker_note}"
+            ).strip(),
             ephemeral=True,
         )
 

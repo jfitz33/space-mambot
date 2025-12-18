@@ -28,7 +28,7 @@ from core.db import (
 )
 from core.quests.schema import db_reset_all_user_quests
 from core.quests.timekeys import daily_key, now_et
-from core.constants import PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
+from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
 from core.db import db_add_cards
@@ -594,6 +594,7 @@ class Admin(commands.Cog):
             self.state,
             loser_id=loser.id,
             winner_id=winner.id,
+            set_id=CURRENT_ACTIVE_SET,
         )
 
         quests = interaction.client.get_cog("Quests")
