@@ -48,7 +48,7 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 # tournaments should be joinable. Previously we only accepted "pending" when
 # fetching Challonge data, which meant ongoing events such as Swiss tournaments
 # in the "underway" state were filtered out and never shown in
-# `/tournament_view` or `/tournament_standings`.
+# tournament-related commands.
 ACTIVE_TOURNAMENT_STATES = {"pending", "underway", "awaiting_review"}
 JOINABLE_TOURNAMENT_STATES = {"pending"}
 DROP_ELIGIBLE_TOURNAMENT_STATES = {"pending", "checking_in"}
@@ -1145,61 +1145,6 @@ class Tournaments(commands.Cog):
             view.message = await interaction.original_response()
         except Exception:
             self.logger.exception("Failed to capture tournament selection message")
-
-    @app_commands.command(
-        name="tournament_view",
-        description="Show active Challonge tournaments and their brackets.",
-    )
-    @app_commands.guilds(GUILD)
-    async def tournament_view(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-
-        try:
-            tournaments = await self._fetch_active_tournaments()
-        except RuntimeError as exc:
-            await interaction.followup.send(
-                f"Failed to retrieve active tournaments: {exc}",
-                ephemeral=True,
-            )
-            return
-
-        seen_identifiers: set[str] = set()
-        lines: list[str] = []
-
-        for tournament in tournaments:
-            identifier = self._resolve_tournament_identifier(tournament)
-            if identifier and identifier in seen_identifiers:
-                continue
-            if identifier:
-                seen_identifiers.add(identifier)
-
-            name = tournament.get("name") or "Unnamed Tournament"
-            url = tournament.get("full_challonge_url") or tournament.get("url")
-
-            if not url:
-                slug = tournament.get("slug") or identifier
-                subdomain = tournament.get("subdomain")
-                if slug:
-                    slug_text = str(slug).strip("/")
-                    if subdomain:
-                        url = f"https://{subdomain}.challonge.com/{slug_text}"
-                    else:
-                        url = f"https://challonge.com/{slug_text}"
-
-            if url:
-                lines.append(f"• **{name}** — {url}")
-            else:
-                lines.append(f"• **{name}** — Bracket link unavailable")
-
-        if not lines:
-            await interaction.followup.send(
-                "There are no active Challonge tournaments right now.",
-                ephemeral=False,
-            )
-            return
-
-        header = "Active Nemeses Tournaments"
-        await interaction.followup.send("\n".join([header, *lines]))
 
     @app_commands.command(
         name="tournament_standings",

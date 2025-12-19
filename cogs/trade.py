@@ -822,56 +822,6 @@ class Trade(commands.Cog):
         msg = await interaction.original_response()
         db_trade_store_public_message(self.state, trade_id, chan_id=msg.channel.id, msg_id=msg.id)
 
-    @app_commands.command(name="trade_show", description="Show a trade’s details")
-    @app_commands.guilds(GUILD)
-    @app_commands.describe(trade_id="Trade ID to view")
-    async def trade_show(self, interaction: discord.Interaction, trade_id: int):
-        t = db_trade_get(self.state, trade_id)
-        if not t:
-            await interaction.response.send_message("Trade not found.", ephemeral=True); return
-        await interaction.response.send_message(embed=_trade_embed(t), ephemeral=True)
-
-    @app_commands.command(name="trade_confirm", description="Confirm a trade you are part of")
-    @app_commands.guilds(GUILD)
-    @app_commands.describe(trade_id="Trade ID to confirm")
-    async def trade_confirm(self, interaction: discord.Interaction, trade_id: int):
-        t = db_trade_get(self.state, trade_id)
-        if not t:
-            await interaction.response.send_message("Trade not found.", ephemeral=True); return
-        if t["status"] != "awaiting_confirm":
-            await interaction.response.send_message("Trade is not awaiting confirmation.", ephemeral=True); return
-        uid = str(interaction.user.id)
-        if uid not in (str(t["proposer_id"]), str(t["receiver_id"])):
-            await interaction.response.send_message("Only participants can confirm.", ephemeral=True); return
-
-        # At least one side must include a card (no shards-for-shards)
-        def any_card(items: List[dict]) -> bool:
-            for it in items or []:
-                if it.get("kind") != "shards":
-                    return True
-            return False
-        if not (any_card(t.get("give")) or any_card(t.get("get"))):
-            await interaction.response.send_message("❌ At least one side must include a card.", ephemeral=True)
-            return
-
-        both = db_trade_set_confirm(self.state, trade_id, interaction.user.id)
-        if not both:
-            await interaction.response.send_message("✅ Confirmation recorded. Waiting on the other player.", ephemeral=True)
-            return
-
-        t = db_trade_get(self.state, trade_id)
-        ok, msg = db_user_has_items(self.state, t["proposer_id"], t["give"])
-        if not ok: await interaction.response.send_message(f"❌ Proposer lacks items: {msg}", ephemeral=True); return
-        ok, msg = db_user_has_items(self.state, t["receiver_id"], t["get"])
-        if not ok: await interaction.response.send_message(f"❌ Receiver lacks items: {msg}", ephemeral=True); return
-        ok, msg = db_apply_trade_atomic(self.state, t)
-        if not ok: await interaction.response.send_message(f"❌ {msg}", ephemeral=True); return
-        db_trade_set_status(self.state, trade_id, "accepted")
-        await interaction.response.send_message("✅ Trade executed.", ephemeral=True)
-        await interaction.channel.send(
-            f"🤝 Trade **#{trade_id}** completed: <@{t['proposer_id']}> ⇄ <@{t['receiver_id']}>"
-        )
-
     @app_commands.command(name="trade_cancel", description="Cancel a pending trade (by ID or your latest)")
     @app_commands.guilds(GUILD)
     @app_commands.describe(trade_id="Trade ID (optional). If omitted, cancels your latest pending trade.")
