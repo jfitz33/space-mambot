@@ -27,15 +27,30 @@ class Stats(commands.Cog):
         db_init_match_log(self.state)
         db_init_user_set_wins(self.state)
 
-    @app_commands.command(name="loss", description="Record a loss to another player (updates both players' stats).")
+    @app_commands.command(name="report", description="Report the result of a queued duel match.")
     @app_commands.guilds(GUILD)
-    @app_commands.describe(opponent="The player you lost to")
-    async def loss(self, interaction: discord.Interaction, opponent: discord.Member):
+    @app_commands.describe(opponent="Your opponent", outcome="Did you win or lose?")
+    @app_commands.choices(
+        outcome=[
+            app_commands.Choice(name="I won", value="win"),
+            app_commands.Choice(name="I lost", value="loss"),
+        ]
+    )
+    async def report(
+        self,
+        interaction: discord.Interaction,
+        opponent: discord.Member,
+        outcome: app_commands.Choice[str],
+    ):
         caller = interaction.user
         if opponent.id == caller.id:
-            return await interaction.response.send_message("You can’t record a loss to yourself.", ephemeral=True)
+            return await interaction.response.send_message(
+                "You can’t record a result against yourself.", ephemeral=True
+            )
         if opponent.bot:
-            return await interaction.response.send_message("You can’t record a loss to a bot.", ephemeral=True)
+            return await interaction.response.send_message(
+                "You can’t record a result against a bot.", ephemeral=True
+            )
 
         queue = interaction.client.get_cog("DuelQueue")
         is_paired = False
@@ -53,11 +68,16 @@ class Stats(commands.Cog):
 
         await interaction.response.defer(ephemeral=False, thinking=True)
 
+        if outcome.value == "win":
+            winner, loser = caller, opponent
+        else:
+            winner, loser = opponent, caller
+
         # Atomically update stats + log match
         loser_after, winner_after = db_stats_record_loss(
             self.state,
-            loser_id=caller.id,
-            winner_id=opponent.id,
+            loser_id=loser.id,
+            winner_id=winner.id,
             set_id=CURRENT_ACTIVE_SET,
         )
 
@@ -65,8 +85,8 @@ class Stats(commands.Cog):
         quests = interaction.client.get_cog("Quests")
         try:
             if quests and getattr(quests, "qm", None):
-                await quests.qm.increment(caller.id,   "matches_played", 1)
-                await quests.qm.increment(opponent.id, "matches_played", 2)
+                await quests.qm.increment(loser.id, "matches_played", 1)
+                await quests.qm.increment(winner.id, "matches_played", 2)
         except Exception as e:
             print("[stats] quest tick error:", e)
 
@@ -75,22 +95,26 @@ class Stats(commands.Cog):
 
         embed = discord.Embed(
             title="Match Result Recorded",
-            description=f"**{caller.display_name}** lost to **{opponent.display_name}**.",
-            color=0xCC3333
+            description=f"**{winner.display_name}** defeated **{loser.display_name}**.",
+            color=0xCC3333,
         )
         embed.add_field(
-            name=f"{caller.display_name} — Record",
-            value=(f"W: **{loser_after['wins']}**\n"
-                   f"L: **{loser_after['losses']}**\n"
-                   f"Win%: **{lpct:.1f}%**"),
-            inline=True
+            name=f"{loser.display_name} — Record",
+            value=(
+                f"W: **{loser_after['wins']}**\n"
+                f"L: **{loser_after['losses']}**\n"
+                f"Win%: **{lpct:.1f}%**"
+            ),
+            inline=True,
         )
         embed.add_field(
-            name=f"{opponent.display_name} — Record",
-            value=(f"W: **{winner_after['wins']}**\n"
-                   f"L: **{winner_after['losses']}**\n"
-                   f"Win%: **{wpct:.1f}%**"),
-            inline=True
+            name=f"{winner.display_name} — Record",
+            value=(
+                f"W: **{winner_after['wins']}**\n"
+                f"L: **{winner_after['losses']}**\n"
+                f"Win%: **{wpct:.1f}%**"
+            ),
+            inline=True,
         )
 
         await interaction.followup.send(embed=embed)

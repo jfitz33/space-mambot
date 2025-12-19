@@ -46,7 +46,7 @@ to importing
 - **/deck_check** `deck_file` `tournament` — Validate a YDK deck against your collection and the banlist; `tournament` optional defaults to the currently relevant event if one exists.
 - **/join_queue** — Join the rated duel queue in **#duel-arena** (must be used in that channel).
 - **/leave_queue** — Leave the rated duel queue if you are waiting for a pairing.
-- **/loss** `opponent` — Record a loss to another player; cannot target yourself or bots.
+- **/report** `opponent`, `outcome` — Report the result of a queued duel against your opponent. Either the winner or loser of a match may use this.
 - **/stats** `user` — View win/loss record, win percentage, and team points for a member; `user` optional default is you.
 - **/h2h** `opponent` — View head-to-head record between you and another member; no bots or self-targeting.
 
