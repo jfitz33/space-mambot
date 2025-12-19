@@ -733,21 +733,75 @@ class Admin(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
-        user="Player to adjust",
+        user="Player to adjust (ignored if all_users=true)",
         currency="Choose Mambucks or Shards",
         amount="Amount to add (>=1)",
         shard_set="Required if currency=shards",
+        all_users="Add the currency to all starter-role members (Fire/Water)",
     )
     @app_commands.autocomplete(shard_set=ac_shard_set)
     async def wallet_add(
         self,
         interaction: discord.Interaction,
-        user: discord.Member,
         currency: Currency,
         amount: app_commands.Range[int, 1, None],
+        user: Optional[discord.Member] = None,  
         shard_set: Optional[int] = None,
+        all_users: bool = False,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if all_users:
+            guild = interaction.guild
+            if guild is None:
+                return await interaction.followup.send(
+                    "❌ This command can only be used in a guild.",
+                    ephemeral=True,
+                )
+
+            starter_members = set()
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if role:
+                    starter_members.update(role.members)
+
+            if not starter_members:
+                return await interaction.followup.send(
+                    "❌ No starter-role members (Fire/Water) found to update.",
+                    ephemeral=True,
+                )
+
+            if currency == "mambucks":
+                for member in starter_members:
+                    db_wallet_add(self.state, member.id, d_mambucks=amount)
+
+                return await interaction.followup.send(
+                    f"✅ Added **{amount} Mambucks** to **{len(starter_members)}** starter members.",
+                    ephemeral=True,
+                )
+
+            if shard_set is None:
+                return await interaction.followup.send(
+                    "❌ Please choose a **shard_set** for shards.",
+                    ephemeral=True,
+                )
+
+            for member in starter_members:
+                db_shards_add(self.state, member.id, shard_set, amount)
+
+            title = shard_set_name(shard_set)
+            return await interaction.followup.send(
+                (
+                    f"✅ Added **{amount} {title}** to **{len(starter_members)}** members."
+                ),
+                ephemeral=True,
+            )
+
+        if user is None:
+            return await interaction.followup.send(
+                "❌ Please select a **user** or set **all_users** to true.",
+                ephemeral=True,
+            )
 
         if currency == "mambucks":
             before = db_wallet_get(self.state, user.id)
