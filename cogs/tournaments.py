@@ -1013,7 +1013,8 @@ class Tournaments(commands.Cog):
         description="Create a Challonge tournament in the configured organization.",
     )
     @app_commands.guilds(GUILD)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         name="Name that will be shown on Challonge",
         format="Tournament format",

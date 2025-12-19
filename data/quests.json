@@ -6,7 +6,7 @@
     "category": "daily",
     "target_count": 2,
     "reward_type": "mambucks",
-    "reward_payload": { "amount": 69, "max_rollover_days": 3 },
+    "reward_payload": { "amount": 35, "max_rollover_days": 3 },
     "max_rollover_days": 3,
     "active": true
   }
