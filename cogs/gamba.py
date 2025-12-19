@@ -234,7 +234,7 @@ def _render_prize_description(prize: GambaPrize, state) -> str:
         icon = badges.get("mambuck", mambuck_badge(state))
         amount = int(prize.amount or 0)
         if amount:
-            return f"{amount} {icon} Mambucks"
+            return f"{icon} Mambucks x{amount}"
         return f"{icon} {desc}"
     return desc
 
@@ -245,15 +245,21 @@ def _shard_badge_for_set(state, set_id: int) -> str:
     return _rarity_badge_tokens(state).get(set_key, f":rar_{set_key}:")
 
 async def _resolve_and_award_prize(state, user_id: int, prize: GambaPrize) -> str:
-    if prize.prize_type == "card" and prize.rarity:
-        picked = _pick_random_card_by_rarity(
-            state, prize.rarity, target_set_id=CURRENT_ACTIVE_SET
-        )
-        if picked:
-            set_name, printing = picked
-            await _award_card_to_user(state, user_id, printing, set_name, qty=1)
-            return card_label(printing)
-        return prize.description
+    if prize.prize_type in {"card", "cards"} and prize.rarity:
+        quantity = max(1, int(prize.amount or 1))
+        awarded: list[str] = []
+        for _ in range(quantity):
+            picked = _pick_random_card_by_rarity(
+                state, prize.rarity, target_set_id=CURRENT_ACTIVE_SET
+            )
+            if picked:
+                set_name, printing = picked
+                await _award_card_to_user(state, user_id, printing, set_name, qty=1)
+                awarded.append(card_label(printing))
+        if awarded:
+            if len(awarded) == 1:
+                return awarded[0]
+            return ", ".join(awarded)
 
     if prize.prize_type == "shards":
         amount = int(prize.amount or 0)
