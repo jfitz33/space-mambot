@@ -1,5 +1,6 @@
 # cogs/teams.py
 import asyncio
+import math
 import os
 from collections import defaultdict
 from typing import Iterable
@@ -356,6 +357,7 @@ class Teams(commands.Cog):
     async def _build_tracker_embed(self, guild: discord.Guild) -> discord.Embed:
         set_id, cfg = _get_active_team_set()
         totals = db_team_points_totals(self.state, guild.id)
+        display_totals = self._round_totals_for_display(totals)
         embed = discord.Embed(
             title="Team Points Tracker",
             description=(
@@ -372,7 +374,7 @@ class Teams(commands.Cog):
             info = teams.get(team, {})
             title = info.get("display") or team
             emoji = info.get("emoji", "")
-            total_points = totals.get(team, 0)
+            total_points = display_totals.get(team, totals.get(team, 0))
             rows = db_team_points_top(self.state, guild.id, team, limit=3)
             value = await self._format_leaderboard(guild, rows)
             name = f"{title} {emoji} — {total_points:,} pts"
@@ -401,8 +403,32 @@ class Teams(commands.Cog):
                 except Exception:
                     member = None
             display = member.display_name if member else f"<@{user_id}>"
-            lines.append(f"{idx}. {display} — **{points:,}**")
+            rounded_points = self._round_nearest(points)
+            lines.append(f"{idx}. {display} — **{rounded_points:,}**")
         return "\n".join(lines)
+    
+    def _round_totals_for_display(self, totals: dict[str, int | float]) -> dict[str, int]:
+        if not totals:
+            return {}
+
+        float_totals = {team: float(value) for team, value in totals.items()}
+        if all(value.is_integer() for value in float_totals.values()):
+            return {team: int(value) for team, value in float_totals.items()}
+
+        highest_team, _ = max(float_totals.items(), key=lambda item: item[1])
+        rounded: dict[str, int] = {}
+        for team, value in float_totals.items():
+            if value.is_integer():
+                rounded[team] = int(value)
+            elif team == highest_team:
+                rounded[team] = math.ceil(value)
+            else:
+                rounded[team] = math.floor(value)
+        return rounded
+
+    @staticmethod
+    def _round_nearest(value: int | float) -> int:
+        return int(math.floor(float(value) + 0.5))
 
     def _resolve_member_team(self, member: discord.Member) -> str | None:
         active_names = set(_get_active_team_names())
@@ -550,7 +576,7 @@ class Teams(commands.Cog):
                 entry["team"],
                 points,
             )
-        new_splits.append((entry["member"].id, entry["team"], points))
+            new_splits.append((entry["member"].id, entry["team"], points))
 
         db_team_point_splits_replace(self.state, guild.id, set_id, new_splits)
 
