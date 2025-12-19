@@ -1199,7 +1199,7 @@ class Tournaments(commands.Cog):
             )
 
     @app_commands.command(
-        name="tournament_report_match",
+        name="tournament_report",
         description="Report a Challonge tournament match result.",
     )
     @app_commands.guilds(GUILD)
@@ -1210,7 +1210,7 @@ class Tournaments(commands.Cog):
             "Replay link for the match (required when the tournament enforces replays)"
         ),
     )
-    async def tournament_report_match(
+    async def tournament_report(
         self,
         interaction: discord.Interaction,
         winner: discord.Member,

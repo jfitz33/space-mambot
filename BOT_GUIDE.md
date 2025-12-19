@@ -53,7 +53,7 @@ to importing
 ## Tournaments
 - **/tournament_join** — Start a DM flow to submit your deck to a pending tournament; only works if a tournament is joinable.
 - **/tournament_standings** — Pick an active tournament to view standings.
-- **/tournament_report_match** `winner` `loser` `replay_url` — Report a tournament match result; either participant can use it; `replay_url` required when the tournament enforces replays.
+- **/tournament_report** `winner` `loser` `replay_url` — Report a tournament match result; either participant can use it; `replay_url` required when the tournament enforces replays.
 - **/tournament_drop** `tournament` `member` — Drop from a tournament. If the tournament is active, you will need an admin to manually update in challonge.
 
 ## Miscellaneous
