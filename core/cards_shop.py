@@ -5,6 +5,7 @@ from typing import Dict, Optional, Iterable, Tuple
 import requests
 
 from core.constants import STARTER_DECK_SET_NAMES
+from core.images import rarity_badge
 
 _STARTER_SET_LOOKUP = {name.strip().lower() for name in STARTER_DECK_SET_NAMES}
 
@@ -272,6 +273,13 @@ def card_label(card: dict) -> str:
     if card.get("code") or card.get("cardcode"): bits.append(card.get("code") or card.get("cardcode"))
     suffix = " · ".join(bits)
     return (f"{name} — {suffix}" if suffix else name)[:100]
+
+def card_label_with_badge(state, card: dict) -> str:
+    """Compact label with rarity badge and card name."""
+
+    name = card.get("name") or card.get("cardname") or "Unknown"
+    badge = rarity_badge(state, get_card_rarity(card))
+    return f"{badge} {name}".strip()[:100]
 
 def print_key_for_fields(name: str, rarity: str, set_name: str, code: str | None, cid: str | None) -> str:
     base = f"{(name or '').lower()}|{(rarity or '').lower()}|{(set_name or '').lower()}|{(code or '').lower()}|{(cid or '').lower()}"

@@ -18,7 +18,13 @@ from core.db import (
     db_shards_try_spend,
     db_fragment_yield_for_card,
 )
-from core.cards_shop import find_card_by_print_key, get_card_rarity, card_label, resolve_card_set
+from core.cards_shop import (
+    find_card_by_print_key,
+    get_card_rarity,
+    card_label,
+    card_label_with_badge,
+    resolve_card_set,
+)
 from core.pricing import craft_cost_for_card
 from core.images import compose_pack_strip_image, rarity_badge
 from core.constants import (
@@ -698,7 +704,7 @@ class ConfirmBuyCardView(discord.ui.View):
                 sale_note = f" *(on sale −{int(sale_row.get('discount_pct', 0))}%)*"
 
             await interaction.followup.send(
-                f"✅ Crafted **{self.amount}× {card_label(card)}** for **{total_cost}** {pretty}{sale_note}.\n"
+                f"✅ Crafted **{self.amount}× {card_label_with_badge(self.state, card)}** for **{total_cost}** {pretty}{sale_note}.\n"
                 f"**Remaining {pretty}:** {after}",
                 ephemeral=True
             )
@@ -820,7 +826,7 @@ class ConfirmSellCardView(discord.ui.View):
         pretty = shard_set_name(set_id)
 
         await interaction.followup.send(
-            f"🔨 Fragmented **{removed}× {card_label(card)}** into **{credit}** {pretty}.\n"
+            f"🔨 Fragmented **{removed}× {card_label_with_badge(self.state, card)}** into **{credit}** {pretty}.\n"
             f"**Total {pretty}:** {after}",
             ephemeral=True
         )

@@ -8,7 +8,7 @@ from core.state import AppState
 from core.cards_shop import (
     ensure_shop_index,
     find_card_by_print_key,
-    card_label,
+    card_label_with_badge,
     get_card_rarity,
     register_print_if_missing,
     is_starter_card,
@@ -134,7 +134,7 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
         if is_starter_card(card):
             continue
 
-        label = card_label(card)
+        label = card_label_with_badge(state, card)
         if qty > 0:
             label = f"{label} ×{qty}"
 
@@ -296,7 +296,7 @@ class CardsShop(commands.Cog):
         view = ConfirmBuyCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_cost=total)
         shard_pretty = shard_set_name(set_id_for_pack(set_present) or 1)
         return await interaction.response.send_message(
-            f"Are you sure you want to **craft** **{amount}× {card_label(c)}** for **{total}** {shard_pretty}?",
+            f"Are you sure you want to **craft** **{amount}× {card_label_with_badge(self.state, c)}** for **{total}** {shard_pretty}?",
             view=view,
             ephemeral=True
         )
@@ -341,7 +341,7 @@ class CardsShop(commands.Cog):
         view = ConfirmSellCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_credit=total)
         shard_pretty = shard_set_name(set_id_for_pack(set_present) or 1)
         return await interaction.response.send_message(
-            f"Are you sure you want to **fragment** **{amount}× {card_label(c)}** into **{total}** {shard_pretty}?",
+            f"Are you sure you want to **fragment** **{amount}× {card_label_with_badge(self.state, c)}** into **{total}** {shard_pretty}?",
             view=view,
             ephemeral=True
         )

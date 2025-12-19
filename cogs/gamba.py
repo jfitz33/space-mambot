@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.feature_flags import is_set1_week1_locked
-from core.cards_shop import card_label
+from core.cards_shop import card_label_with_badge
 from core.constants import (
     CURRENT_ACTIVE_SET,
     GAMBA_DEFAULT_SHARD_SET_ID,
@@ -255,7 +255,7 @@ async def _resolve_and_award_prize(state, user_id: int, prize: GambaPrize) -> st
             if picked:
                 set_name, printing = picked
                 await _award_card_to_user(state, user_id, printing, set_name, qty=1)
-                awarded.append(card_label(printing))
+                awarded.append(card_label_with_badge(state, printing))
         if awarded:
             if len(awarded) == 1:
                 return awarded[0]
