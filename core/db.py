@@ -99,6 +99,17 @@ def db_init(state: AppState):
             updated_ts       REAL NOT NULL DEFAULT (strftime('%s','now'))
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_point_splits (
+            guild_id   TEXT NOT NULL,
+            set_id     INTEGER NOT NULL,
+            user_id    TEXT NOT NULL,
+            team_name  TEXT NOT NULL,
+            points     INTEGER NOT NULL DEFAULT 0,
+            updated_ts INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (guild_id, set_id, user_id)
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
 
@@ -2570,6 +2581,116 @@ def db_team_points_add(state, guild_id: int, user_id: int, team_name: str, delta
 
     return new_total
 
+def db_team_point_splits_for_set(state, guild_id: int, set_id: int) -> dict[int, dict[str, int | str]]:
+    import sqlite3
+
+    splits: dict[int, dict[str, int | str]] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT user_id, team_name, points
+              FROM team_point_splits
+             WHERE guild_id = ? AND set_id = ?
+            """,
+            (str(guild_id), int(set_id)),
+        )
+        for user_id, team_name, points in cur.fetchall():
+            splits[int(user_id)] = {
+                "team": str(team_name or ""),
+                "points": int(points or 0),
+            }
+    return splits
+
+
+def db_team_point_split_set_ids(state, guild_id: int) -> list[int]:
+    """Return the set IDs that have stored team point splits for a guild."""
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            "SELECT DISTINCT set_id FROM team_point_splits WHERE guild_id = ? ORDER BY set_id",
+            (str(guild_id),),
+        )
+        return [int(row[0]) for row in cur.fetchall()]
+
+
+def db_team_point_splits_replace(
+    state,
+    guild_id: int,
+    set_id: int,
+    allocations: list[tuple[int, str, int]],
+):
+    import sqlite3, time
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            "DELETE FROM team_point_splits WHERE guild_id = ? AND set_id = ?",
+            (str(guild_id), int(set_id)),
+        )
+        conn.executemany(
+            """
+            INSERT INTO team_point_splits (guild_id, set_id, user_id, team_name, points, updated_ts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    str(guild_id),
+                    int(set_id),
+                    str(user_id),
+                    team_name,
+                    int(points),
+                    now,
+                )
+                for user_id, team_name, points in allocations
+            ],
+        )
+
+
+def db_team_point_splits_delete(
+    state, guild_id: int, set_id: int, user_id: int | None = None
+) -> int:
+    """Remove stored team point splits for a set, optionally scoped to a user."""
+    import sqlite3
+
+    params: list[str | int] = [str(guild_id), int(set_id)]
+    where_user = ""
+    if user_id is not None:
+        where_user = " AND user_id = ?"
+        params.append(str(user_id))
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute(
+            f"DELETE FROM team_point_splits WHERE guild_id = ? AND set_id = ?{where_user}",
+            params,
+        )
+        return int(cur.rowcount)
+
+
+def db_team_points_for_teams(
+    state, guild_id: int, team_names: Iterable[str]
+) -> list[dict[str, int | str]]:
+    """Return all team point rows for the given guild and team names."""
+    import sqlite3
+
+    names = [name for name in team_names if name]
+    if not names:
+        return []
+
+    placeholders = ",".join(["?"] * len(names))
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            f"""
+            SELECT user_id, team_name, points
+              FROM team_points
+             WHERE guild_id = ? AND team_name IN ({placeholders})
+        """,
+            [str(guild_id), *names],
+        )
+        return [
+            {"user_id": int(row[0]), "team": str(row[1]), "points": int(row[2])}
+            for row in cur.fetchall()
+        ]
 
 def db_team_points_totals(state, guild_id: int) -> dict[str, int]:
     import sqlite3

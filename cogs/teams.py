@@ -10,6 +10,11 @@ from discord.ext import commands
 
 from core.db import (
     db_add_cards,
+    db_team_point_split_set_ids,
+    db_team_point_splits_for_set,
+    db_team_point_splits_delete,
+    db_team_point_splits_replace,
+    db_team_points_for_teams,
     db_team_points_add,
     db_team_points_totals,
     db_team_points_top,
@@ -496,6 +501,7 @@ class Teams(commands.Cog):
             return
 
         total_points = DUEL_TEAM_POINTS_TOTAL
+        previous_splits = db_team_point_splits_for_set(self.state, guild.id, set_id)
         distributed: list[dict] = []
         for entry in allocations:
             exact = (total_points * entry["wins"]) / total_wins
@@ -518,6 +524,19 @@ class Teams(commands.Cog):
 
         team_points_awarded: defaultdict[str, int] = defaultdict(int)
         awarded_members = 0
+        for user_id, previous in previous_splits.items():
+            prior_points = int(previous.get("points") or 0)
+            if prior_points <= 0:
+                continue
+            db_team_points_add(
+                self.state,
+                guild.id,
+                user_id,
+                str(previous.get("team") or ""),
+                -prior_points,
+            )
+
+        new_splits: list[tuple[int, str, int]] = []
         for entry in distributed:
             points = int(entry["points"])
             if points <= 0:
@@ -531,12 +550,13 @@ class Teams(commands.Cog):
                 entry["team"],
                 points,
             )
+        new_splits.append((entry["member"].id, entry["team"], points))
 
-        channel = await self._get_tracker_channel(guild)
-        await self._ensure_message_exists(guild, channel=channel)
+        db_team_point_splits_replace(self.state, guild.id, set_id, new_splits)
 
         description = (
-            f"Distributed **{total_points:,}** duel team points based on wins in set **{set_id}**."
+            "Updated" if previous_splits else "Distributed"
+        + f" **{total_points:,}** duel team points based on wins in set **{set_id}**."
         )
         embed = discord.Embed(
             title="Team Point Split",
@@ -552,21 +572,185 @@ class Teams(commands.Cog):
                 inline=True,
             )
 
-        tracker_note = ""
-        try:
-            if channel:
-                await channel.send(embed=embed)
-                tracker_note = f" Results posted to {channel.mention}."
-            else:
-                tracker_note = " Could not find the team tracker channel to post results."
-        except Exception:
-            tracker_note = " Encountered an error while posting results to the tracker channel."
+        await interaction.followup.send(
+            embed=embed,
+            content=(
+                f"Split complete. Awarded points to **{awarded_members}** member"
+                f"{'s' if awarded_members != 1 else ''}."
+            ).strip(),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_reset_points",
+        description="(Admin) Reset split team points for a set.",
+    )
+    @app_commands.describe(
+        set_id="Team set number to clear split points for",
+        member="Optional member to target; clears all for the set when omitted",
+        clear_orphaned="Also clear team point rows even when no stored splits exist",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_reset_points(
+        self,
+        interaction: discord.Interaction,
+        set_id: app_commands.Range[int, 1, 9999],
+        member: discord.Member | None = None,
+        clear_orphaned: bool = False,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild = interaction.guild
+        splits = db_team_point_splits_for_set(self.state, guild.id, int(set_id))
+        if not splits:
+            set_cfg = TEAM_SETS.get(int(set_id), {})
+            set_team_names = tuple((set_cfg.get("teams") or {}).keys())
+            orphan_rows = db_team_points_for_teams(self.state, guild.id, set_team_names)
+            if orphan_rows:
+                if not clear_orphaned:
+                    total_points = sum(int(r.get("points") or 0) for r in orphan_rows)
+                    lines = [
+                        f"<@{int(r['user_id'])}> — {int(r['points']):,} pts on {r['team']}"
+                        for r in sorted(orphan_rows, key=lambda r: int(r.get("points") or 0), reverse=True)
+                    ]
+                    available_sets = db_team_point_split_set_ids(self.state, guild.id)
+                    available_note = (
+                        "" if not available_sets else
+                        "\nAvailable set IDs with stored splits: " + ", ".join(str(s) for s in available_sets)
+                    )
+                    await interaction.followup.send(
+                        (
+                            f"No stored split records found for set **{int(set_id)}**, "
+                            "but the tracker totals are coming from current entries in the team points table.\n"
+                            f"Total points on set {int(set_id)} teams: **{total_points:,}**\n"
+                            + "\n".join(lines)
+                            + "\n\nRe-run this command with `clear_orphaned=True` to remove these totals."
+                            + available_note
+                        ).strip(),
+                        ephemeral=True,
+                    )
+                    return
+
+                removed_points: defaultdict[str, int] = defaultdict(int)
+                cleared_members = 0
+                for row in orphan_rows:
+                    points = int(row.get("points") or 0)
+                    if points <= 0:
+                        continue
+                    cleared_members += 1
+                    team_name = str(row.get("team") or "")
+                    removed_points[team_name] += points
+                    db_team_points_add(
+                        self.state,
+                        guild.id,
+                        int(row.get("user_id") or 0),
+                        team_name,
+                        -points,
+                    )
+
+                await self._ensure_message_exists(guild)
+
+                embed = discord.Embed(
+                    title="Team Points Reset",
+                    description=f"Cleared orphaned totals for set **{int(set_id)}**",
+                    color=discord.Color.red(),
+                )
+                for team_name, points in removed_points.items():
+                    if points <= 0:
+                        continue
+                    embed.add_field(
+                        name=f"{team_name}",
+                        value=f"Removed **{points:,}** pts",
+                        inline=True,
+                    )
+
+                await interaction.followup.send(
+                    embed=embed,
+                    content=(
+                        f"Cleared team point entries for **{cleared_members}** member"
+                        f"{'s' if cleared_members != 1 else ''}."
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            available_sets = db_team_point_split_set_ids(self.state, guild.id)
+            suggestions = (
+                " No stored splits were found." if not available_sets else
+                " Available set IDs with stored splits: " + ", ".join(str(s) for s in available_sets)
+            )
+            await interaction.followup.send(
+                f"No team point splits stored for set **{int(set_id)}**." + suggestions,
+                ephemeral=True,
+            )
+            return
+
+        targeted: dict[int, dict[str, int | str]]
+        if member:
+            entry = splits.get(member.id)
+            targeted = {member.id: entry} if entry else {}
+        else:
+            targeted = splits
+
+        if not targeted:
+            await interaction.followup.send(
+                "No matching split allocations were found to clear.",
+                ephemeral=True,
+            )
+            return
+
+        removed_points: defaultdict[str, int] = defaultdict(int)
+        cleared_members = 0
+        for user_id, info in targeted.items():
+            if not info:
+                continue
+            cleared_members += 1
+            points = int(info.get("points") or 0)
+            if points <= 0:
+                continue
+            team_name = str(info.get("team") or "")
+            removed_points[team_name] += points
+            db_team_points_add(self.state, guild.id, user_id, team_name, -points)
+
+        db_team_point_splits_delete(
+            self.state,
+            guild.id,
+            int(set_id),
+            member.id if member else None,
+        )
+
+        await self._ensure_message_exists(guild)
+
+        embed = discord.Embed(
+            title="Team Points Reset",
+            description=(
+                f"Cleared stored split points for set **{int(set_id)}**"
+                + (f" for {member.mention}" if member else " for all members")
+            ),
+            color=discord.Color.red(),
+        )
+        if removed_points:
+            for team_name, points in removed_points.items():
+                if points <= 0:
+                    continue
+                embed.add_field(
+                    name=f"{team_name}",
+                    value=f"Removed **{points:,}** pts",
+                    inline=True,
+                )
 
         await interaction.followup.send(
-            (
-                f"Split complete. Awarded points to **{awarded_members}** member"
-                f"{'s' if awarded_members != 1 else ''}.{tracker_note}"
-            ).strip(),
+            embed=embed,
+            content=(
+                f"Cleared allocations for **{cleared_members}** member"
+                f"{'s' if cleared_members != 1 else ''}."
+            ),
             ephemeral=True,
         )
 
