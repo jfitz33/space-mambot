@@ -554,6 +554,8 @@ class Teams(commands.Cog):
 
         db_team_point_splits_replace(self.state, guild.id, set_id, new_splits)
 
+        await self._ensure_message_exists(guild)
+
         description = (
             "Updated" if previous_splits else "Distributed"
         + f" **{total_points:,}** duel team points based on wins in set **{set_id}**."
@@ -583,12 +585,11 @@ class Teams(commands.Cog):
 
     @app_commands.command(
         name="team_reset_points",
-        description="(Admin) Reset split team points for a set.",
+        description="(Admin) Reset team points for a set.",
     )
     @app_commands.describe(
         set_id="Team set number to clear split points for",
         member="Optional member to target; clears all for the set when omitted",
-        clear_orphaned="Also clear team point rows even when no stored splits exist",
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
@@ -598,7 +599,6 @@ class Teams(commands.Cog):
         interaction: discord.Interaction,
         set_id: app_commands.Range[int, 1, 9999],
         member: discord.Member | None = None,
-        clear_orphaned: bool = False,
     ):
         if not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -610,33 +610,21 @@ class Teams(commands.Cog):
         splits = db_team_point_splits_for_set(self.state, guild.id, int(set_id))
         if not splits:
             set_cfg = TEAM_SETS.get(int(set_id), {})
-            set_team_names = tuple((set_cfg.get("teams") or {}).keys())
-            orphan_rows = db_team_points_for_teams(self.state, guild.id, set_team_names)
+            configured_names = tuple(
+                set_cfg.get("order") or (set_cfg.get("teams") or {}).keys()
+            )
+            all_team_names = tuple(
+                dict.fromkeys(
+                    name
+                    for name in (
+                        *configured_names,
+                        *tuple(db_team_points_totals(self.state, guild.id).keys()),
+                    )
+                    if name
+                )
+            )
+            orphan_rows = db_team_points_for_teams(self.state, guild.id, all_team_names)
             if orphan_rows:
-                if not clear_orphaned:
-                    total_points = sum(int(r.get("points") or 0) for r in orphan_rows)
-                    lines = [
-                        f"<@{int(r['user_id'])}> — {int(r['points']):,} pts on {r['team']}"
-                        for r in sorted(orphan_rows, key=lambda r: int(r.get("points") or 0), reverse=True)
-                    ]
-                    available_sets = db_team_point_split_set_ids(self.state, guild.id)
-                    available_note = (
-                        "" if not available_sets else
-                        "\nAvailable set IDs with stored splits: " + ", ".join(str(s) for s in available_sets)
-                    )
-                    await interaction.followup.send(
-                        (
-                            f"No stored split records found for set **{int(set_id)}**, "
-                            "but the tracker totals are coming from current entries in the team points table.\n"
-                            f"Total points on set {int(set_id)} teams: **{total_points:,}**\n"
-                            + "\n".join(lines)
-                            + "\n\nRe-run this command with `clear_orphaned=True` to remove these totals."
-                            + available_note
-                        ).strip(),
-                        ephemeral=True,
-                    )
-                    return
-
                 removed_points: defaultdict[str, int] = defaultdict(int)
                 cleared_members = 0
                 for row in orphan_rows:
