@@ -1789,6 +1789,27 @@ def db_starter_claim_complete(state, user_id: int) -> None:
         )
 
 
+def db_starter_claim_status(state, user_id: int) -> str | None:
+    """Return the recorded starter claim status without modifying any locks."""
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS starter_claims (
+                user_id    TEXT NOT NULL PRIMARY KEY,
+                status     TEXT NOT NULL,
+                updated_ts INTEGER NOT NULL
+            );
+            """
+        )
+        row = conn.execute(
+            "SELECT status FROM starter_claims WHERE user_id=?",
+            (str(user_id),),
+        ).fetchone()
+
+    return row[0] if row else None
+
+
 def db_starter_claim_abort(state, user_id: int) -> None:
     """Release an in-progress starter claim so a user can try again."""
 
