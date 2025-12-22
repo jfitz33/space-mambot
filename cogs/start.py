@@ -343,6 +343,27 @@ class StarterTeamSelect(discord.ui.Select):
             )
             return
 
+        # Show a loading state while we build confirmation assets.
+        self.disabled = True
+        self.placeholder = "loading starter data..."
+
+        # Acknowledge the interaction quickly so Discord doesn't expire the
+        # token while we render confirmation assets (this has been observed for
+        # the Water team selection in particular).
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(thinking=False, ephemeral=True)
+            except Exception:
+                pass
+
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(view=self.parent_view)
+            else:
+                await interaction.response.edit_message(view=self.parent_view)
+        except Exception:
+            pass
+
         confirmation_text = (
             f"Are you sure you want to join the **{value}** team? "
             f"You will receive the **{deck_name}** starter deck: YDK attached. "
@@ -360,12 +381,17 @@ class StarterTeamSelect(discord.ui.Select):
         for child in self.parent_view.children:
             child.disabled = True
         try:
-            message = await interaction.response.edit_message(
-                content=confirmation_text if not embed else None,
-                embeds=[embed] if embed else None,
-                attachments=files or None,
-                view=confirmation,
-            )
+            kwargs = {
+                "content": confirmation_text if not embed else None,
+                "embeds": [embed] if embed else None,
+                "attachments": files or None,
+                "view": confirmation,
+            }
+
+            if interaction.response.is_done():
+                message = await interaction.edit_original_response(**kwargs)
+            else:
+                message = await interaction.response.edit_message(**kwargs)
             confirmation.message = message or interaction.message
         except Exception:
             for f in files:
@@ -373,7 +399,19 @@ class StarterTeamSelect(discord.ui.Select):
                     f.close()
                 except Exception:
                     pass
-            await interaction.followup.send("I couldn't show the confirmation right now. Please try again.", ephemeral=True)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "I couldn't show the confirmation right now. Please try again.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.followup.send(
+                        "I couldn't show the confirmation right now. Please try again.",
+                        ephemeral=True,
+                    )
+            except Exception:
+                pass
 
 
 class StarterTeamSelectView(View):
