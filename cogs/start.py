@@ -1,4 +1,4 @@
-import os, discord, asyncio, io
+import os, discord, asyncio
 from copy import deepcopy
 from discord.ext import commands
 from discord import app_commands
@@ -36,6 +36,10 @@ STARTER_TO_PACK = {
     "Cult of the Mambo": "Storm of the Abyss",
     "Hellfire Heretics": "Blazing Genesis",
 }
+STARTER_DECK_URLS = {
+    "Cult of the Mambo": os.getenv("CULT_OF_THE_MAMBO_STARTER_URL", "https://www.duelingbook.com/deck?id=18723000"),
+    "Hellfire Heretics": os.getenv("HELLFIRE_HERETICS_STARTER_URL", "https://www.duelingbook.com/deck?id=18723001"),
+}
 TEAM_TO_STARTER = {team: deck for deck, team in TEAM_ROLE_MAPPING.items()}
 SET1_TEAM_ORDER = ("Fire", "Water")
 WEEK1_QUEST_ID = "matches_played"
@@ -71,40 +75,10 @@ def _team_info() -> dict[str, dict[str, str]]:
             "team": team,
             "deck_name": TEAM_TO_STARTER.get(team, ""),
             "pack_name": STARTER_TO_PACK.get(TEAM_TO_STARTER.get(team, ""), TEAM_TO_STARTER.get(team, "")),
+            "deck_url": STARTER_DECK_URLS.get(TEAM_TO_STARTER.get(team, ""), ""),
         }
         for team in SET1_TEAM_ORDER
     }
-
-
-def _make_starter_ydk_file(state: AppState, deck_name: str) -> discord.File | None:
-    cards = (state.starters_index or {}).get(deck_name, [])
-    if not cards:
-        return None
-
-    main_ids: list[str] = []
-    for card in cards:
-        cid = card.get("cardid") or card.get("id") or card.get("cardcode")
-        qty = int(card.get("cardq") or card.get("qty") or 1)
-        if not cid:
-            continue
-        try:
-            cid_str = str(int(str(cid).strip()))
-        except Exception:
-            continue
-        for _ in range(max(1, qty)):
-            main_ids.append(cid_str)
-
-    if not main_ids:
-        return None
-
-    buffer = io.StringIO()
-    buffer.write("#created by space-mambot\n")
-    buffer.write("#main\n")
-    buffer.write("\n".join(main_ids))
-    buffer.write("\n#extra\n#side\n")
-
-    filename = f"{deck_name.replace(' ', '_')}.ydk"
-    return discord.File(io.BytesIO(buffer.getvalue().encode("utf-8")), filename=filename)
 
 
 class StarterConfirmationView(View):
@@ -332,6 +306,7 @@ class StarterTeamSelect(discord.ui.Select):
             return
 
         deck_name = info.get("deck_name")
+        deck_url = info.get("deck_url") or ""
         pack_name = info.get("pack_name") or deck_name
         if not deck_name:
             await interaction.response.send_message("No starter deck is configured for that team.", ephemeral=True)
@@ -364,18 +339,16 @@ class StarterTeamSelect(discord.ui.Select):
         except Exception:
             pass
 
-        confirmation_text = (
-            f"Are you sure you want to join the **{value}** team? "
-            f"You will receive the **{deck_name}** starter deck: YDK attached. "
-            f"You will also be rewarded 12 packs of **{pack_name}**."
-        )
+        confirmation_lines = [
+            f"Are you sure you want to join the **{value}** team? You will receive the following:",
+            f"- **{deck_name}** starter deck: {deck_url or 'URL coming soon'}",
+            f"- 12 packs of **{pack_name}**",
+        ]
+        confirmation_text = "\n".join(confirmation_lines)
         confirmation = StarterConfirmationView(self.parent_view.cog, self.parent_view.member, value, deck_name, pack_name)
         embed, files = _pack_confirmation_embed(pack_name, confirmation_text)
         confirmation.set_confirmation_embed(embed)
 
-        starter_file = _make_starter_ydk_file(self.parent_view.state, deck_name)
-        if starter_file:
-            files.append(starter_file)
         confirmation.attach_files(files)
 
         for child in self.parent_view.children:
