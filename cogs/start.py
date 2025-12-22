@@ -1,4 +1,5 @@
 import os, discord, asyncio, io
+from copy import deepcopy
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View
@@ -115,9 +116,90 @@ class StarterConfirmationView(View):
         self.deck_name = deck_name
         self.pack_name = pack_name
         self._files: list[discord.File] = []
+        self._confirmation_embed: discord.Embed | None = None
 
     def attach_files(self, files: list[discord.File]):
         self._files = files
+
+    def set_confirmation_embed(self, embed: discord.Embed | None):
+        self._confirmation_embed = deepcopy(embed) if embed else None
+
+    async def _edit_interaction_message(
+        self,
+        interaction: discord.Interaction,
+        *,
+        content: str | None = None,
+        embeds: list[discord.Embed] | None = None,
+        attachments: list[discord.File] | None = None,
+        view: discord.ui.View | None = None,
+    ) -> None:
+        """Safely edit the original interaction message.
+
+        Mirrors the pack/box confirmation helpers to ensure we remove buttons
+        even when the interaction has already been deferred.
+        """
+
+        kwargs = {"content": content, "view": view}
+        if embeds is not None:
+            kwargs["embeds"] = embeds
+        if attachments is not None:
+            kwargs["attachments"] = attachments
+
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(**kwargs)
+            else:
+                await interaction.edit_original_response(**kwargs)
+        except Exception:
+            try:
+                if interaction.message:
+                    await interaction.message.edit(**kwargs)
+            except Exception:
+                pass
+
+    async def _show_processing_state(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+
+        status_message = "Sending you your packs via DM"
+        current_content = None
+        current_embeds: list[discord.Embed] = []
+        current_attachments: list[discord.Attachment] = []
+        message = getattr(interaction, "message", None) or getattr(self, "message", None)
+
+        if not message:
+            try:
+                message = await interaction.original_response()
+            except Exception:
+                message = None
+
+        if message:
+            current_embeds = [deepcopy(e) for e in (getattr(message, "embeds", []) or [])]
+            current_content = getattr(message, "content", None)
+            current_attachments = list(getattr(message, "attachments", []) or [])
+
+        if not current_embeds and self._confirmation_embed:
+            current_embeds = [deepcopy(self._confirmation_embed)]
+
+        if current_embeds:
+            footer_icon = current_embeds[0].footer.icon_url if current_embeds[0].footer else None
+            existing_footer = (current_embeds[0].footer.text or "") if current_embeds[0].footer else ""
+            footer_text = status_message if not existing_footer else f"{existing_footer} • {status_message}"
+            current_embeds[0].set_footer(text=footer_text, icon_url=footer_icon)
+        else:
+            combined = "\n".join(filter(None, [current_content, status_message]))
+            current_content = combined or None
+
+        await self._edit_interaction_message(
+            interaction,
+            content=current_content,
+            embeds=current_embeds or None,
+            attachments=current_attachments or None,
+            view=None,
+        )
 
     async def on_timeout(self):
         for child in self.children:
@@ -162,6 +244,7 @@ class StarterConfirmationView(View):
         success = False
         try:
             await interaction.response.defer(ephemeral=True, thinking=False)
+            await self._show_processing_state(interaction)
             success = await self.cog._grant_starter_rewards(interaction, self.member, self.team_name, self.deck_name, self.pack_name)
         finally:
             if success:
@@ -171,10 +254,15 @@ class StarterConfirmationView(View):
 
         for child in self.children:
             child.disabled = True
-        try:
-            await interaction.edit_original_response(view=None)
-        except Exception:
-            pass
+        message = getattr(interaction, "message", None) or getattr(self, "message", None)
+        preserved_attachments = None
+        if message:
+            preserved_attachments = list(getattr(message, "attachments", []) or []) or None
+        await self._edit_interaction_message(
+            interaction,
+            view=None,
+            attachments=preserved_attachments,
+        )
         for f in self._files:
             try:
                 f.close()
@@ -262,6 +350,7 @@ class StarterTeamSelect(discord.ui.Select):
         )
         confirmation = StarterConfirmationView(self.parent_view.cog, self.parent_view.member, value, deck_name, pack_name)
         embed, files = _pack_confirmation_embed(pack_name, confirmation_text)
+        confirmation.set_confirmation_embed(embed)
 
         starter_file = _make_starter_ydk_file(self.parent_view.state, deck_name)
         if starter_file:
@@ -328,7 +417,12 @@ class Start(commands.Cog):
             return False
 
         try:
-            await ensure_rarity_emojis(interaction.guild)
+            await ensure_rarity_emojis(
+                self.bot,
+                guild_ids=[interaction.guild.id],
+                create_if_missing=True,
+                verbose=False,
+            )
         except discord.Forbidden:
             await interaction.followup.send(
                 "I need the Manage Emojis and Stickers permission to create rarity emojis.",
@@ -375,11 +469,13 @@ class Start(commands.Cog):
             return False
 
         if deck_name.lower().__contains__("mambo"):
-            await interaction.channel.send(f"Sploosh! {member.mention} selected the **{deck_name}** starter deck!")
+            await interaction.channel.send(f"Sploosh! {member.mention} selected the **{team_name}** team! "
+                                           f"Sending you your starter cards now.")
         elif deck_name.lower().__contains__("fire"):
-            await interaction.channel.send(f"That's Hot! {member.mention} selected the **{deck_name}** starter deck!")
+            await interaction.channel.send(f"That's Hot! {member.mention} selected the **{team_name}** team! "
+                                           f"Sending you your starter cards now.")
         else:
-            await interaction.channel.send(f"{member.mention} selected the **{deck_name}** starter deck!")
+            await interaction.channel.send(f"{member.mention} selected the **{team_name}** team!")
 
         START_PACKS = 12
         guaranteed_tops = ["super"] * 8 + ["ultra"] * 3 + ["secret"]
