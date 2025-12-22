@@ -1,5 +1,6 @@
 # cogs/shop_sim.py
 import os, asyncio, discord, math, re
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import List
@@ -136,7 +137,7 @@ class ShopSim(commands.Cog):
         self.bot = bot
         self.state: AppState = bot.state
 
-    def _build_shop_embed(self, *, sales: dict | None = None) -> discord.Embed:
+    def _build_shop_embed(self, *, sales: dict | None = None) -> tuple[discord.Embed, list[discord.File]]:
         """
         Build the single shop banner embed. If ``sales`` is provided (mapping rarity
         → list of sale rows), render a "On sale today for <discount>% off!" section
@@ -146,11 +147,37 @@ class ShopSim(commands.Cog):
         to enlarge these without rendering them into an image first.
         """
         if is_set1_week1_locked():
-            return discord.Embed(
+            description = "Shop opening soon\n\nPacks earnable via /daily rewards:"
+            embed = discord.Embed(
                 title="🛍️ Welcome to the Mamshop",
-                description="Shop opening soon",
+                description=description,
                 color=0x2b6cb0,
             )
+
+            embed.add_field(name="Water team", value="Storm of the Abyss", inline=True)
+            embed.add_field(name="Fire team", value="Blazing Genesis", inline=True)
+
+            files: list[discord.File] = []
+            pack_images = {
+                "storm": Path(__file__).resolve().parent.parent / "images" / "pack_images" / "storm_of_the_abyss.png",
+                "blaze": Path(__file__).resolve().parent.parent / "images" / "pack_images" / "blazing_genesis.png",
+            }
+
+            previews: list[Path] = []
+            for key in ("storm", "blaze"):
+                image_path = pack_images[key]
+                if not image_path.exists():
+                    continue
+
+                previews.append(image_path)
+                files.append(discord.File(str(image_path), filename=image_path.name))
+
+            if previews:
+                embed.set_image(url=f"attachment://{previews[0].name}")
+            if len(previews) > 1:
+                embed.set_thumbnail(url=f"attachment://{previews[1].name}")
+
+            return embed, files
         
         e = discord.Embed(
             title="🛍️ Welcome to the Mamshop",
@@ -311,7 +338,7 @@ class ShopSim(commands.Cog):
                 e.add_field(name=sale_title, value="\n" + "\n".join(lines), inline=False)
 
         e.set_footer(text="Check back tomorrow for new deals!")
-        return e
+        return e, []
 
     async def refresh_shop_banner(self, guild: discord.Guild):
         """
@@ -329,7 +356,7 @@ class ShopSim(commands.Cog):
         sales = db_sales_get_for_day(self.state, day_key) or {}
 
         # 3) Build embed (with sales)
-        embed = self._build_shop_embed(sales=sales)
+        embed, files = self._build_shop_embed(sales=sales)
 
         # 4) Try to edit the existing banner
         row = db_shop_banner_load(self.state, guild.id)
@@ -339,7 +366,7 @@ class ShopSim(commands.Cog):
                     # Channel changed: fall through to send a new one
                     raise discord.NotFound(response=None, message="channel mismatch")
                 msg = await channel.fetch_message(int(row["message_id"]))
-                await msg.edit(content=None, embed=embed, view=None)
+                await msg.edit(content=None, embed=embed, view=None, attachments=files)
                 return msg
             except (discord.NotFound, discord.Forbidden):
                 pass  # will create a new one below
@@ -351,7 +378,7 @@ class ShopSim(commands.Cog):
             pass
 
         # 6) Send + remember
-        msg = await channel.send(embed=embed)
+        msg = await channel.send(embed=embed, files=files)
         db_shop_banner_store(self.state, guild.id, channel.id, msg.id)
         return msg
 
@@ -373,8 +400,8 @@ class ShopSim(commands.Cog):
         ensure_shop_index(self.state)
         channel = await ensure_shop_channel(guild, bot_member)
         await _clear_channel_all_messages(channel)
-        emb = self._build_shop_embed()
-        msg = await channel.send(embed=emb, content=" ")
+        emb, files = self._build_shop_embed()
+        msg = await channel.send(embed=emb, files=files, content=" ")
         try:
             await msg.pin(reason="Pin shop info")
         except discord.Forbidden:
