@@ -207,6 +207,14 @@ class BulkFragmentConfirmView(discord.ui.View):
 
     def _is_requester(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user.id
+    
+    async def _ensure_deferred(self, interaction: discord.Interaction):
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.defer(thinking=False)
+        except discord.InteractionResponded:
+            pass
 
     def shard_label(self, set_name: str) -> str:
         sid = set_id_for_pack(set_name) or 1
@@ -226,17 +234,27 @@ class BulkFragmentConfirmView(discord.ui.View):
         for c in self.children:
             c.disabled = True
         try:
-            await interaction.response.edit_message(content=content, view=None)
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(
+                    message_id=self.message.id if self.message else interaction.message.id,
+                    content=content,
+                    view=None,
+                    embeds=[],
+                )
+            else:
+                await interaction.response.edit_message(content=content, view=None, embeds=[])
         except discord.InteractionResponded:
-            await interaction.message.edit(content=content, view=None)
+            await interaction.message.edit(content=content, view=None, embeds=[])
+        except discord.NotFound:
+            await interaction.message.edit(content=content, view=None, embeds=[])
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not self._is_requester(interaction):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._ensure_deferred(interaction)
         if self._locked:
-            try: await interaction.response.defer_update()
-            except: pass
+            await self._ensure_deferred(interaction)
             return
         self._locked = True
 
@@ -278,6 +296,7 @@ class BulkFragmentConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
         if not self._is_requester(interaction):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._ensure_deferred(interaction)
         await self.finalize(interaction, content="Cancelled.")
 
 class PaginatedBulkFragmentConfirmView(BulkFragmentConfirmView):
