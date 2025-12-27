@@ -181,6 +181,18 @@ async def ac_fragmentable_rarity(interaction: discord.Interaction, current: str)
         out.append(app_commands.Choice(name=label, value=r))
     return out
 
+def _set_sort_key(set_name: str) -> tuple[int, str]:
+    return (set_id_for_pack(set_name) or 9999, (set_name or "").lower())
+
+def _sort_rows_by_set(rows: List[Dict]) -> List[Dict]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            _set_sort_key(row.get("set") or ""),
+            (row.get("name") or "").lower(),
+        ),
+    )
+
 class BulkFragmentConfirmView(discord.ui.View):
     def __init__(self, state: AppState, user: discord.Member, plan_rows: List[Dict], keep: int, total_yield_by_set: Dict[str, int], *, timeout: float = 120):
         # Setting the timeout explicitly keeps discord.py happy when the View is
@@ -193,6 +205,9 @@ class BulkFragmentConfirmView(discord.ui.View):
         self.total_yield_by_set = {k: int(v) for k, v in (total_yield_by_set or {}).items()}
         self._locked = False
 
+    def _is_requester(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+
     def shard_label(self, set_name: str) -> str:
         sid = set_id_for_pack(set_name) or 1
         return shard_set_name(sid)
@@ -200,7 +215,7 @@ class BulkFragmentConfirmView(discord.ui.View):
     def shard_summary(self, totals: Dict[str, int] | None = None) -> str:
         blob = totals or self.total_yield_by_set
         parts = []
-        for set_name, amount in blob.items():
+        for set_name, amount in sorted(blob.items(), key=lambda item: _set_sort_key(item[0])):
             if amount <= 0:
                 continue
             parts.append(f"{amount} {self.shard_label(set_name)}")
@@ -217,7 +232,7 @@ class BulkFragmentConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.user.id:
+        if not self._is_requester(interaction):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
         if self._locked:
             try: await interaction.response.defer_update()
@@ -261,9 +276,77 @@ class BulkFragmentConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.user.id:
+        if not self._is_requester(interaction):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
         await self.finalize(interaction, content="Cancelled.")
+
+class PaginatedBulkFragmentConfirmView(BulkFragmentConfirmView):
+    def __init__(
+        self,
+        state: AppState,
+        user: discord.Member,
+        plan_rows: List[Dict],
+        keep: int,
+        total_yield_by_set: Dict[str, int],
+        *,
+        content: str,
+        embeds: list[discord.Embed],
+        timeout: float = 120,
+    ):
+        super().__init__(state, user, plan_rows, keep, total_yield_by_set, timeout=timeout)
+        self.embeds = embeds or []
+        self.content = content
+        self.current_page = 0
+        self.message: Optional[discord.Message] = None
+        self._sync_page_title()
+        if len(self.embeds) <= 1:
+            self.next_page.disabled = True
+            self.prev_page.disabled = True
+
+    def _page_count(self) -> int:
+        return max(len(self.embeds), 1)
+
+    def _sync_page_title(self):
+        if len(self.embeds) <= 1:
+            return
+        total = self._page_count()
+        for idx, embed in enumerate(self.embeds, start=1):
+            embed.title = f"Cards to fragment ({idx}/{total})"
+
+    def _wrap_index(self, idx: int) -> int:
+        total = self._page_count()
+        if total <= 1:
+            return 0
+        return idx % total
+
+    async def _show_page(self, interaction: discord.Interaction, idx: int):
+        if self._locked:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self.current_page = self._wrap_index(idx)
+        embed = self.embeds[self.current_page] if self.embeds else None
+        if interaction.response.is_done():
+            await interaction.followup.edit_message(
+                message_id=self.message.id if self.message else interaction.message.id,
+                content=self.content,
+                embed=embed,
+                view=self,
+            )
+        else:
+            await interaction.response.edit_message(content=self.content, embed=embed, view=self)
+
+    @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self._is_requester(interaction):
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._show_page(interaction, self.current_page - 1)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self._is_requester(interaction):
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._show_page(interaction, self.current_page + 1)
 
 class CardsShop(commands.Cog):
     """
@@ -525,7 +608,7 @@ class CardsShop(commands.Cog):
                 continue
             row = {**row, "rarity": row_rarity}
             filtered_rows.append(row)
-        rows = filtered_rows
+        rows = _sort_rows_by_set(filtered_rows)
         if not rows:
             return await interaction.followup.send(
                 "Nothing to fragment with those filters (or all at/under the keep amount).",
@@ -567,10 +650,8 @@ class CardsShop(commands.Cog):
             enriched_rows.append({**row, "yield_each": int(yield_each)})
 
         preview = "\n".join(preview_lines)
-        if len(preview) > 1800:
-            preview = preview[:1800] + "\n…"
 
-        view = BulkFragmentConfirmView(
+        summary_view = BulkFragmentConfirmView(
             self.state,
             interaction.user,
             enriched_rows,           # <-- pass yields to the view
@@ -578,17 +659,57 @@ class CardsShop(commands.Cog):
             total_yield_by_set,
         )
 
-        shard_breakdown = view.shard_summary() or shard_set_name(set_id_for_pack(pack_name) or 1)
+        shard_breakdown = summary_view.shard_summary() or shard_set_name(set_id_for_pack(pack_name) or 1)
+
+        preview_lines = preview.split("\n") if preview else []
+        embeds: list[discord.Embed] = []
+        chunk: list[str] = []
+        chunk_len = 0
+        for line in preview_lines:
+            line_len = len(line) + 1  # account for newline
+            if chunk and chunk_len + line_len > 3500:
+                embeds.append(discord.Embed(
+                    title=f"Cards to fragment ({len(embeds) + 1})",
+                    description="\n".join(chunk)
+                ))
+                chunk = []
+                chunk_len = 0
+            chunk.append(line)
+            chunk_len += line_len
+        if chunk:
+            embeds.append(discord.Embed(
+                title=f"Cards to fragment ({len(embeds) + 1})",
+                description="\n".join(chunk)
+            ))
+
+        if embeds:
+            total_pages = len(embeds)
+            for i, embed in enumerate(embeds, start=1):
+                if total_pages > 1:
+                    embed.title = f"Cards to fragment ({i}/{total_pages})"
 
         content = "\n".join([
             "Are you sure you want to fragment the following cards?",
-            "",
-            preview,
-            "",
-            f"This will yield **{shard_breakdown}**."
+            f"This will yield **{shard_breakdown}**.",
         ])
+        view = PaginatedBulkFragmentConfirmView(
+            self.state,
+            interaction.user,
+            enriched_rows,
+            keep_floor,
+            total_yield_by_set,
+            content=content,
+            embeds=embeds,
+        )
 
-        await interaction.followup.send(content=content, ephemeral=True, view=view)
+        primary_embed = embeds[0] if embeds else None
+        message = await interaction.followup.send(
+            content=content,
+            ephemeral=True,
+            view=view,
+            embed=primary_embed,
+        )
+        view.message = message
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))
