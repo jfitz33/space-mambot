@@ -1959,8 +1959,8 @@ def db_shards_try_spend(state, user_id: int, set_id: int, amount: int) -> dict |
 def db_collection_list_for_bulk_fragment(
     state,
     user_id: int,
-    pack_name: str,
-    rarity: str,
+    pack_name: Optional[str],
+    rarity: Optional[str],
     keep: int
 ) -> List[Dict]:
     """
@@ -1979,16 +1979,24 @@ def db_collection_list_for_bulk_fragment(
     """
     out: List[Dict] = []
     with sqlite3.connect(state.db_path) as conn:
-        cur = conn.execute(
-            """
-            SELECT card_name, card_qty, card_rarity, card_set, card_code, card_id
-              FROM user_collection
-             WHERE user_id = ?
-               AND card_set = ?
-               AND LOWER(card_rarity) = ?
-            """,
-            (str(user_id), pack_name, rarity.lower().strip())
+        params = [str(user_id)]
+        clauses = ["user_id = ?"]
+        if pack_name:
+            clauses.append("card_set = ?")
+            params.append(pack_name)
+        if rarity:
+            clauses.append("LOWER(card_rarity) = ?")
+            params.append(rarity.lower().strip())
+
+        query = " ".join(
+            [
+                "SELECT card_name, card_qty, card_rarity, card_set, card_code, card_id",
+                "FROM user_collection",
+                "WHERE",
+                " AND ".join(clauses),
+            ]
         )
+        cur = conn.execute(query, params)
         for name, qty, r, cset, code, cid in cur.fetchall():
             qty = int(qty or 0)
             to_frag = max(0, qty - int(keep))
@@ -1998,7 +2006,7 @@ def db_collection_list_for_bulk_fragment(
                 "name": name,
                 "qty": qty,
                 "to_frag": to_frag,
-                "rarity": rarity.lower().strip(),
+                "rarity": (rarity or r or "").lower().strip(),
                 "set": cset,
                 "code": (code or None),
                 "id": (cid or None),
