@@ -208,6 +208,25 @@ class BulkFragmentConfirmView(discord.ui.View):
     def _is_requester(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user.id
     
+    async def _show_processing_state(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+            if isinstance(child, discord.ui.Button) and child.label == "Confirm":
+                child.label = "Processing…"
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(
+                    message_id=self.message.id if self.message else interaction.message.id,
+                    view=self,
+                )
+            else:
+                await interaction.response.edit_message(view=self)
+        except discord.InteractionResponded:
+            await interaction.message.edit(view=self)
+        except discord.NotFound:
+            await interaction.message.edit(view=self)
+
     async def _ensure_deferred(self, interaction: discord.Interaction):
         if interaction.response.is_done():
             return
@@ -257,6 +276,7 @@ class BulkFragmentConfirmView(discord.ui.View):
             await self._ensure_deferred(interaction)
             return
         self._locked = True
+        await self._show_processing_state(interaction)
 
         credited_by_set: Dict[str, int] = {}
 
@@ -660,10 +680,9 @@ class CardsShop(commands.Cog):
                 # keep it short; you can expand this if you store reason/expiry, etc.
                 boost = " (override)"
 
-            keep_shown = min(int(row["qty"]), keep_floor)
             pack_suffix = f" [{shorten(set_name, 32)}]" if set_name else ""
             preview_lines.append(
-                f"• x{qty_to_frag} {shorten(row['name'], 64)}{pack_suffix} (keep {keep_shown})"
+                f"• x{qty_to_frag} {shorten(row['name'], 64)}{pack_suffix}"
             )
 
             enriched_rows.append({**row, "yield_each": int(yield_each)})
@@ -686,7 +705,7 @@ class CardsShop(commands.Cog):
         chunk_len = 0
         for line in preview_lines:
             line_len = len(line) + 1  # account for newline
-            if chunk and chunk_len + line_len > 3500:
+            if chunk and (chunk_len + line_len > 3500 or len(chunk) >= 24):
                 embeds.append(discord.Embed(
                     title=f"Cards to fragment ({len(embeds) + 1})",
                     description="\n".join(chunk)
