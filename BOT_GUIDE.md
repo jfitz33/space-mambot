@@ -11,16 +11,17 @@ Welcome to the Space Mambot Command Guide. Here you can find details for every c
 - **/tin** — Buy a tin (promo plus five packs) from the available tin list. (Tins to be released later)
 - **/box** — Buy/open a sealed box of 24 packs.
 
-## Crafting & Fragmenting
-- **/craft** `card` `amount` — Craft individual cards using shards; `amount` optional default is 1, max 3; starter cards and promos are un-craftable.
-- **/fragment** `card` `amount` — Break down owned copies of cards into shards; `amount` optional default is 1, max 100.
-- **/fragment_bulk** `pack` `rarity` `keep` — Fragment owned cards from a pack at a specific rarity while keeping at least the chosen amount; `keep` optional default is 3; example: /fragment_bulk `Blazing Genesis` `Super Rare` `3` will fragment all your excess super rare cards owned from blazing genesis that you own more than 3 copies of
-
 ## Checking Your Inventory
 - **/wallet** `user` — View mambucks and shard balances for yourself or another member; `user` optional default is you.
 - **/collection** `set_number` — View your collection; `set_number` optional to filter by set.
 - **/export_collection** — Get a CSV export of your collection compatible with ygoprodeck. NOTE: For imports into ygopro, you must delete your collection each time prior
 to importing
+- **/card** `cardname` — View card details for a given cardname
+
+## Crafting & Fragmenting
+- **/craft** `card` `amount` — Craft individual cards using shards; `amount` optional default is 1, max 3; starter cards and promos are un-craftable.
+- **/fragment** `card` `amount` — Break down owned copies of cards into shards; `amount` optional default is 1, max 100.
+- **/fragment_bulk** `pack` `rarity` `keep` — Fragment owned cards from a pack at a specific rarity while keeping at least the chosen amount; `keep` optional default is 3; example: /fragment_bulk `Blazing Genesis` `Super Rare` `3` will fragment all your excess super rare cards owned from blazing genesis that you own more than 3 copies of
 
 ## Trading, Binders, and Wishlists
 - **/trade_start** `user` `...items...` — Offer up to five cards and/or shards to start a trade with another user; At least 1 card must be involved with any trade

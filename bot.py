@@ -180,11 +180,11 @@ async def on_member_join(member: discord.Member):
         return
 
     fire_emoji = discord.utils.get(member.guild.emojis, name="Smug")
-    water_emoji = discord.utils.get(member.guild.emojis, name="Prayge")
+    water_emoji = discord.utils.get(member.guild.emojis, name="Mampray")
 
     message = (
         f"Hi {member.mention}! Welcome to the nemesis format server. Rules and info can be found in the appropriate channels. \n"
-        f"To begin, you'll need to join the Fire {fire_emoji or ':Smug:'} or Water {water_emoji or ':Prayge:'} teams, and get your starting card pool. "
+        f"To begin, you'll need to join the Fire {fire_emoji or ':Smug:'} or Water {water_emoji or ':Mampray:'} teams, and get your starting card pool. "
         "To help you decide you can look at the cards in each pack in ⁠card-pool and the banlist in ⁠banlist. "
         "Use /start command to choose your team. Once you've done so, you'll be dm'd a set of packs by me!"
     )
