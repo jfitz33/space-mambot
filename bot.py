@@ -170,6 +170,33 @@ COGS = ["cogs.system", "cogs.packs", "cogs.collection",
         "cogs.daily_rewards", "cogs.duel_queue"]
 
 @bot.event
+async def on_member_join(member: discord.Member):
+    if GUILD_ID and member.guild.id != GUILD_ID:
+        return
+
+    channel = discord.utils.get(member.guild.text_channels, name="welcome")
+    if not channel:
+        logging.warning("[welcome] #welcome channel not found in guild %s", member.guild.id)
+        return
+
+    fire_emoji = discord.utils.get(member.guild.emojis, name="Smug")
+    water_emoji = discord.utils.get(member.guild.emojis, name="Prayge")
+
+    message = (
+        f"Hi {member.mention}! Welcome to the nemesis format server. Rules and info can be found in the appropriate channels. \n"
+        f"To begin, you'll need to join the Fire {fire_emoji or ':Smug:'} or Water {water_emoji or ':Prayge:'} teams, and get your starting card pool. "
+        "To help you decide you can look at the cards in each pack in ⁠card-pool and the banlist in ⁠banlist. "
+        "Use /start command to choose your team. Once you've done so, you'll be dm'd a set of packs by me!"
+    )
+
+    try:
+        await channel.send(message)
+    except discord.Forbidden:
+        logging.warning("[welcome] Missing permissions to send message in #welcome for guild %s", member.guild.id)
+    except discord.HTTPException as exc:
+        logging.warning("[welcome] Failed to send welcome message in guild %s: %s", member.guild.id, exc)
+        
+@bot.event
 async def on_ready():
     # 1) Core init
     db_init(bot.state)

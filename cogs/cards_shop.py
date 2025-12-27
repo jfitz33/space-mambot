@@ -1,6 +1,8 @@
 # cogs/cards_shop.py
+import asyncio
 import os, discord, textwrap
-from typing import List, Dict
+from typing import List, Dict, Optional
+import requests
 from discord.ext import commands
 from discord import app_commands
 from core.feature_flags import is_set1_week1_locked
@@ -10,9 +12,12 @@ from core.cards_shop import (
     find_card_by_print_key,
     card_label_with_badge,
     get_card_rarity,
+    card_set_name,
     register_print_if_missing,
     is_starter_card,
     is_starter_set,
+    canonicalize_rarity,
+    YGOPRO_API_URL,
 )
 from core.tins import is_tin_promo_print
 from core.constants import (
@@ -24,6 +29,7 @@ from core.views import (
     ConfirmSellCardView,
 )
 from core.currency import shard_set_name
+from core.images import rarity_badge, card_art_url_for_card, card_art_path_for_card
 from core.db import (
     db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
     db_shards_add, db_collection_remove_exact_print, db_fragment_yield_for_card,
@@ -257,7 +263,77 @@ class CardsShop(commands.Cog):
     async def ac_craft(self, interaction: discord.Interaction, current: str):
         # Suggest craftable prints from shop index (set-aware, as before)
         return suggest_prints_with_set(self.state, current)
-    
+
+    async def _fetch_cardinfo_from_api(self, card: dict) -> Optional[dict]:
+        loop = asyncio.get_running_loop()
+
+        def _blocking_lookup() -> Optional[dict]:
+            params = {}
+            cid = (card.get("id") or card.get("cardid") or card.get("card_id"))
+            name = (card.get("name") or card.get("cardname") or "").strip()
+            if cid and str(cid).strip().isdigit():
+                params["id"] = str(cid).strip()
+            elif name:
+                params["name"] = name
+            else:
+                return None
+
+            try:
+                resp = requests.get(YGOPRO_API_URL, params=params, timeout=15)
+                resp.raise_for_status()
+                payload = resp.json()
+            except requests.RequestException:
+                return None
+
+            data = payload.get("data") or []
+            if not data:
+                return None
+
+            set_name = card_set_name(card).lower()
+            if set_name:
+                for entry in data:
+                    for card_set in entry.get("card_sets") or []:
+                        if (card_set.get("set_name") or "").strip().lower() == set_name:
+                            return entry
+
+            return data[0]
+
+        return await loop.run_in_executor(None, _blocking_lookup)
+
+    @staticmethod
+    def _extract_card_text(card: dict, api_entry: Optional[dict]) -> str:
+        for key in ("desc", "cardtext", "text"):
+            val = (card.get(key) or "").strip()
+            if val:
+                return val
+
+        if api_entry:
+            api_text = (api_entry.get("desc") or "").strip()
+            if api_text:
+                return api_text
+
+        return "No card text available."
+
+    @staticmethod
+    def _resolve_set_info(card_set: str, api_entry: Optional[dict]) -> tuple[str, str]:
+        pack_name = (card_set or "").strip()
+        rarity = ""
+
+        sets = (api_entry or {}).get("card_sets") or []
+        if sets:
+            target_set = None
+            if pack_name:
+                for card_set_row in sets:
+                    if (card_set_row.get("set_name") or "").strip().lower() == pack_name.lower():
+                        target_set = card_set_row
+                        break
+            if target_set is None:
+                target_set = sets[0]
+
+            pack_name = pack_name or (target_set.get("set_name") or "").strip()
+            rarity = canonicalize_rarity(target_set.get("set_rarity") or "")
+
+        return pack_name, rarity
 
     @app_commands.command(
         name="craft",
@@ -304,6 +380,62 @@ class CardsShop(commands.Cog):
     async def ac_shard(self, interaction: discord.Interaction, current: str):
         # Suggest prints the CALLER owns (they're sharding their own cards)
         return suggest_owned_prints_relaxed(self.state, interaction.user.id, current)
+
+    @app_commands.command(
+        name="card",
+        description="View card details for a specific printing",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.describe(
+        cardname="Choose the exact printing",
+    )
+    @app_commands.autocomplete(cardname=ac_craft)
+    async def card(self, interaction: discord.Interaction, cardname: str):
+        card = find_card_by_print_key(self.state, cardname)
+        if not card:
+            return await interaction.response.send_message("Card not found.", ephemeral=True)
+
+        await interaction.response.defer()
+
+        api_entry = await self._fetch_cardinfo_from_api(card)
+        pack_name, rarity_from_api = self._resolve_set_info(card_set_name(card), api_entry)
+
+        rarity = get_card_rarity(card) or rarity_from_api
+        badge = rarity_badge(self.state, rarity)
+        name = (card.get("name") or card.get("cardname") or "Unknown").strip()
+        card_text = self._extract_card_text(card, api_entry)
+
+        thumb_url = None
+        image_file = None
+
+        art_path = card_art_path_for_card(card)
+        if art_path and art_path.is_file():
+            image_file = discord.File(art_path, filename=art_path.name)
+            thumb_url = f"attachment://{art_path.name}"
+        else:
+            image_url = card_art_url_for_card(card)
+            if not image_url and api_entry:
+                images = api_entry.get("card_images") or []
+                if images:
+                    image_url = images[0].get("image_url") or images[0].get("image_url_small")
+            thumb_url = image_url
+
+        desc_lines = [
+            f"**{name}**",
+            f"Print: {badge} {pack_name or 'Unknown set'}",
+            "",
+            card_text,
+        ]
+        desc_body = "\n".join(desc_lines)
+        if thumb_url:
+            desc_body = f"\n{desc_body}"
+
+        embed = discord.Embed(description=desc_body)
+
+        if thumb_url:
+            embed.set_thumbnail(url=thumb_url)
+
+        await interaction.followup.send(embed=embed, file=image_file)
 
     @app_commands.command(
         name="fragment",
