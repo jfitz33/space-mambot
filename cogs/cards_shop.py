@@ -405,20 +405,19 @@ class CardsShop(commands.Cog):
         name = (card.get("name") or card.get("cardname") or "Unknown").strip()
         card_text = self._extract_card_text(card, api_entry)
 
-        thumb_url = None
+        image_url = None
         image_file = None
 
         art_path = card_art_path_for_card(card)
         if art_path and art_path.is_file():
             image_file = discord.File(art_path, filename=art_path.name)
-            thumb_url = f"attachment://{art_path.name}"
+            image_url = f"attachment://{art_path.name}"
         else:
             image_url = card_art_url_for_card(card)
             if not image_url and api_entry:
                 images = api_entry.get("card_images") or []
                 if images:
                     image_url = images[0].get("image_url") or images[0].get("image_url_small")
-            thumb_url = image_url
 
         desc_lines = [
             f"**{name}**",
@@ -427,15 +426,17 @@ class CardsShop(commands.Cog):
             card_text,
         ]
         desc_body = "\n".join(desc_lines)
-        if thumb_url:
-            desc_body = f"\n{desc_body}"
 
-        embed = discord.Embed(description=desc_body)
+        image_embed = None
+        if image_url:
+            image_embed = discord.Embed()
+            image_embed.set_image(url=image_url)
 
-        if thumb_url:
-            embed.set_thumbnail(url=thumb_url)
+        info_embed = discord.Embed(description=desc_body)
 
-        await interaction.followup.send(embed=embed, file=image_file)
+        embeds = [e for e in (image_embed, info_embed) if e is not None]
+
+        await interaction.followup.send(embeds=embeds, file=image_file)
 
     @app_commands.command(
         name="fragment",
