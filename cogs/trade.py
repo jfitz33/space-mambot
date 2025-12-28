@@ -309,29 +309,6 @@ class Trade(commands.Cog):
                 break
         return choices
 
-    def _rows_to_choices(self, rows: List[dict], current: str, qty_label: str) -> list[app_commands.Choice[str]]:
-        cur = (current or "").lower()
-        choices: list[app_commands.Choice[str]] = []
-        for row in rows:
-            card = {
-                "cardname": row.get("card_name"),
-                "cardrarity": row.get("card_rarity"),
-                "cardset": row.get("card_set"),
-                "cardcode": row.get("card_code"),
-                "cardid": row.get("card_id"),
-            }
-            key = register_print_if_missing(self.state, card)
-            rarity = (row.get("card_rarity") or "").upper()
-            set_name = row.get("card_set") or "Unknown"
-            qty = row.get(qty_label, row.get("qty", 0))
-            label = f"{row.get('card_name')} — {set_name} [{rarity}] (x{qty})"
-            if cur and cur not in label.lower():
-                continue
-            choices.append(app_commands.Choice(name=label[:100], value=key))
-            if len(choices) >= 25:
-                break
-        return choices
-
     async def _build_collection_style_embeds(self, title: str, rows: List[dict], qty_label: str) -> List[discord.Embed]:
         formatted_rows: List[tuple] = []
         for row in rows:
@@ -387,8 +364,28 @@ class Trade(commands.Cog):
         return self._suggest_prints_any(current)
 
     async def ac_wishlist_entry(self, interaction: discord.Interaction, current: str):
+        cur = (current or "").lower()
         rows = db_wishlist_list(self.state, interaction.user.id)
-        return self._rows_to_choices(rows, current, "qty")
+        choices: list[app_commands.Choice[str]] = []
+        for row in rows:
+            card = {
+                "cardname": row.get("card_name"),
+                "cardrarity": row.get("card_rarity"),
+                "cardset": row.get("card_set"),
+                "cardcode": row.get("card_code"),
+                "cardid": row.get("card_id"),
+            }
+            key = register_print_if_missing(self.state, card)
+            label = card_label(card)
+            qty = int(row.get("qty", 0))
+            if qty > 0:
+                label = f"{label} ×{qty}"
+            if cur and cur not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=key))
+            if len(choices) >= 25:
+                break
+        return choices
 
     async def ac_binder_entry(self, interaction: discord.Interaction, current: str):
         cur = (current or "").lower()
@@ -441,6 +438,28 @@ class Trade(commands.Cog):
         except ValueError as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return
+        
+        existing = 0
+        rows = db_wishlist_list(self.state, interaction.user.id)
+        for row in rows:
+            row_key = register_print_if_missing(self.state, {
+                "cardname": row.get("card_name"),
+                "cardrarity": row.get("card_rarity"),
+                "cardset": row.get("card_set"),
+                "cardcode": row.get("card_code"),
+                "cardid": row.get("card_id"),
+            })
+            if row_key == name:
+                existing = int(row.get("qty", 0))
+                break
+
+        if existing == 0 and len(rows) >= 30:
+            await interaction.response.send_message(
+                "❌ Your wishlist is full (30 unique cards). Remove some cards before adding new ones.",
+                ephemeral=True,
+            )
+            return
+        
         total = db_wishlist_add(self.state, interaction.user.id, item, copies)
         await interaction.response.send_message(
             f"✅ Added **x{copies}** {card_label(card)} to your wishlist. Total desired: **{total}**.",
@@ -482,20 +501,40 @@ class Trade(commands.Cog):
         )
 
     @app_commands.command(
-        name="wishlist_display",
+        name="wishlist",
         description="Show a player's wishlist in this channel."
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(user="Player whose wishlist to show (defaults to you)")
-    async def wishlist_display(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
+    async def wishlist(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
         target = user or interaction.user
         rows = db_wishlist_list(self.state, target.id)
-        embeds = await self._build_collection_style_embeds(
-            f"{target.display_name}'s Wishlist", rows, "qty"
+        badges = await build_badge_tokens_from_state(self.bot, self.state)
+        sections = group_and_format_rows([
+            (
+                row.get("card_name"),
+                int(row.get("qty", 0)),
+                row.get("card_rarity"),
+                row.get("card_set"),
+                row.get("card_code"),
+                row.get("card_id"),
+            ) for row in rows
+        ], self.state, badges)
+
+        if not sections:
+            embed = discord.Embed(title=f"{target.display_name}'s Wishlist", description="(No entries)")
+            await interaction.response.send_message(embed=embed)
+            return
+
+        desc_lines = []
+        for header, lines in sections:
+            desc_lines.append(f"\n**{header}**")
+            desc_lines.extend(lines)
+        embed = discord.Embed(
+            title=f"{target.display_name}'s Wishlist",
+            description="\n".join(desc_lines)
         )
-        await interaction.response.send_message(embeds=embeds[:10])
-        for i in range(10, len(embeds), 10):
-            await interaction.followup.send(embeds=embeds[i:i+10])
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
         name="wishlist_clear",

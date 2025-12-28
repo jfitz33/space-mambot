@@ -34,9 +34,9 @@ to importing
 - **/binder_add** `card` `copies` — Move owned cards into your binder; `copies` optional default is 1, capped by how many you own.
 - **/binder_remove** `card` `copies` — Remove cards from your binder; `copies` optional default is 1.
 - **/binder_clear** — Empty your binder completely.
+- **/wishlist** `user` — Post the wishlist for you or another player; `user` optional default is you.
 - **/wishlist_add** `card` `copies` — Add desired cards to your wishlist; `copies` optional default is 1.
 - **/wishlist_remove** `card` `copies` — Remove cards from your wishlist; `copies` optional default is all copies in your wishlist currently.
-- **/wishlist_display** `user` — Post the wishlist for you or another player; `user` optional default is you.
 - **/wishlist_clear** — Clear your entire wishlist.
 
 ## Daily Rewards
