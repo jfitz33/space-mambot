@@ -6,15 +6,29 @@ from discord.ext import commands
 from discord import app_commands
 
 from core.db import db_get_collection
+from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, set_id_for_pack
 from core.constants import PACKS_BY_SET, set_id_for_pack
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
-SET_CHOICES: List[app_commands.Choice[int]] = [
-    app_commands.Choice(name=f"Set {set_id}", value=set_id)
-    for set_id in sorted(PACKS_BY_SET)
-]
+STARTER_DECK_CHOICE_VALUE = 0
+
+
+def _build_set_choices(max_set_id: int) -> List[app_commands.Choice[int]]:
+    choices: List[app_commands.Choice[int]] = [
+        app_commands.Choice(name="Starter decks", value=STARTER_DECK_CHOICE_VALUE)
+    ]
+
+    for set_id in sorted(PACKS_BY_SET):
+        if set_id > max_set_id:
+            continue
+        choices.append(app_commands.Choice(name=f"Set {set_id}", value=set_id))
+
+    return choices
+
+
+SET_CHOICES: List[app_commands.Choice[int]] = _build_set_choices(CURRENT_ACTIVE_SET)
 
 def set_id_for_source(state: Any, set_name: str) -> int | None:
     """Return the set ID for a pack/tin name."""
@@ -229,7 +243,14 @@ class Collection(commands.Cog):
             return
         
         selected_set_id = set_number.value if set_number else None
-        if selected_set_id is not None:
+        if selected_set_id == STARTER_DECK_CHOICE_VALUE:
+            rows = [row for row in rows if section_kind(self.bot.state, row[3]) == "starter"]
+            if not rows:
+                await interaction.edit_original_response(
+                    content=f"{target.mention} has no starter decks."
+                )
+                return
+        elif selected_set_id is not None:
             rows = [row for row in rows if set_id_for_source(self.bot.state, row[3]) == selected_set_id]
             if not rows:
                 await interaction.edit_original_response(
