@@ -536,7 +536,8 @@ class Trade(commands.Cog):
             return
 
         existing = 0
-        for row in db_binder_list(self.state, interaction.user.id):
+        rows = db_binder_list(self.state, interaction.user.id)
+        for row in rows:
             row_key = register_print_if_missing(self.state, {
                 "cardname": row.get("card_name"),
                 "cardrarity": row.get("card_rarity"),
@@ -547,6 +548,13 @@ class Trade(commands.Cog):
             if row_key == name:
                 existing = int(row.get("qty", 0))
                 break
+        
+        if existing == 0 and len(rows) >= 30:
+            await interaction.response.send_message(
+                "❌ Your binder is full (30 unique cards). Remove some cards before adding new ones.",
+                ephemeral=True,
+            )
+            return
 
         check_item = dict(item)
         check_item["qty"] = existing + copies
@@ -607,12 +615,32 @@ class Trade(commands.Cog):
     async def binder(self, interaction: discord.Interaction, user: Optional[discord.User] = None):
         target = user or interaction.user
         rows = db_binder_list(self.state, target.id)
-        embeds = await self._build_collection_style_embeds(
-            f"{target.display_name}'s Binder", rows, "qty"
+        badges = await build_badge_tokens_from_state(self.bot, self.state)
+        sections = group_and_format_rows([
+            (
+                row.get("card_name"),
+                int(row.get("qty", 0)),
+                row.get("card_rarity"),
+                row.get("card_set"),
+                row.get("card_code"),
+                row.get("card_id"),
+            ) for row in rows
+        ], self.state, badges)
+
+        if not sections:
+            embed = discord.Embed(title=f"{target.display_name}'s Binder", description="(No entries)")
+            await interaction.response.send_message(embed=embed)
+            return
+
+        desc_lines = []
+        for header, lines in sections:
+            desc_lines.append(f"\n**{header}**")
+            desc_lines.extend(lines)
+        embed = discord.Embed(
+            title=f"{target.display_name}'s Binder",
+            description="\n".join(desc_lines)
         )
-        await interaction.response.send_message(embeds=embeds[:10])
-        for i in range(10, len(embeds), 10):
-            await interaction.followup.send(embeds=embeds[i:i+10])
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
         name="search",
