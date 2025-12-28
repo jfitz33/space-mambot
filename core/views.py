@@ -14,6 +14,7 @@ from core.db import (
     db_collection_remove_exact_print,
     _blank_to_none,
     db_collection_debug_dump,
+    db_collection_list_owned_prints,
     db_shards_add,
     db_shards_try_spend,
     db_fragment_yield_for_card,
@@ -782,9 +783,43 @@ class ConfirmSellCardView(discord.ui.View):
             is_starter_card,
             is_starter_set,
         )
-        from core.db import db_collection_remove_exact_print, db_shards_add, db_shards_get
+        from core.db import (
+            db_collection_list_owned_prints,
+            db_collection_remove_exact_print,
+            db_shards_add,
+            db_shards_get,
+        )
         from core.constants import SHARD_YIELD_BY_RARITY, set_id_for_pack
         from core.currency import shard_set_name
+
+        def _owned_qty_for_requested_print() -> int:
+            """Find the owned quantity for the exact print being fragmented."""
+
+            def _norm(val: str | None) -> str:
+                return (val or "").strip().lower()
+
+            name = _norm(card.get("name") or card.get("cardname"))
+            rarity_val = _norm(card.get("rarity") or card.get("cardrarity"))
+            code_val = _norm(card.get("code") or card.get("cardcode"))
+            id_val = _norm(card.get("id") or card.get("cardid"))
+            set_val = _norm(set_name)
+
+            rows = db_collection_list_owned_prints(
+                self.state,
+                self.requester.id,
+                name_filter=name,
+                limit=200,
+            )
+            for row in rows:
+                if (
+                    _norm(row.get("name")) == name
+                    and _norm(row.get("rarity")) == rarity_val
+                    and _norm(row.get("set")) == set_val
+                    and _norm(row.get("code")) == code_val
+                    and _norm(row.get("id")) == id_val
+                ):
+                    return int(row.get("qty") or 0)
+            return 0
 
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
@@ -832,6 +867,15 @@ class ConfirmSellCardView(discord.ui.View):
         if yield_each is None:
             self._processing = False
             await _finalize_interaction_message(interaction, "❌ This printing cannot be fragmented.")
+            return
+
+        owned = _owned_qty_for_requested_print()
+        if owned < self.amount:
+            self._processing = False
+            await _finalize_interaction_message(
+                interaction,
+                f"❌ Not enough copies to fragment. Need **{self.amount}**, you have **{owned}**.",
+            )
             return
 
         # remove exact print from collection

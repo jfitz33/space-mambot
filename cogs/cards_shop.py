@@ -583,7 +583,7 @@ class CardsShop(commands.Cog):
     @app_commands.guilds(GUILD)
     @app_commands.describe(
         card="Choose the exact printing you own",
-        amount="How many copies (max 10)",
+        amount="How many copies (max 100)",
     )
     @app_commands.autocomplete(card=ac_shard)
     async def fragment(
