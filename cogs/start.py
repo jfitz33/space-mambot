@@ -141,7 +141,6 @@ class StarterConfirmationView(View):
         status_message = "Sending you your packs via DM"
         current_content = None
         current_embeds: list[discord.Embed] = []
-        current_attachments: list[discord.Attachment] = []
         message = getattr(interaction, "message", None) or getattr(self, "message", None)
 
         if not message:
@@ -153,7 +152,13 @@ class StarterConfirmationView(View):
         if message:
             current_embeds = [deepcopy(e) for e in (getattr(message, "embeds", []) or [])]
             current_content = getattr(message, "content", None)
-            current_attachments = list(getattr(message, "attachments", []) or [])
+            # Reuse the existing embed imagery without reattaching the file to
+            # the message (which can otherwise display a duplicate pack image).
+            if current_embeds and current_embeds[0].image:
+                img = current_embeds[0].image
+                img_url = getattr(img, "url", None) or getattr(img, "proxy_url", None)
+                if img_url:
+                    current_embeds[0].set_image(url=img_url)
 
         if not current_embeds and self._confirmation_embed:
             current_embeds = [deepcopy(self._confirmation_embed)]
@@ -171,7 +176,7 @@ class StarterConfirmationView(View):
             interaction,
             content=current_content,
             embeds=current_embeds or None,
-            attachments=current_attachments or None,
+            attachments=[],
             view=None,
         )
 
