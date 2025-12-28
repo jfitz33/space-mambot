@@ -61,13 +61,6 @@ FRAGMENTABLE_RARITIES = ["common", "rare", "super", "ultra", "secret"]
 GAMBA_DEFAULT_SHARD_SET_ID = 1
 GAMBA_PRIZES = [
     {
-        "key": "card_super_rare",
-        "weight": 0.35,
-        "prize_type": "card",
-        "rarity": "SUPER RARE",
-        "description": ":rar_super: Super",
-    },
-    {
         "key": "cards_super_rare_bundle",
         "weight": 0.25,
         "prize_type": "cards",
@@ -84,15 +77,22 @@ GAMBA_PRIZES = [
     },
     {
         "key": "cards_ultra_rare_bundle",
-        "weight": 0.025,
+        "weight": 0.10,
         "prize_type": "cards",
         "rarity": "ULTRA RARE",
         "amount": 2,
         "description": ":rar_ultra: Ultra x2",
     },
     {
+        "key": "card_secret_rare",
+        "weight": 0.05,
+        "prize_type": "card",
+        "rarity": "SECRET RARE",
+        "description": ":rar_secret: Secret",
+    },
+    {
         "key": "shards_100_frostfire",
-        "weight": 0.10,
+        "weight": 0.25,
         "prize_type": "shards",
         "amount": 100,
         "shard_type": "frostfire",
@@ -100,7 +100,7 @@ GAMBA_PRIZES = [
     },
     {
         "key": "shards_500_frostfire",
-        "weight": 0.025,
+        "weight": 0.10,
         "prize_type": "shards",
         "amount": 500,
         "shard_type": "frostfire",

@@ -28,6 +28,7 @@ from core.cards_shop import (
     resolve_card_set,
     ensure_shop_index,
 )
+from cogs.cards_shop import suggest_owned_prints_relaxed
 from core.currency import shard_set_name, SHARD_SET_NAMES
 from cogs.collection import (
     build_badge_tokens_from_state,
@@ -271,6 +272,9 @@ class Trade(commands.Cog):
                 break
         return choices
     
+    async def ac_binder_add_owned(self, interaction: discord.Interaction, current: str):
+        return suggest_owned_prints_relaxed(self.state, interaction.user.id, current)
+
     def _known_shard_sets(self) -> list[tuple[int, str]]:
         """
         [(set_id, pretty_name)] for shard types that actually exist now.
@@ -387,8 +391,28 @@ class Trade(commands.Cog):
         return self._rows_to_choices(rows, current, "qty")
 
     async def ac_binder_entry(self, interaction: discord.Interaction, current: str):
+        cur = (current or "").lower()
         rows = db_binder_list(self.state, interaction.user.id)
-        return self._rows_to_choices(rows, current, "qty")
+        choices: list[app_commands.Choice[str]] = []
+        for row in rows:
+            card = {
+                "cardname": row.get("card_name"),
+                "cardrarity": row.get("card_rarity"),
+                "cardset": row.get("card_set"),
+                "cardcode": row.get("card_code"),
+                "cardid": row.get("card_id"),
+            }
+            key = register_print_if_missing(self.state, card)
+            label = card_label(card)
+            qty = int(row.get("qty", 0))
+            if qty > 0:
+                label = f"{label} ×{qty}"
+            if cur and cur not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=key))
+            if len(choices) >= 25:
+                break
+        return choices
 
     # ---------- Commands ----------
 
@@ -494,7 +518,7 @@ class Trade(commands.Cog):
         name="Card to move into your binder",
         copies="Number of copies to add (default 1)",
     )
-    @app_commands.autocomplete(name=ac_card_owned)
+    @app_commands.autocomplete(name=ac_binder_add_owned)
     async def binder_add(
         self,
         interaction: discord.Interaction,
