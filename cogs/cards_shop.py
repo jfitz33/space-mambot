@@ -36,13 +36,13 @@ from core.db import (
     db_shards_get
 )
 from core.pricing import craft_cost_for_card
+from core.cards_shop import ensure_shop_index, card_label, _sig_for_resolution
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 
 def suggest_prints_with_set(state, query: str, limit: int = 25):
-    from core.cards_shop import ensure_shop_index, card_label, _sig_for_resolution
     ensure_shop_index(state)
     q_tokens = [t for t in (query or "").lower().split() if t]
 
@@ -140,7 +140,7 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
         if is_starter_card(card):
             continue
 
-        label = card_label_with_badge(state, card)
+        label = card_label(card)
         if qty > 0:
             label = f"{label} ×{qty}"
 
@@ -185,10 +185,13 @@ def _set_sort_key(set_name: str) -> tuple[int, str]:
     return (set_id_for_pack(set_name) or 9999, (set_name or "").lower())
 
 def _sort_rows_by_set(rows: List[Dict]) -> List[Dict]:
+    rarity_rank = {r: i for i, r in enumerate(RARITY_ORDER)}
+
     return sorted(
         rows,
         key=lambda row: (
             _set_sort_key(row.get("set") or ""),
+            rarity_rank.get(row.get("rarity"), len(rarity_rank)),
             (row.get("name") or "").lower(),
         ),
     )
@@ -680,9 +683,10 @@ class CardsShop(commands.Cog):
                 # keep it short; you can expand this if you store reason/expiry, etc.
                 boost = " (override)"
 
+            badge = rarity_badge(self.state, row.get("rarity"))
             pack_suffix = f" [{shorten(set_name, 32)}]" if set_name else ""
             preview_lines.append(
-                f"• x{qty_to_frag} {shorten(row['name'], 64)}{pack_suffix}"
+                f"{badge} x{qty_to_frag} {shorten(row['name'], 64)}{pack_suffix}"
             )
 
             enriched_rows.append({**row, "yield_each": int(yield_each)})
