@@ -201,6 +201,12 @@ class DuelQueue(commands.Cog):
 
         if accepted:
             if pair_ids:
+                opponent_id = pair_ids[1]
+                user = self.bot.get_user(waiting_user_id)
+                if user:
+                    opponent = self.bot.get_user(opponent_id)
+                    opponent_mention = opponent.mention if opponent else f"<@{opponent_id}>"
+                    await user.send(f"You've been paired vs {opponent_mention}, good luck!")
                 await self._announce_pair(pair_ids[0], pair_ids[1], channel)
             else:
                 user = self.bot.get_user(waiting_user_id)

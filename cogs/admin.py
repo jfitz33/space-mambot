@@ -605,31 +605,10 @@ class Admin(commands.Cog):
         except Exception as e:
             print("[admin] quest tick error during admin_report_loss:", e)
 
-        lpct = self._win_pct(loser_after)
-        wpct = self._win_pct(winner_after)
-
         embed = discord.Embed(
             title="Admin Match Recorded",
             description=f"**{loser.display_name}** lost to **{winner.display_name}**.",
             color=0xCC3333,
-        )
-        embed.add_field(
-            name=f"{loser.display_name} — Record",
-            value=(
-                f"W: **{loser_after['wins']}**\n"
-                f"L: **{loser_after['losses']}**\n"
-                f"Win%: **{lpct:.1f}%**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name=f"{winner.display_name} — Record",
-            value=(
-                f"W: **{winner_after['wins']}**\n"
-                f"L: **{winner_after['losses']}**\n"
-                f"Win%: **{wpct:.1f}%**"
-            ),
-            inline=True,
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
