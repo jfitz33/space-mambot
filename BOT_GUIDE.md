@@ -92,6 +92,7 @@ Admin-only commands for the bot.
 ## Stats & Teams
 - **/admin_report_loss** `loser` `winner` — Manually record a match result for stats; both players must be non-bots.
 - **/admin_revert_result** `loser` `winner` — Roll back the most recent result between two players (undoes stats and quest ticks).
+- **/admin_cancel_match** `player_a` `player_b` — Cancel an active duel pairing so the players can requeue.
 - **/team_award** `member` `points` — Award team points to a member based on their team role.
 - **/team_split_points** — Split duel team points based on recorded wins for the active set.
 - **/team_reset_points** `set_id` `member` — Clear team point splits for a set (optionally for a single member).

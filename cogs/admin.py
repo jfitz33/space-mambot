@@ -727,6 +727,74 @@ class Admin(commands.Cog):
                 f"↩️ Admin reverted a result: removed the loss for **{loser.display_name}** vs **{winner.display_name}**."
             )
 
+    @app_commands.command(
+        name="admin_cancel_match",
+        description="(Admin) Cancel a current duel pairing so players can requeue.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        player_a="First player in the pairing",
+        player_b="Second player in the pairing",
+    )
+    async def admin_cancel_match(
+        self,
+        interaction: discord.Interaction,
+        player_a: discord.Member,
+        player_b: discord.Member,
+    ) -> None:
+        if player_a.id == player_b.id:
+            await interaction.response.send_message(
+                "You must choose two different players.", ephemeral=True
+            )
+            return
+
+        queue = interaction.client.get_cog("DuelQueue")
+        if queue is None or not hasattr(queue, "clear_pairing"):
+            await interaction.response.send_message(
+                "❌ Duel queue is unavailable.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            is_pair = False
+            if hasattr(queue, "is_active_pair"):
+                is_pair = await queue.is_active_pair(player_a.id, player_b.id)
+
+            if not is_pair:
+                await interaction.followup.send(
+                    "❌ No active pairing found for those players.", ephemeral=True
+                )
+                return
+
+            cleared = await queue.clear_pairing(player_a.id, player_b.id)
+        except Exception:
+            logger.warning("Failed to cancel duel pairing", exc_info=True)
+            await interaction.followup.send(
+                "❌ Failed to cancel the pairing due to an unexpected error.",
+                ephemeral=True,
+            )
+            return
+
+        if not cleared:
+            await interaction.followup.send(
+                "❌ No active pairing found for those players.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"✅ Cancelled the pairing between {player_a.mention} and {player_b.mention}.",
+            ephemeral=True,
+        )
+
+        if interaction.channel:
+            await interaction.channel.send(
+                f"🚫 Admin cancelled the duel pairing between **{player_a.display_name}** and **{player_b.display_name}**."
+            )
+
     # ---- Add currency -------------------------------------------------------
     @app_commands.command(name="wallet_add", description="(Admin) Add currency to a user's wallet")
     @app_commands.guilds(GUILD)
