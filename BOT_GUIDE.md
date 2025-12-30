@@ -119,3 +119,4 @@ Admin-only commands for the bot.
 - **/admin_fragment_override_set** `card` `yield` `reason` — Temporarily override shard yield for a printing; `reason` optional default is not specified.
 - **/admin_fragment_override_clear** `target` — Clear shard yield overrides by printing or by card plus set.
 - **/admin_fragment_override_list** — List active shard-yield overrides.
+- **/admin_end_set** `mambuck_to_shards` — Convert all mambuck balances into shards for the active set at the given ratio and clear all queued daily quest entries.
