@@ -25,6 +25,8 @@ from core.db import (
     db_team_points_clear,
     db_wheel_tokens_clear,
     db_wishlist_clear,
+    db_convert_all_mambucks_to_shards,
+    db_clear_all_daily_quest_slots,
 )
 from core.quests.schema import db_reset_all_user_quests
 from core.quests.timekeys import daily_key, now_et
@@ -1369,6 +1371,49 @@ class Admin(commands.Cog):
             ),
             ephemeral=True,
         )
+    
+    @app_commands.command(
+        name="admin_end_set",
+        description="(Admin) Convert mambucks to shards for the active set and clear queued daily quests",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        mambuck_to_shards="Number of shards granted per mambuck when converting balances",
+    )
+    async def admin_end_set(
+        self,
+        interaction: discord.Interaction,
+        mambuck_to_shards: app_commands.Range[int, 1, None],
+    ):
+        """Prepare for a new set by converting mambucks and clearing daily quest queues."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        conversion = db_convert_all_mambucks_to_shards(
+            self.state, CURRENT_ACTIVE_SET, int(mambuck_to_shards)
+        )
+        cleared_slots = db_clear_all_daily_quest_slots(self.state)
+
+        shard_title = shard_set_name(CURRENT_ACTIVE_SET)
+        converted_users = int(conversion.get("users", 0))
+        total_mambucks = int(conversion.get("total_mambucks", 0))
+        total_shards = int(conversion.get("total_shards", 0))
+
+        if converted_users == 0 or total_mambucks == 0:
+            conversion_line = (
+                f"ℹ️ No mambuck balances needed conversion. Active shard type: **{shard_title}**."
+            )
+        else:
+            conversion_line = (
+                f"✅ Converted **{total_mambucks}** mambucks from **{converted_users}** user(s) "
+                f"into **{total_shards} {shard_title}** at **1 → {int(mambuck_to_shards)}**."
+            )
+
+        quest_line = f"🧹 Cleared **{cleared_slots}** queued daily quest entr{'y' if cleared_slots == 1 else 'ies'}."
+
+        await interaction.followup.send("\n".join([conversion_line, quest_line]), ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

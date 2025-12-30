@@ -1632,6 +1632,13 @@ def db_daily_quest_pack_reset_total(state, quest_id: str) -> int:
 
     return int(row[0]) if row and row[0] is not None else 0
 
+def db_clear_all_daily_quest_slots(state) -> int:
+    """Delete all queued daily quest slots for all users."""
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute("DELETE FROM user_daily_quest_slots")
+        return cur.rowcount or 0
+
 def db_starter_daily_reset_total(state) -> int:
     now = int(time.time())
     with sqlite3.connect(state.db_path) as conn, conn:
@@ -1922,6 +1929,47 @@ def db_shards_add(state, user_id: int, set_id: int, d_shards: int) -> None:
             "UPDATE wallet_shards SET shards = shards + ? WHERE user_id=? AND set_id=?",
             (d, str(user_id), int(set_id))
         )
+
+def db_convert_all_mambucks_to_shards(state, set_id: int, shards_per_mambuck: int) -> dict:
+    """Convert all mambucks to shards for the given set.
+
+    Returns a summary dict with keys: users, total_mambucks, total_shards.
+    """
+
+    ratio = int(shards_per_mambuck or 0)
+    if ratio <= 0:
+        return {"users": 0, "total_mambucks": 0, "total_shards": 0}
+
+    set_id = int(set_id)
+    with conn(state.db_path) as c, c:
+        rows = c.execute(
+            "SELECT user_id, mambucks FROM wallet WHERE COALESCE(mambucks,0) > 0"
+        ).fetchall()
+
+        if not rows:
+            return {"users": 0, "total_mambucks": 0, "total_shards": 0}
+
+        total_mb = 0
+        total_shards = 0
+        for user_id, mb in rows:
+            m = int(mb or 0)
+            if m <= 0:
+                continue
+            shards = m * ratio
+            total_mb += m
+            total_shards += shards
+            c.execute(
+                "INSERT OR IGNORE INTO wallet_shards(user_id,set_id,shards) VALUES (?,?,0)",
+                (str(user_id), set_id),
+            )
+            c.execute(
+                "UPDATE wallet_shards SET shards = shards + ? WHERE user_id=? AND set_id=?",
+                (shards, str(user_id), set_id),
+            )
+
+        c.execute("UPDATE wallet SET mambucks = 0 WHERE COALESCE(mambucks,0) > 0")
+
+        return {"users": len(rows), "total_mambucks": total_mb, "total_shards": total_shards}
 
 def db_shards_try_spend(state, user_id: int, set_id: int, amount: int) -> dict | None:
     """Atomically spend ``amount`` shards for ``set_id`` if the user has enough.
