@@ -2,10 +2,10 @@
 import os, asyncio, discord
 from discord.ext import commands
 from discord import app_commands
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from core.constants import TEAM_ROLE_NAMES
+from core.daily_rollover import rollover_day_key, seconds_until_next_rollover
 from core.db import (
     db_init_wheel_tokens,
     db_wheel_tokens_grant_daily,
@@ -16,20 +16,11 @@ from core.db import (
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
-ET = ZoneInfo("America/New_York")
-
-def _today_key_et() -> str:
-    return datetime.now(ET).strftime("%Y%m%d")
-
+def _today_key() -> str:
+    return rollover_day_key()
 
 def _day_key_for(dt: datetime) -> str:
-    return dt.astimezone(ET).strftime("%Y%m%d")
-
-def _seconds_until_next_et_midnight() -> float:
-    now = datetime.now(ET)
-    tomorrow = (now + timedelta(days=1)).date()
-    target = datetime.combine(tomorrow, datetime.min.time(), tzinfo=ET)
-    return max(1.0, (target - now).total_seconds())
+    return rollover_day_key(dt)
 
 class GambaChips(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -52,7 +43,7 @@ class GambaChips(commands.Cog):
                 pass
 
     async def _grant_once(self, *, day_key: str | None = None):
-        day_key = day_key or _today_key_et()
+        day_key = day_key or _today_key()
         self._last_grant_day_key = day_key
         awarded = 0
         seen_members = 0
@@ -76,22 +67,22 @@ class GambaChips(commands.Cog):
             )
 
     async def run_midnight_grant(self, *, day_key: str | None = None):
-        """Run the midnight grant once, optionally using a custom ET day key."""
+        """Run the configured rollover grant once, optionally using a custom day key."""
         try:
             await self._grant_once(day_key=day_key)
         except Exception as e:
             print(f"[gamba] manual grant error: {e}")
 
     async def _grant_loop(self):
-        # On startup, attempt a grant in case we restarted after midnight
+        # On startup, attempt a grant in case we restarted after a rollover
         try:
             await self._grant_once()
         except Exception as e:
             print(f"[gamba] initial grant error: {e}")
-        # Then wait until the next ET midnight each time
+        # Then wait until the next configured rollover each time
         while True:
             try:
-                await asyncio.sleep(_seconds_until_next_et_midnight())
+                await asyncio.sleep(seconds_until_next_rollover())
                 await self._grant_once()
             except asyncio.CancelledError:
                 raise
