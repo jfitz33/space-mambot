@@ -561,6 +561,35 @@ class Admin(commands.Cog):
                 f"{name} — Team: **{team_label}**, Total: **{total_points:,}**, Duel wins: **{duel_points:,}**"
             )
 
+        if user_filter_id is None:
+            team_totals: dict[str, int] = {}
+            for info in combined.values():
+                team_label = info.get("team") or "Unassigned"
+                total_points = int(info.get("total") or 0)
+                team_totals[team_label] = team_totals.get(team_label, 0) + total_points
+
+            team_lines = ["", "Team totals:"]
+            for team_label, points in sorted(
+                team_totals.items(), key=lambda item: (-item[1], item[0].lower())
+            ):
+                team_lines.append(f"• **{team_label}** — **{points:,}** points")
+
+            lines.extend(team_lines)
+
+            duel_totals_by_team: dict[str, int] = {}
+            for info in combined.values():
+                team_label = info.get("team") or "Unassigned"
+                duel_points = int(info.get("duel") or 0)
+                duel_totals_by_team[team_label] = duel_totals_by_team.get(team_label, 0) + duel_points
+
+            duel_lines = ["", "Points from dueling totals:"]
+            for team_label, points in sorted(
+                duel_totals_by_team.items(), key=lambda item: (-item[1], item[0].lower())
+            ):
+                duel_lines.append(f"• **{team_label}** — **{points:,}** duel points")
+
+            lines.extend(duel_lines)
+
         embed = discord.Embed(
             title="Team Points Overview",
             description="\n".join(lines),

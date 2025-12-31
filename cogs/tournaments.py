@@ -1881,10 +1881,11 @@ class Tournaments(commands.Cog):
 
     @app_commands.command(
         name="tournament_add_participant",
-        description="Register a Discord member into a Challonge tournament.",
+        description="(Admin) Register a Discord member into a Challonge tournament.",
     )
     @app_commands.guilds(GUILD)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         tournament_id="The Challonge tournament identifier (slug or ID).",
         member="Discord member to register.",
@@ -2034,66 +2035,12 @@ class Tournaments(commands.Cog):
         await interaction.followup.send("\n".join(message_lines), ephemeral=True)
 
     @app_commands.command(
-        name="challonge_add_role",
-        description="Register every non-bot member of a Discord role to a Challonge tournament.",
-    )
-    @app_commands.guilds(GUILD)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(
-        tournament_id="The Challonge tournament identifier (slug or ID).",
-        role="Role whose members should be registered.",
-    )
-    async def challonge_add_role(
-        self,
-        interaction: discord.Interaction,
-        tournament_id: str,
-        role: discord.Role,
-    ) -> None:
-        members = [member for member in role.members if not member.bot]
-        if not members:
-            await interaction.response.send_message(
-                "That role has no eligible members to register.", ephemeral=True
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        successes: list[str] = []
-        failures: list[str] = []
-
-        for member in members:
-            try:
-                participant = await self._create_challonge_participant(
-                    tournament_id,
-                    name=member.display_name,
-                    discord_id=member.id,
-                )
-            except RuntimeError as exc:
-                failures.append(f"{member.display_name}: {exc}")
-                continue
-
-            successes.append(participant.get("name") or member.display_name)
-
-        message_lines = [
-            f"Registered {len(successes)} member(s) from {role.mention} to `{tournament_id}`.",
-        ]
-        if failures:
-            message_lines.append("Some members could not be registered:")
-            for failure in failures[:10]:
-                message_lines.append(f"- {failure}")
-            if len(failures) > 10:
-                message_lines.append(
-                    f"...and {len(failures) - 10} more failure(s). Check the logs for details."
-                )
-
-        await interaction.followup.send("\n".join(message_lines), ephemeral=True)
-
-    @app_commands.command(
         name="tournament_shuffle_seeds",
-        description="Shuffle the seeding for a pending single or double elimination tournament.",
+        description="(Admin) Shuffle the seeding for a pending single or double elimination tournament.",
     )
     @app_commands.guilds(GUILD)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(tournament_id="The Challonge tournament identifier (slug or ID).")
     async def tournament_shuffle_seeds(
         self,
