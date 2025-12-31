@@ -1,4 +1,4 @@
-import os, math, discord
+import os, discord
 from typing import Optional
 from discord.ext import commands
 from discord import app_commands
@@ -90,31 +90,10 @@ class Stats(commands.Cog):
         except Exception as e:
             print("[stats] quest tick error:", e)
 
-        lpct = _win_pct(loser_after["wins"], loser_after["games"])
-        wpct = _win_pct(winner_after["wins"], winner_after["games"])
-
         embed = discord.Embed(
             title="Match Result Recorded",
             description=f"**{winner.display_name}** defeated **{loser.display_name}**.",
             color=0xCC3333,
-        )
-        embed.add_field(
-            name=f"{loser.display_name} — Record",
-            value=(
-                f"W: **{loser_after['wins']}**\n"
-                f"L: **{loser_after['losses']}**\n"
-                f"Win%: **{lpct:.1f}%**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name=f"{winner.display_name} — Record",
-            value=(
-                f"W: **{winner_after['wins']}**\n"
-                f"L: **{winner_after['losses']}**\n"
-                f"Win%: **{wpct:.1f}%**"
-            ),
-            inline=True,
         )
 
         await interaction.followup.send(embed=embed)

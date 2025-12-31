@@ -4,8 +4,6 @@ import math
 import random
 import asyncio
 from typing import Optional, Any, Dict, List
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
@@ -17,6 +15,7 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 # DB helpers (you provided these)
 import core.db as db
+from core.daily_rollover import rollover_day_key, seconds_until_next_rollover
 
 # Craft costs + rarity helper
 from core.constants import (
@@ -30,20 +29,12 @@ from core.constants import (
 from core.cards_shop import get_card_rarity  # normalizes rarity across your data
 from core.tins import is_tin_promo_print
 
-ET = ZoneInfo("America/New_York")
 DISCOUNT_PCT = SALE_DISCOUNT_PCT
 TARGET_RARITIES = [rarity for (rarity, _count) in SALE_LAYOUT]
 
 
-def _today_key_et() -> str:
-    return datetime.now(ET).strftime("%Y%m%d")
-
-
-def _seconds_until_next_et_midnight() -> float:
-    now = datetime.now(ET)
-    tomorrow = (now + timedelta(days=1)).date()
-    next_midnight = datetime.combine(tomorrow, datetime.min.time(), tzinfo=ET)
-    return max(1.0, (next_midnight - now).total_seconds())
+def _today_key() -> str:
+    return rollover_day_key()
 
 
 class Sales(commands.Cog):
@@ -60,11 +51,11 @@ class Sales(commands.Cog):
     # ---------- lifecycle ----------
 
     async def cog_load(self):
-        # Start the midnight loop
-        self._task = asyncio.create_task(self._midnight_loop())
+        # Start the rollover loop
+        self._task = asyncio.create_task(self._rollover_loop())
 
         # Ensure today's sales exist; if not, roll them now; always refresh banner once
-        day_key = _today_key_et()
+        day_key = _today_key()
         try:
             today_rows = db.db_sales_get_for_day(self.state, day_key) or {}
             if not today_rows:
@@ -91,15 +82,15 @@ class Sales(commands.Cog):
 
     # ---------- internals ----------
 
-    async def _midnight_loop(self):
+    async def _rollover_loop(self):
         while True:
             try:
-                await asyncio.sleep(_seconds_until_next_et_midnight())
-                await self.roll_for_day(_today_key_et())
+                await asyncio.sleep(seconds_until_next_rollover())
+                await self.roll_for_day(_today_key())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                print("[sales] midnight loop error:", e)
+                print("[sales] rollover loop error:", e)
                 await asyncio.sleep(5)
 
     async def _roll_and_store_for_day(self, day_key: str):
@@ -247,7 +238,7 @@ class Sales(commands.Cog):
     async def sales_reset(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self._roll_and_store_for_day(_today_key_et())
+            await self._roll_and_store_for_day(_today_key())
             await self._refresh_banner()
             await interaction.followup.send("✅ Sales re-rolled for today (ET) and banner refreshed.", ephemeral=True)
         except Exception as e:
@@ -259,7 +250,7 @@ class Sales(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def sales_show(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        day_key = _today_key_et()
+        day_key = _today_key()
         try:
             rows_by_rarity = db.db_sales_get_for_day(self.state, day_key) or {}
             total_rows = sum(len(v) for v in rows_by_rarity.values())

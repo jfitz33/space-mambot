@@ -25,6 +25,8 @@ from core.db import (
     db_team_points_clear,
     db_wheel_tokens_clear,
     db_wishlist_clear,
+    db_convert_all_mambucks_to_shards,
+    db_clear_all_daily_quest_slots,
 )
 from core.quests.schema import db_reset_all_user_quests
 from core.quests.timekeys import daily_key, now_et
@@ -605,31 +607,10 @@ class Admin(commands.Cog):
         except Exception as e:
             print("[admin] quest tick error during admin_report_loss:", e)
 
-        lpct = self._win_pct(loser_after)
-        wpct = self._win_pct(winner_after)
-
         embed = discord.Embed(
             title="Admin Match Recorded",
             description=f"**{loser.display_name}** lost to **{winner.display_name}**.",
             color=0xCC3333,
-        )
-        embed.add_field(
-            name=f"{loser.display_name} — Record",
-            value=(
-                f"W: **{loser_after['wins']}**\n"
-                f"L: **{loser_after['losses']}**\n"
-                f"Win%: **{lpct:.1f}%**"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name=f"{winner.display_name} — Record",
-            value=(
-                f"W: **{winner_after['wins']}**\n"
-                f"L: **{winner_after['losses']}**\n"
-                f"Win%: **{wpct:.1f}%**"
-            ),
-            inline=True,
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -725,6 +706,74 @@ class Admin(commands.Cog):
         if interaction.channel:
             await interaction.channel.send(
                 f"↩️ Admin reverted a result: removed the loss for **{loser.display_name}** vs **{winner.display_name}**."
+            )
+
+    @app_commands.command(
+        name="admin_cancel_match",
+        description="(Admin) Cancel a current duel pairing so players can requeue.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        player_a="First player in the pairing",
+        player_b="Second player in the pairing",
+    )
+    async def admin_cancel_match(
+        self,
+        interaction: discord.Interaction,
+        player_a: discord.Member,
+        player_b: discord.Member,
+    ) -> None:
+        if player_a.id == player_b.id:
+            await interaction.response.send_message(
+                "You must choose two different players.", ephemeral=True
+            )
+            return
+
+        queue = interaction.client.get_cog("DuelQueue")
+        if queue is None or not hasattr(queue, "clear_pairing"):
+            await interaction.response.send_message(
+                "❌ Duel queue is unavailable.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        try:
+            is_pair = False
+            if hasattr(queue, "is_active_pair"):
+                is_pair = await queue.is_active_pair(player_a.id, player_b.id)
+
+            if not is_pair:
+                await interaction.followup.send(
+                    "❌ No active pairing found for those players.", ephemeral=True
+                )
+                return
+
+            cleared = await queue.clear_pairing(player_a.id, player_b.id)
+        except Exception:
+            logger.warning("Failed to cancel duel pairing", exc_info=True)
+            await interaction.followup.send(
+                "❌ Failed to cancel the pairing due to an unexpected error.",
+                ephemeral=True,
+            )
+            return
+
+        if not cleared:
+            await interaction.followup.send(
+                "❌ No active pairing found for those players.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"✅ Cancelled the pairing between {player_a.mention} and {player_b.mention}.",
+            ephemeral=True,
+        )
+
+        if interaction.channel:
+            await interaction.channel.send(
+                f"🚫 Admin cancelled the duel pairing between **{player_a.display_name}** and **{player_b.display_name}**."
             )
 
     # ---- Add currency -------------------------------------------------------
@@ -1322,6 +1371,49 @@ class Admin(commands.Cog):
             ),
             ephemeral=True,
         )
+    
+    @app_commands.command(
+        name="admin_end_set",
+        description="(Admin) Convert mambucks to shards for the active set and clear queued daily quests",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        mambuck_to_shards="Number of shards granted per mambuck when converting balances",
+    )
+    async def admin_end_set(
+        self,
+        interaction: discord.Interaction,
+        mambuck_to_shards: app_commands.Range[int, 1, None],
+    ):
+        """Prepare for a new set by converting mambucks and clearing daily quest queues."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        conversion = db_convert_all_mambucks_to_shards(
+            self.state, CURRENT_ACTIVE_SET, int(mambuck_to_shards)
+        )
+        cleared_slots = db_clear_all_daily_quest_slots(self.state)
+
+        shard_title = shard_set_name(CURRENT_ACTIVE_SET)
+        converted_users = int(conversion.get("users", 0))
+        total_mambucks = int(conversion.get("total_mambucks", 0))
+        total_shards = int(conversion.get("total_shards", 0))
+
+        if converted_users == 0 or total_mambucks == 0:
+            conversion_line = (
+                f"ℹ️ No mambuck balances needed conversion. Active shard type: **{shard_title}**."
+            )
+        else:
+            conversion_line = (
+                f"✅ Converted **{total_mambucks}** mambucks from **{converted_users}** user(s) "
+                f"into **{total_shards} {shard_title}** at **1 → {int(mambuck_to_shards)}**."
+            )
+
+        quest_line = f"🧹 Cleared **{cleared_slots}** queued daily quest entr{'y' if cleared_slots == 1 else 'ies'}."
+
+        await interaction.followup.send("\n".join([conversion_line, quest_line]), ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot))

@@ -4,7 +4,6 @@
 import asyncio
 import os
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -12,6 +11,7 @@ from discord.ext import commands
 
 from core.constants import TEAM_ROLE_NAMES
 from core.currency import mambucks_label
+from core.daily_rollover import rollover_day_key, seconds_until_next_rollover
 from core.db import (
     db_daily_quest_mambuck_reward_for_day,
     db_daily_quest_pack_get_total,
@@ -32,22 +32,11 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 WEEK1_QUEST_ID = "matches_played"
 
-ET = ZoneInfo("America/New_York")
-
-
-def _today_key_et() -> str:
-    return datetime.now(ET).strftime("%Y%m%d")
-
+def _today_key() -> str:
+    return rollover_day_key()
 
 def _day_key_for(dt: datetime) -> str:
-    return dt.astimezone(ET).strftime("%Y%m%d")
-
-
-def _seconds_until_next_et_midnight() -> float:
-    now = datetime.now(ET)
-    tomorrow = (now + timedelta(days=1)).date()
-    target = datetime.combine(tomorrow, datetime.min.time(), tzinfo=ET)
-    return max(1.0, (target - now).total_seconds())
+    return rollover_day_key(dt)
 
 def _quest_day_key_for_previous(day_key: str) -> str | None:
     try:
@@ -78,7 +67,7 @@ class DailyRewards(commands.Cog):
                 pass
 
     async def _grant_once(self, *, day_key: str | None = None):
-        day_key = day_key or _today_key_et()
+        day_key = day_key or _today_key()
         self._last_grant_day_key = day_key
         amount = db_starter_daily_get_amount(self.bot.state)
         prev_quest_day_key = _quest_day_key_for_previous(day_key)
@@ -151,7 +140,7 @@ class DailyRewards(commands.Cog):
             )
 
     async def run_midnight_grant(self, *, day_key: str | None = None):
-        """Run the midnight grant once, optionally using a custom ET day key."""
+        """Run the configured rollover grant once, optionally using a custom day key."""
         try:
             await self._grant_once(day_key=day_key)
         except Exception as e:
@@ -164,7 +153,7 @@ class DailyRewards(commands.Cog):
             print(f"[daily-rewards] initial grant error: {e}")
         while True:
             try:
-                await asyncio.sleep(_seconds_until_next_et_midnight())
+                await asyncio.sleep(seconds_until_next_rollover())
                 await self._grant_once()
             except asyncio.CancelledError:
                 raise

@@ -14,6 +14,7 @@ from core.db import (
     db_collection_remove_exact_print,
     _blank_to_none,
     db_collection_debug_dump,
+    db_collection_list_owned_prints,
     db_shards_add,
     db_shards_try_spend,
     db_fragment_yield_for_card,
@@ -107,6 +108,26 @@ async def _replace_with_timeout_message(message: discord.Message | None) -> None
 
     try:
         await message.edit(content=TIMEOUT_MESSAGE, view=None, embeds=[], attachments=[])
+    except Exception:
+        pass
+
+async def _finalize_interaction_message(interaction: discord.Interaction, content: str):
+    """Best-effort replacement of the original interaction message.
+
+    Falls back to deleting the original message and sending a followup if
+    editing fails (e.g., message was deleted by Discord).
+    """
+    try:
+        await interaction.edit_original_response(content=content, view=None)
+        return
+    except Exception:
+        try:
+            await interaction.delete_original_response()
+        except Exception:
+            pass
+
+    try:
+        await interaction.followup.send(content, ephemeral=True)
     except Exception:
         pass
 
@@ -657,28 +678,33 @@ class ConfirmBuyCardView(discord.ui.View):
         card = find_card_by_print_key(self.state, self.print_key)
         if not card:
             self._processing = False
-            return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "⚠️ Card printing not found.")
+            return
         
         if is_starter_card(card):
             self._processing = False
-            return await interaction.followup.send("❌ Starter deck cards cannot be crafted.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "❌ Starter deck cards cannot be crafted.")
+            return
 
         set_name = resolve_card_set(self.state, card)
         if not set_name:
             self._processing = False
-            return await interaction.followup.send(
+            await _finalize_interaction_message(
+                interaction,
                 "⚠️ This printing is missing a card set in the data, so it can’t be crafted.",
-                ephemeral=True
             )
+            return
         
         if is_starter_set(set_name):
             self._processing = False
-            return await interaction.followup.send("❌ Starter deck cards cannot be crafted.", ephemeral=True)
-
+            await _finalize_interaction_message(interaction, "❌ Starter deck cards cannot be crafted.")
+            return
+        
         cost_each, sale_row = craft_cost_for_card(self.state, card, set_name)
         if cost_each <= 0:
             self._processing = False
-            return await interaction.followup.send("❌ This printing cannot be crafted.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "❌ This printing cannot be crafted.")
+            return
 
         total_cost = cost_each * self.amount
 
@@ -687,10 +713,11 @@ class ConfirmBuyCardView(discord.ui.View):
         if have < total_cost:
             self._processing = False
             pretty = shard_set_name(set_id)
-            return await interaction.followup.send(
+            await _finalize_interaction_message(
+                interaction,
                 f"❌ Not enough {pretty}. Need **{total_cost}**, you have **{have}**.",
-                ephemeral=True
             )
+            return
 
         # debit shards (non-atomic by design, you chose this path)
         db_shards_add(self.state, self.requester.id, set_id, -total_cost)
@@ -703,20 +730,19 @@ class ConfirmBuyCardView(discord.ui.View):
             if sale_row:
                 sale_note = f" *(on sale −{int(sale_row.get('discount_pct', 0))}%)*"
 
-            await interaction.followup.send(
+            await _finalize_interaction_message(
+                interaction,
                 f"✅ Crafted **{self.amount}× {card_label_with_badge(self.state, card)}** for **{total_cost}** {pretty}{sale_note}.\n"
                 f"**Remaining {pretty}:** {after}",
-                ephemeral=True
             )
             if interaction.channel:
                 await interaction.channel.send(
-                    f"{self.requester.mention} crafted {self.amount} {card.get('name') or 'card'} "
-                    f"for {total_cost} {pretty}"
+                    f"{self.requester.mention} crafted **{self.amount}× {card_label_with_badge(self.state, card)}** for **{total_cost}** {pretty}"
                 )
         except Exception:
             # refund shards on failure
             db_shards_add(self.state, self.requester.id, set_id, total_cost)
-            await interaction.followup.send("⚠️ Craft failed. You were not charged.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "⚠️ Craft failed. You were not charged.")
             raise
         finally:
             self._processing = False
@@ -757,9 +783,43 @@ class ConfirmSellCardView(discord.ui.View):
             is_starter_card,
             is_starter_set,
         )
-        from core.db import db_collection_remove_exact_print, db_shards_add, db_shards_get
+        from core.db import (
+            db_collection_list_owned_prints,
+            db_collection_remove_exact_print,
+            db_shards_add,
+            db_shards_get,
+        )
         from core.constants import SHARD_YIELD_BY_RARITY, set_id_for_pack
         from core.currency import shard_set_name
+
+        def _owned_qty_for_requested_print() -> int:
+            """Find the owned quantity for the exact print being fragmented."""
+
+            def _norm(val: str | None) -> str:
+                return (val or "").strip().lower()
+
+            name = _norm(card.get("name") or card.get("cardname"))
+            rarity_val = _norm(card.get("rarity") or card.get("cardrarity"))
+            code_val = _norm(card.get("code") or card.get("cardcode"))
+            id_val = _norm(card.get("id") or card.get("cardid"))
+            set_val = _norm(set_name)
+
+            rows = db_collection_list_owned_prints(
+                self.state,
+                self.requester.id,
+                name_filter=name,
+                limit=200,
+            )
+            for row in rows:
+                if (
+                    _norm(row.get("name")) == name
+                    and _norm(row.get("rarity")) == rarity_val
+                    and _norm(row.get("set")) == set_val
+                    and _norm(row.get("code")) == code_val
+                    and _norm(row.get("id")) == id_val
+                ):
+                    return int(row.get("qty") or 0)
+            return 0
 
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
@@ -780,29 +840,43 @@ class ConfirmSellCardView(discord.ui.View):
         card = find_card_by_print_key(self.state, self.print_key)
         if not card:
             self._processing = False
-            return await interaction.followup.send("⚠️ Card printing not found.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "⚠️ Card printing not found.")
+            return
         
         if is_starter_card(card):
             self._processing = False
-            return await interaction.followup.send("❌ Starter deck cards cannot be fragmented.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "❌ Starter deck cards cannot be fragmented.")
+            return
 
         set_name = resolve_card_set(self.state, card)
         if not set_name:
             self._processing = False
-            return await interaction.followup.send(
+            await _finalize_interaction_message(
+                interaction,
                 "⚠️ This printing is missing a card set in the data, so it can’t be fragmented.",
-                ephemeral=True
             )
+            return
         
         if is_starter_set(set_name):
             self._processing = False
-            return await interaction.followup.send("❌ Starter deck cards cannot be fragmented.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "❌ Starter deck cards cannot be fragmented.")
+            return
 
         rarity = (get_card_rarity(card) or "").lower()
         yield_each, ov = db_fragment_yield_for_card(self.state, card, set_name)
         if yield_each is None:
             self._processing = False
-            return await interaction.followup.send("❌ This printing cannot be fragmented.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "❌ This printing cannot be fragmented.")
+            return
+
+        owned = _owned_qty_for_requested_print()
+        if owned < self.amount:
+            self._processing = False
+            await _finalize_interaction_message(
+                interaction,
+                f"❌ Not enough copies to fragment. Need **{self.amount}**, you have **{owned}**.",
+            )
+            return
 
         # remove exact print from collection
         removed = db_collection_remove_exact_print(
@@ -817,7 +891,8 @@ class ConfirmSellCardView(discord.ui.View):
         )
         if removed <= 0:
             self._processing = False
-            return await interaction.followup.send("❌ You don’t have the specified copies to shard.", ephemeral=True)
+            await _finalize_interaction_message(interaction, "❌ You don’t have the specified copies to shard.")
+            return
 
         set_id = set_id_for_pack(set_name) or 1
         credit = removed * yield_each
@@ -825,10 +900,10 @@ class ConfirmSellCardView(discord.ui.View):
         after = db_shards_get(self.state, self.requester.id, set_id)
         pretty = shard_set_name(set_id)
 
-        await interaction.followup.send(
+        await _finalize_interaction_message(
+            interaction,
             f"🔨 Fragmented **{removed}× {card_label_with_badge(self.state, card)}** into **{credit}** {pretty}.\n"
             f"**Total {pretty}:** {after}",
-            ephemeral=True
         )
         self._processing = False
 

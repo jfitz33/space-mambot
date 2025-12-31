@@ -1,6 +1,8 @@
 # cogs/cards_shop.py
+import asyncio
 import os, discord, textwrap
-from typing import List, Dict
+from typing import List, Dict, Optional
+import requests
 from discord.ext import commands
 from discord import app_commands
 from core.feature_flags import is_set1_week1_locked
@@ -10,9 +12,12 @@ from core.cards_shop import (
     find_card_by_print_key,
     card_label_with_badge,
     get_card_rarity,
+    card_set_name,
     register_print_if_missing,
     is_starter_card,
     is_starter_set,
+    canonicalize_rarity,
+    YGOPRO_API_URL,
 )
 from core.tins import is_tin_promo_print
 from core.constants import (
@@ -24,19 +29,20 @@ from core.views import (
     ConfirmSellCardView,
 )
 from core.currency import shard_set_name
+from core.images import rarity_badge, card_art_url_for_card, card_art_path_for_card
 from core.db import (
     db_collection_list_owned_prints, db_collection_list_for_bulk_fragment, 
     db_shards_add, db_collection_remove_exact_print, db_fragment_yield_for_card,
     db_shards_get
 )
 from core.pricing import craft_cost_for_card
+from core.cards_shop import ensure_shop_index, card_label, _sig_for_resolution
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 
 def suggest_prints_with_set(state, query: str, limit: int = 25):
-    from core.cards_shop import ensure_shop_index, card_label, _sig_for_resolution
     ensure_shop_index(state)
     q_tokens = [t for t in (query or "").lower().split() if t]
 
@@ -134,7 +140,7 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
         if is_starter_card(card):
             continue
 
-        label = card_label_with_badge(state, card)
+        label = card_label(card)
         if qty > 0:
             label = f"{label} ×{qty}"
 
@@ -175,43 +181,107 @@ async def ac_fragmentable_rarity(interaction: discord.Interaction, current: str)
         out.append(app_commands.Choice(name=label, value=r))
     return out
 
+def _set_sort_key(set_name: str) -> tuple[int, str]:
+    return (set_id_for_pack(set_name) or 9999, (set_name or "").lower())
+
+def _sort_rows_by_set(rows: List[Dict]) -> List[Dict]:
+    rarity_rank = {r: i for i, r in enumerate(RARITY_ORDER)}
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            _set_sort_key(row.get("set") or ""),
+            rarity_rank.get(row.get("rarity"), len(rarity_rank)),
+            (row.get("name") or "").lower(),
+        ),
+    )
+
 class BulkFragmentConfirmView(discord.ui.View):
-    def __init__(self, state: AppState, user: discord.Member, plan_rows: List[Dict], pack_name: str, rarity: str, keep: int, total_yield: int, *, timeout: float = 120):
+    def __init__(self, state: AppState, user: discord.Member, plan_rows: List[Dict], keep: int, total_yield_by_set: Dict[str, int], *, timeout: float = 120):
+        # Setting the timeout explicitly keeps discord.py happy when the View is
+        # inspected before it is sent (e.g., during followup.send(ephemeral=True)).
         super().__init__(timeout=timeout)
         self.state = state
         self.user = user
         self.plan_rows = plan_rows
-        self.pack_name = pack_name
-        self.rarity = rarity
         self.keep = int(keep)
-        self.total_yield = int(total_yield)
+        self.total_yield_by_set = {k: int(v) for k, v in (total_yield_by_set or {}).items()}
         self._locked = False
 
-    def shard_label(self) -> str:
-        sid = set_id_for_pack(self.pack_name) or 1
+    def _is_requester(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user.id
+    
+    async def _show_processing_state(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
+            if isinstance(child, discord.ui.Button) and child.label == "Confirm":
+                child.label = "Processing…"
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(
+                    message_id=self.message.id if self.message else interaction.message.id,
+                    view=self,
+                )
+            else:
+                await interaction.response.edit_message(view=self)
+        except discord.InteractionResponded:
+            await interaction.message.edit(view=self)
+        except discord.NotFound:
+            await interaction.message.edit(view=self)
+
+    async def _ensure_deferred(self, interaction: discord.Interaction):
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.defer(thinking=False)
+        except discord.InteractionResponded:
+            pass
+
+    def shard_label(self, set_name: str) -> str:
+        sid = set_id_for_pack(set_name) or 1
         return shard_set_name(sid)
+
+    def shard_summary(self, totals: Dict[str, int] | None = None) -> str:
+        blob = totals or self.total_yield_by_set
+        parts = []
+        for set_name, amount in sorted(blob.items(), key=lambda item: _set_sort_key(item[0])):
+            if amount <= 0:
+                continue
+            parts.append(f"{amount} {self.shard_label(set_name)}")
+        return ", ".join(parts)
 
     async def finalize(self, interaction: discord.Interaction, content: str | None = None):
         self.stop()
         for c in self.children:
             c.disabled = True
         try:
-            await interaction.response.edit_message(content=content, view=None)
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(
+                    message_id=self.message.id if self.message else interaction.message.id,
+                    content=content,
+                    view=None,
+                    embeds=[],
+                )
+            else:
+                await interaction.response.edit_message(content=content, view=None, embeds=[])
         except discord.InteractionResponded:
-            await interaction.message.edit(content=content, view=None)
+            await interaction.message.edit(content=content, view=None, embeds=[])
+        except discord.NotFound:
+            await interaction.message.edit(content=content, view=None, embeds=[])
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.user.id:
+        if not self._is_requester(interaction):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._ensure_deferred(interaction)
         if self._locked:
-            try: await interaction.response.defer_update()
-            except: pass
+            await self._ensure_deferred(interaction)
             return
         self._locked = True
+        await self._show_processing_state(interaction)
 
-        sid = set_id_for_pack(self.pack_name) or 1
-        credited = 0
+        credited_by_set: Dict[str, int] = {}
 
         try:
             for row in self.plan_rows:
@@ -219,32 +289,106 @@ class BulkFragmentConfirmView(discord.ui.View):
                 yield_per = int(row.get("yield_each", 0))
                 if amt <= 0:
                     continue
+                set_name = row.get("set") or ""
+                rarity = row.get("rarity") or ""
                 removed = db_collection_remove_exact_print(
                     self.state, self.user.id,
                     card_name=row["name"],
-                    card_rarity=self.rarity,
-                    card_set=self.pack_name,
+                    card_rarity=rarity,
+                    card_set=set_name,
                     card_code=row["code"],
                     card_id=row["id"],
                     amount=amt
                 )
                 if removed > 0:
-                    credited += removed * yield_per
+                    credited_by_set[set_name] = credited_by_set.get(set_name, 0) + removed * yield_per
 
-            if credited > 0:
-                db_shards_add(self.state, self.user.id, sid, credited)
+            for set_name, total in credited_by_set.items():
+                if total <= 0:
+                    continue
+                sid = set_id_for_pack(set_name) or 1
+                db_shards_add(self.state, self.user.id, sid, total)
 
-            pretty = self.shard_label()
-            await self.finalize(interaction, content=f"✅ Fragmented these cards into **{credited} {pretty}**.")
+            shard_blob = self.shard_summary(credited_by_set) or "0 shards"
+            await self.finalize(interaction, content=f"✅ Fragmented these cards into **{shard_blob}**.")
         except Exception:
             self._locked = False
             raise
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.user.id:
+        if not self._is_requester(interaction):
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._ensure_deferred(interaction)
         await self.finalize(interaction, content="Cancelled.")
+
+class PaginatedBulkFragmentConfirmView(BulkFragmentConfirmView):
+    def __init__(
+        self,
+        state: AppState,
+        user: discord.Member,
+        plan_rows: List[Dict],
+        keep: int,
+        total_yield_by_set: Dict[str, int],
+        *,
+        content: str,
+        embeds: list[discord.Embed],
+        timeout: float = 120,
+    ):
+        super().__init__(state, user, plan_rows, keep, total_yield_by_set, timeout=timeout)
+        self.embeds = embeds or []
+        self.content = content
+        self.current_page = 0
+        self.message: Optional[discord.Message] = None
+        self._sync_page_title()
+        if len(self.embeds) <= 1:
+            self.next_page.disabled = True
+            self.prev_page.disabled = True
+
+    def _page_count(self) -> int:
+        return max(len(self.embeds), 1)
+
+    def _sync_page_title(self):
+        if len(self.embeds) <= 1:
+            return
+        total = self._page_count()
+        for idx, embed in enumerate(self.embeds, start=1):
+            embed.title = f"Cards to fragment ({idx}/{total})"
+
+    def _wrap_index(self, idx: int) -> int:
+        total = self._page_count()
+        if total <= 1:
+            return 0
+        return idx % total
+
+    async def _show_page(self, interaction: discord.Interaction, idx: int):
+        if self._locked:
+            try: await interaction.response.defer_update()
+            except: pass
+            return
+        self.current_page = self._wrap_index(idx)
+        embed = self.embeds[self.current_page] if self.embeds else None
+        if interaction.response.is_done():
+            await interaction.followup.edit_message(
+                message_id=self.message.id if self.message else interaction.message.id,
+                content=self.content,
+                embed=embed,
+                view=self,
+            )
+        else:
+            await interaction.response.edit_message(content=self.content, embed=embed, view=self)
+
+    @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self._is_requester(interaction):
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._show_page(interaction, self.current_page - 1)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if not self._is_requester(interaction):
+            return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
+        await self._show_page(interaction, self.current_page + 1)
 
 class CardsShop(commands.Cog):
     """
@@ -257,7 +401,77 @@ class CardsShop(commands.Cog):
     async def ac_craft(self, interaction: discord.Interaction, current: str):
         # Suggest craftable prints from shop index (set-aware, as before)
         return suggest_prints_with_set(self.state, current)
-    
+
+    async def _fetch_cardinfo_from_api(self, card: dict) -> Optional[dict]:
+        loop = asyncio.get_running_loop()
+
+        def _blocking_lookup() -> Optional[dict]:
+            params = {}
+            cid = (card.get("id") or card.get("cardid") or card.get("card_id"))
+            name = (card.get("name") or card.get("cardname") or "").strip()
+            if cid and str(cid).strip().isdigit():
+                params["id"] = str(cid).strip()
+            elif name:
+                params["name"] = name
+            else:
+                return None
+
+            try:
+                resp = requests.get(YGOPRO_API_URL, params=params, timeout=15)
+                resp.raise_for_status()
+                payload = resp.json()
+            except requests.RequestException:
+                return None
+
+            data = payload.get("data") or []
+            if not data:
+                return None
+
+            set_name = card_set_name(card).lower()
+            if set_name:
+                for entry in data:
+                    for card_set in entry.get("card_sets") or []:
+                        if (card_set.get("set_name") or "").strip().lower() == set_name:
+                            return entry
+
+            return data[0]
+
+        return await loop.run_in_executor(None, _blocking_lookup)
+
+    @staticmethod
+    def _extract_card_text(card: dict, api_entry: Optional[dict]) -> str:
+        for key in ("desc", "cardtext", "text"):
+            val = (card.get(key) or "").strip()
+            if val:
+                return val
+
+        if api_entry:
+            api_text = (api_entry.get("desc") or "").strip()
+            if api_text:
+                return api_text
+
+        return "No card text available."
+
+    @staticmethod
+    def _resolve_set_info(card_set: str, api_entry: Optional[dict]) -> tuple[str, str]:
+        pack_name = (card_set or "").strip()
+        rarity = ""
+
+        sets = (api_entry or {}).get("card_sets") or []
+        if sets:
+            target_set = None
+            if pack_name:
+                for card_set_row in sets:
+                    if (card_set_row.get("set_name") or "").strip().lower() == pack_name.lower():
+                        target_set = card_set_row
+                        break
+            if target_set is None:
+                target_set = sets[0]
+
+            pack_name = pack_name or (target_set.get("set_name") or "").strip()
+            rarity = canonicalize_rarity(target_set.get("set_rarity") or "")
+
+        return pack_name, rarity
 
     @app_commands.command(
         name="craft",
@@ -306,13 +520,70 @@ class CardsShop(commands.Cog):
         return suggest_owned_prints_relaxed(self.state, interaction.user.id, current)
 
     @app_commands.command(
+        name="card",
+        description="View card details for a specific printing",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.describe(
+        cardname="Choose the exact printing",
+    )
+    @app_commands.autocomplete(cardname=ac_craft)
+    async def card(self, interaction: discord.Interaction, cardname: str):
+        card = find_card_by_print_key(self.state, cardname)
+        if not card:
+            return await interaction.response.send_message("Card not found.", ephemeral=True)
+
+        await interaction.response.defer()
+
+        api_entry = await self._fetch_cardinfo_from_api(card)
+        pack_name, rarity_from_api = self._resolve_set_info(card_set_name(card), api_entry)
+
+        rarity = get_card_rarity(card) or rarity_from_api
+        badge = rarity_badge(self.state, rarity)
+        name = (card.get("name") or card.get("cardname") or "Unknown").strip()
+        card_text = self._extract_card_text(card, api_entry)
+
+        image_url = None
+        image_file = None
+
+        art_path = card_art_path_for_card(card)
+        if art_path and art_path.is_file():
+            image_file = discord.File(art_path, filename=art_path.name)
+            image_url = f"attachment://{art_path.name}"
+        else:
+            image_url = card_art_url_for_card(card)
+            if not image_url and api_entry:
+                images = api_entry.get("card_images") or []
+                if images:
+                    image_url = images[0].get("image_url") or images[0].get("image_url_small")
+
+        desc_lines = [
+            f"**{name}**",
+            f"Print: {badge} {pack_name or 'Unknown set'}",
+            "",
+            card_text,
+        ]
+        desc_body = "\n".join(desc_lines)
+
+        image_embed = None
+        if image_url:
+            image_embed = discord.Embed()
+            image_embed.set_image(url=image_url)
+
+        info_embed = discord.Embed(description=desc_body)
+
+        embeds = [e for e in (image_embed, info_embed) if e is not None]
+
+        await interaction.followup.send(embeds=embeds, file=image_file)
+
+    @app_commands.command(
         name="fragment",
         description="Break down a specific printing to receive shards"
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
         card="Choose the exact printing you own",
-        amount="How many copies (max 10)",
+        amount="How many copies (max 100)",
     )
     @app_commands.autocomplete(card=ac_shard)
     async def fragment(
@@ -357,21 +628,29 @@ class CardsShop(commands.Cog):
     async def fragment_bulk(
         self,
         interaction: discord.Interaction,
-        pack_name: str,
-        rarity: str,
+        pack_name: Optional[str] = None,
+        rarity: Optional[str] = None,
         keep: app_commands.Range[int, 0, 99] = 3,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        if pack_name not in (self.state.packs_index or {}):
+        if pack_name and pack_name not in (self.state.packs_index or {}):
             return await interaction.followup.send("❌ Unknown pack/set.", ephemeral=True)
 
-        r = norm_rarity(rarity)
-        if r not in FRAGMENTABLE_RARITIES:
+        r = norm_rarity(rarity) if rarity else None
+        if r and r not in FRAGMENTABLE_RARITIES:
             return await interaction.followup.send("❌ That rarity can’t be fragmented.", ephemeral=True)
 
         # Exact-print rows with qty > keep: [{"name","qty","to_frag","code","id"}, ...]
         rows = db_collection_list_for_bulk_fragment(self.state, interaction.user.id, pack_name, r, int(keep))
+        filtered_rows = []
+        for row in rows:
+            row_rarity = norm_rarity(row.get("rarity"))
+            if row_rarity not in FRAGMENTABLE_RARITIES:
+                continue
+            row = {**row, "rarity": row_rarity}
+            filtered_rows.append(row)
+        rows = _sort_rows_by_set(filtered_rows)
         if not rows:
             return await interaction.followup.send(
                 "Nothing to fragment with those filters (or all at/under the keep amount).",
@@ -379,9 +658,7 @@ class CardsShop(commands.Cog):
             )
 
         # --- compute per-print yield (with overrides) and grand total ---
-        sid = set_id_for_pack(pack_name) or 1
-        pretty = shard_set_name(sid)
-        total_yield = 0
+        total_yield_by_set: Dict[str, int] = {}
         preview_lines = []
         keep_floor = int(keep)
 
@@ -392,49 +669,89 @@ class CardsShop(commands.Cog):
             # minimal "card" dict for the helper (uses your field names)
             card_min = {
                 "name": row["name"],
-                "rarity": r,
+                "rarity": row.get("rarity"),
                 "code": row.get("code"),
                 "id": row.get("id"),
             }
-            yield_each, ov = db_fragment_yield_for_card(self.state, card_min, set_name=pack_name)
+            yield_each, ov = db_fragment_yield_for_card(self.state, card_min, set_name=row.get("set"))
             qty_to_frag = int(row["to_frag"])
-            total_yield += qty_to_frag * yield_each
+            set_name = row.get("set") or ""
+            total_yield_by_set[set_name] = total_yield_by_set.get(set_name, 0) + qty_to_frag * yield_each
 
             boost = ""
             if ov is not None and int(ov.get("yield_override", yield_each)) != int(SHARD_YIELD_BY_RARITY.get(r, 0)):
                 # keep it short; you can expand this if you store reason/expiry, etc.
                 boost = " (override)"
 
-            keep_shown = min(int(row["qty"]), keep_floor)
+            badge = rarity_badge(self.state, row.get("rarity"))
+            pack_suffix = f" [{shorten(set_name, 32)}]" if set_name else ""
             preview_lines.append(
-                f"• x{qty_to_frag} {shorten(row['name'], 64)} (keep {keep_shown})"
+                f"{badge} x{qty_to_frag} {shorten(row['name'], 64)}{pack_suffix}"
             )
 
             enriched_rows.append({**row, "yield_each": int(yield_each)})
 
         preview = "\n".join(preview_lines)
-        if len(preview) > 1800:
-            preview = preview[:1800] + "\n…"
 
-        view = BulkFragmentConfirmView(
+        summary_view = BulkFragmentConfirmView(
             self.state,
             interaction.user,
             enriched_rows,           # <-- pass yields to the view
-            pack_name,
-            r,
             keep_floor,
-            total_yield,
+            total_yield_by_set,
         )
+
+        shard_breakdown = summary_view.shard_summary() or shard_set_name(set_id_for_pack(pack_name) or 1)
+
+        preview_lines = preview.split("\n") if preview else []
+        embeds: list[discord.Embed] = []
+        chunk: list[str] = []
+        chunk_len = 0
+        for line in preview_lines:
+            line_len = len(line) + 1  # account for newline
+            if chunk and (chunk_len + line_len > 3500 or len(chunk) >= 24):
+                embeds.append(discord.Embed(
+                    title=f"Cards to fragment ({len(embeds) + 1})",
+                    description="\n".join(chunk)
+                ))
+                chunk = []
+                chunk_len = 0
+            chunk.append(line)
+            chunk_len += line_len
+        if chunk:
+            embeds.append(discord.Embed(
+                title=f"Cards to fragment ({len(embeds) + 1})",
+                description="\n".join(chunk)
+            ))
+
+        if embeds:
+            total_pages = len(embeds)
+            for i, embed in enumerate(embeds, start=1):
+                if total_pages > 1:
+                    embed.title = f"Cards to fragment ({i}/{total_pages})"
 
         content = "\n".join([
             "Are you sure you want to fragment the following cards?",
-            "",
-            preview,
-            "",
-            f"This will yield **{total_yield} {pretty}**."
+            f"This will yield **{shard_breakdown}**.",
         ])
+        view = PaginatedBulkFragmentConfirmView(
+            self.state,
+            interaction.user,
+            enriched_rows,
+            keep_floor,
+            total_yield_by_set,
+            content=content,
+            embeds=embeds,
+        )
 
-        await interaction.followup.send(content=content, ephemeral=True, view=view)
+        primary_embed = embeds[0] if embeds else None
+        message = await interaction.followup.send(
+            content=content,
+            ephemeral=True,
+            view=view,
+            embed=primary_embed,
+        )
+        view.message = message
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))
