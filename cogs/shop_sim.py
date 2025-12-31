@@ -1,11 +1,12 @@
 # cogs/shop_sim.py
-import os, asyncio, discord, math, re
+import os, asyncio, discord, math, re, tempfile
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import List
 from discord.ext import commands
 from discord import app_commands
+from PIL import Image
 
 from core.feature_flags import is_set1_week1_locked
 from core.state import AppState
@@ -147,7 +148,7 @@ class ShopSim(commands.Cog):
         to enlarge these without rendering them into an image first.
         """
         if is_set1_week1_locked():
-            description = "Shop opening soon\n\nPacks earnable via /daily rewards:"
+            description = f"Shop opening soon\n\nPacks earnable via **/daily** rewards:"
             embed = discord.Embed(
                 title="🛍️ Welcome to the Mamshop",
                 description=description,
@@ -163,19 +164,66 @@ class ShopSim(commands.Cog):
                 "blaze": Path(__file__).resolve().parent.parent / "images" / "pack_images" / "blazing_genesis.png",
             }
 
-            previews: list[Path] = []
+            previews: dict[str, Path] = {}
             for key in ("storm", "blaze"):
                 image_path = pack_images[key]
-                if not image_path.exists():
-                    continue
+                if image_path.exists():
+                    previews[key] = image_path
 
-                previews.append(image_path)
-                files.append(discord.File(str(image_path), filename=image_path.name))
+            # If both previews are available, render them side by side so each
+            # appears beneath its respective header at equal size.
+            combined_added = False
+            if {"storm", "blaze"}.issubset(previews.keys()):
+                try:
+                    with Image.open(previews["storm"]) as storm_src, Image.open(previews["blaze"]) as blaze_src:
+                        storm = storm_src.convert("RGBA")
+                        blaze = blaze_src.convert("RGBA")
 
-            if previews:
-                embed.set_image(url=f"attachment://{previews[0].name}")
-            if len(previews) > 1:
-                embed.set_thumbnail(url=f"attachment://{previews[1].name}")
+                        # Normalize the height so both previews appear at the same
+                        # scale when placed side by side.
+                        target_height = min(storm.height, blaze.height)
+
+                        def _resize_to_height(img: Image.Image, height: int) -> Image.Image:
+                            if img.height == height:
+                                return img
+                            new_width = int(img.width * (height / img.height))
+                            return img.resize((new_width, height), Image.LANCZOS)
+
+                        storm = _resize_to_height(storm, target_height)
+                        blaze = _resize_to_height(blaze, target_height)
+
+                        images = [storm, blaze]
+
+                    padding = 40
+                    total_width = sum(img.width for img in images) + padding * (len(images) - 1)
+                    max_height = max(img.height for img in images)
+
+                    combined = Image.new("RGBA", (total_width, max_height), (0, 0, 0, 0))
+                    x = 0
+                    for img in images:
+                        y = (max_height - img.height) // 2
+                        combined.paste(img, (x, y))
+                        x += img.width + padding
+
+                    temp_path = Path(tempfile.gettempdir()) / "week1_pack_previews.png"
+                    combined.save(temp_path, "PNG")
+
+                    files.append(discord.File(str(temp_path), filename=temp_path.name))
+                    embed.set_image(url=f"attachment://{temp_path.name}")
+                    combined_added = True
+                except Exception:
+                    combined_added = False
+
+            if not combined_added:
+                for key in ("storm", "blaze"):
+                    image_path = previews.get(key)
+                    if not image_path:
+                        continue
+
+                    files.append(discord.File(str(image_path), filename=image_path.name))
+                    if getattr(embed.image, "url", None):
+                        continue
+                    embed.set_image(url=f"attachment://{image_path.name}")
 
             return embed, files
         
@@ -233,7 +281,7 @@ class ShopSim(commands.Cog):
             f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**",
             f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**",
             #f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**",
-            f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**",
+            #f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**",
         ]
 
         if shard_section_text:
