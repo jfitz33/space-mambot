@@ -1,4 +1,5 @@
-import os, discord, asyncio
+import os, discord, asyncio, tempfile
+from pathlib import Path
 from copy import deepcopy
 from discord.ext import commands
 from discord import app_commands
@@ -11,7 +12,7 @@ from core.packs import (
     open_pack_with_guaranteed_top_from_csv,
     RARITY_ORDER,
 )
-from core.views import _pack_embed_for_cards
+from core.views import _pack_embed_for_cards, _pack_image_path
 from core.db import (
     db_add_cards,
     db_daily_quest_pack_get_total,
@@ -26,19 +27,19 @@ from core.wallet_api import credit_mambucks, add_shards
 from core.constants import TEAM_ROLE_MAPPING, TEAM_ROLE_NAMES, CURRENT_ACTIVE_SET
 from core.currency import mambucks_label, shards_label
 from core.wallet_api import get_mambucks, credit_mambucks, get_shards, add_shards
-from core.views import _pack_confirmation_embed
+from PIL import Image
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 # Map starter deck name → which pack to auto-open. If empty, we fall back to using the deck name as pack name.
 STARTER_TO_PACK = {
-    "Cult of the Mambo": "Storm of the Abyss",
-    "Hellfire Heretics": "Blazing Genesis",
+    "Starter Deck Water": "Storm of the Abyss",
+    "Starter Deck Fire": "Blazing Genesis",
 }
 STARTER_DECK_URLS = {
-    "Cult of the Mambo": os.getenv("CULT_OF_THE_MAMBO_STARTER_URL", "https://www.duelingbook.com/deck?id=18723000"),
-    "Hellfire Heretics": os.getenv("HELLFIRE_HERETICS_STARTER_URL", "https://www.duelingbook.com/deck?id=18723001"),
+    "Starter Deck Water": os.getenv("STARTER_DECK_WATER_URL", "https://www.duelingbook.com/deck?id=18723000"),
+    "Starter Deck Fire": os.getenv("STARTER_DECK_FIRE_URL", "https://www.duelingbook.com/deck?id=18723001"),
 }
 TEAM_TO_STARTER = {team: deck for deck, team in TEAM_ROLE_MAPPING.items()}
 SET1_TEAM_ORDER = ("Fire", "Water")
@@ -47,6 +48,7 @@ WEEK1_PACK_BY_ROLE = {
     "Water": "Storm of the Abyss",
     "Fire": "Blazing Genesis",
 }
+STARTER_IMAGE_DIR = Path(__file__).resolve().parent.parent / "images" / "starter_images"
 
 async def _resolve_member(interaction: discord.Interaction) -> discord.Member | None:
     # Must be in a server
@@ -80,6 +82,97 @@ def _team_info() -> dict[str, dict[str, str]]:
         for team in SET1_TEAM_ORDER
     }
 
+def _starter_image_path(team_name: str, deck_name: str) -> Path | None:
+    names = [team_name, deck_name]
+    candidates: list[str] = []
+
+    for name in filter(None, names):
+        normalized = name.strip().replace("/", "_")
+        slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in normalized)
+        slug = "_".join(filter(None, slug.split("_")))
+
+        candidates.extend(
+            [
+                normalized,
+                normalized.replace(" ", "_"),
+                normalized.replace(" ", "-"),
+                normalized.lower(),
+                slug,
+                f"starter_{slug}",
+            ]
+        )
+
+    seen: set[str] = set()
+    for stem in candidates:
+        if stem in seen:
+            continue
+        seen.add(stem)
+        candidate = STARTER_IMAGE_DIR / f"{stem}.png"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _starter_pack_image_path(deck_name: str) -> Path | None:
+    if not deck_name:
+        return None
+
+    normalized = deck_name.strip().replace("/", "_")
+    slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in normalized)
+    slug = "_".join(filter(None, slug.split("_")))
+
+    candidates = [
+        f"{normalized}_plus_pack",
+        f"{normalized.replace(' ', '_')}_plus_pack",
+        f"{normalized.replace(' ', '-')}_plus_pack",
+        f"{normalized.lower()}_plus_pack",
+        f"{slug}_plus_pack",
+    ]
+
+    seen: set[str] = set()
+    for stem in candidates:
+        if stem in seen:
+            continue
+        seen.add(stem)
+        candidate = STARTER_IMAGE_DIR / f"{stem}.png"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _starter_pack_confirmation_embed(
+    pack_name: str,
+    description: str,
+    deck_name: str,
+    starter_image_path: Path | None = None,
+) -> tuple[discord.Embed | None, list[discord.File]]:
+    pack_image_path = _pack_image_path(pack_name)
+    starter_path = starter_image_path if starter_image_path and starter_image_path.exists() else None
+    combined_path = _starter_pack_image_path(deck_name)
+
+    if not pack_image_path and not starter_path and not combined_path:
+        return None, []
+
+    embed = discord.Embed(title=pack_name, description=description)
+    files: list[discord.File] = []
+
+    if combined_path and combined_path.exists():
+        combined_file = discord.File(str(combined_path), filename=combined_path.name)
+        embed.set_image(url=f"attachment://{combined_path.name}")
+        files.append(combined_file)
+        return embed, files
+
+    if pack_image_path:
+        pack_file = discord.File(str(pack_image_path), filename=pack_image_path.name)
+        embed.set_image(url=f"attachment://{pack_image_path.name}")
+        files.append(pack_file)
+
+    if starter_path:
+        starter_file = discord.File(str(starter_path), filename=starter_path.name)
+        embed.set_thumbnail(url=f"attachment://{starter_path.name}")
+        files.append(starter_file)
+
+    return embed, files
 
 class StarterConfirmationView(View):
     def __init__(self, cog: "Start", member: discord.Member, team_name: str, deck_name: str, pack_name: str, *, timeout: float = 180):
@@ -350,8 +443,11 @@ class StarterTeamSelect(discord.ui.Select):
             f"- 12 packs of **{pack_name}**",
         ]
         confirmation_text = "\n".join(confirmation_lines)
+        starter_image = _starter_image_path(value, deck_name)
         confirmation = StarterConfirmationView(self.parent_view.cog, self.parent_view.member, value, deck_name, pack_name)
-        embed, files = _pack_confirmation_embed(pack_name, confirmation_text)
+        embed, files = _starter_pack_confirmation_embed(
+            pack_name, confirmation_text, deck_name, starter_image_path=starter_image
+        )
         confirmation.set_confirmation_embed(embed)
 
         confirmation.attach_files(files)
@@ -560,8 +656,8 @@ class Start(commands.Cog):
 
         summary = (
             f"Welcome to the **{team_name}** team {interaction.user.mention}!"
-            f" I sent you **{START_PACKS}** pack{'s' if START_PACKS != 1 else ''} of **{pack_name}** to get started!"
-            f"{' Results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
+            f" I sent you your starter deck and **{START_PACKS}** pack{'s' if START_PACKS != 1 else ''} of **{pack_name}** to get started!"
+            f"{' Pack results sent via DM.' if dm_sent else ' I couldn’t DM you; posting results here.'}"
             f" You can view your collection with the /collection command, or use the /collection_export command to get a csv version "
             f"to upload to ygoprodeck. Happy dueling!"
         )

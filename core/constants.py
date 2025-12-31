@@ -117,8 +117,8 @@ GAMBA_PRIZES = [
 
 # Starter deck card sets are excluded from crafting/fragmenting.
 STARTER_DECK_SET_NAMES = {
-    "Cult of the Mambo",
-    "Hellfire Heretics",
+    "Starter Deck Water",
+    "Starter Deck Fire",
 }
 
 # Which packs belong to which Set (uppercase pack names)
@@ -212,8 +212,8 @@ TEAM_SETS = {
 }
 
 TEAM_ROLE_MAPPING = {
-    "Cult of the Mambo": "Water",
-    "Hellfire Heretics": "Fire",
+    "Starter Deck Water": "Water",
+    "Starter Deck Fire": "Fire",
 }
 TEAM_ROLE_NAMES = frozenset({name for cfg in TEAM_SETS.values() for name in cfg.get("teams", {})})
 

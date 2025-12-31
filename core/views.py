@@ -84,14 +84,22 @@ def _pack_image_path(pack_name: str) -> Path | None:
     return None
 
 
-def _pack_confirmation_embed(pack_name: str, description: str) -> tuple[discord.Embed | None, list[discord.File]]:
-    image_path = _pack_image_path(pack_name)
-    if not image_path:
+def _pack_confirmation_embed(
+    pack_name: str,
+    description: str,
+) -> tuple[discord.Embed | None, list[discord.File]]:
+    """Render a confirmation embed for pack openings."""
+
+    pack_image_path = _pack_image_path(pack_name)
+
+    if not pack_image_path:
         return None, []
 
     embed = discord.Embed(title=pack_name, description=description)
-    file = discord.File(str(image_path), filename=image_path.name)
-    embed.set_image(url=f"attachment://{image_path.name}")
+    pack_file = discord.File(str(pack_image_path), filename=pack_image_path.name)
+    embed.set_image(url=f"attachment://{pack_image_path.name}")
+
+    return embed, [pack_file]
     return embed, [file]
 
 
