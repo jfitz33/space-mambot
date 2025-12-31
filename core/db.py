@@ -2789,6 +2789,94 @@ def db_team_points_totals(state, guild_id: int) -> dict[str, int]:
             totals[str(team_name)] = int(points or 0)
     return totals
 
+def db_team_points_all(
+    state,
+    guild_id: int,
+    team_name: str | None = None,
+    user_id: int | None = None,
+) -> list[dict[str, int | str]]:
+    import sqlite3
+
+    where_clauses = ["guild_id = ?"]
+    params: list[str | int] = [str(guild_id)]
+
+    if team_name:
+        where_clauses.append("team_name = ?")
+        params.append(team_name)
+
+    if user_id is not None:
+        where_clauses.append("user_id = ?")
+        params.append(str(user_id))
+
+    where_sql = " AND ".join(where_clauses)
+
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            f"""
+            SELECT user_id, team_name, points
+              FROM team_points
+             WHERE {where_sql}
+            """,
+            params,
+        )
+        return [
+            {"user_id": int(row[0]), "team": str(row[1]), "points": int(row[2])}
+            for row in cur.fetchall()
+        ]
+
+
+def db_team_point_splits_totals(
+    state,
+    guild_id: int,
+    team_name: str | None = None,
+    user_id: int | None = None,
+) -> dict[int, dict[str, int | str]]:
+    """Aggregate duel split points by user for a guild."""
+    import sqlite3
+
+    where_clauses = ["guild_id = ?"]
+    params: list[str | int] = [str(guild_id)]
+
+    if team_name:
+        where_clauses.append("team_name = ?")
+        params.append(team_name)
+
+    if user_id is not None:
+        where_clauses.append("user_id = ?")
+        params.append(str(user_id))
+
+    where_sql = " AND ".join(where_clauses)
+
+    results: dict[int, dict[str, int | str]] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            f"""
+            SELECT user_id, team_name, points, updated_ts
+              FROM team_point_splits
+             WHERE {where_sql}
+            """,
+            params,
+        )
+        for user_id_raw, team, points, updated_ts in cur.fetchall():
+            user_key = int(user_id_raw)
+            existing = results.get(user_key)
+            if not existing:
+                results[user_key] = {
+                    "team": str(team or ""),
+                    "points": int(points or 0),
+                    "updated_ts": int(updated_ts or 0),
+                }
+                continue
+
+            existing["points"] += int(points or 0)
+            if int(updated_ts or 0) >= int(existing.get("updated_ts") or 0):
+                existing["team"] = str(team or "")
+                existing["updated_ts"] = int(updated_ts or 0)
+
+    for entry in results.values():
+        entry.pop("updated_ts", None)
+
+    return results
 
 def db_team_points_top(state, guild_id: int, team_name: str, limit: int = 3) -> list[tuple[int, int]]:
     import sqlite3

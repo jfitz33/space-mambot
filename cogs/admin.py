@@ -22,6 +22,8 @@ from core.db import (
     db_stats_reset,
     db_stats_record_loss,
     db_stats_revert_result,
+    db_team_point_splits_totals,
+    db_team_points_all,
     db_team_points_clear,
     db_wheel_tokens_clear,
     db_wishlist_clear,
@@ -478,6 +480,98 @@ class Admin(commands.Cog):
             lines.append(f"📝 Reason: {reason}")
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @app_commands.command(
+        name="get_team_points",
+        description="(Admin) View team points totals, including duel split points.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        team="Optional team name to filter by",
+        user="Optional member to filter by",
+    )
+    async def get_team_points(
+        self,
+        interaction: discord.Interaction,
+        team: str | None = None,
+        user: discord.Member | None = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        team_filter = (team or "").strip() or None
+        user_filter_id = user.id if user else None
+
+        totals = db_team_points_all(
+            self.state, interaction.guild.id, team_filter, user_filter_id
+        )
+        duel_totals = db_team_point_splits_totals(
+            self.state, interaction.guild.id, team_filter, user_filter_id
+        )
+
+        combined: dict[int, dict[str, int | str]] = {}
+        for row in totals:
+            combined[int(row["user_id"])] = {
+                "team": str(row.get("team") or team_filter or ""),
+                "total": int(row.get("points") or 0),
+                "duel": 0,
+            }
+
+        for user_id, info in duel_totals.items():
+            entry = combined.setdefault(
+                int(user_id),
+                {"team": str(info.get("team") or team_filter or ""), "total": 0, "duel": 0},
+            )
+            if not entry.get("team") and info.get("team"):
+                entry["team"] = str(info.get("team") or "")
+            entry["duel"] = int(info.get("points") or 0)
+
+        if user_filter_id is not None and user_filter_id not in combined:
+            await interaction.followup.send(
+                "No team points found for that member.",
+                ephemeral=True,
+            )
+            return
+
+        if not combined:
+            await interaction.followup.send(
+                "No team point entries found for the requested filters.",
+                ephemeral=True,
+            )
+            return
+
+        lines = []
+        for user_id, info in sorted(
+            combined.items(), key=lambda item: (-int(item[1].get("total", 0)), item[0])
+        ):
+            member = interaction.guild.get_member(user_id)
+            name = member.mention if member else f"User {user_id}"
+            team_label = info.get("team") or "Unassigned"
+            total_points = int(info.get("total") or 0)
+            duel_points = int(info.get("duel") or 0)
+            lines.append(
+                f"{name} — Team: **{team_label}**, Total: **{total_points:,}**, Duel wins: **{duel_points:,}**"
+            )
+
+        embed = discord.Embed(
+            title="Team Points Overview",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        if team_filter:
+            embed.add_field(name="Team filter", value=team_filter, inline=True)
+        if user:
+            embed.add_field(name="User filter", value=user.mention, inline=True)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="admin_reset_user_quests",

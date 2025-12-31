@@ -2840,7 +2840,7 @@ class Tournaments(commands.Cog):
                 )
                 issue_lines.extend(["", suffix])
 
-            messages = _chunk_issue_messages("**Deck issues detected:**", issue_lines)
+            messages = _chunk_issue_messages("**Deck not submitted, deck issues detected:**", issue_lines)
             for message in messages:
                 await channel.send(message)
             return False

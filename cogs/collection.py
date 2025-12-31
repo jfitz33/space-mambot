@@ -314,7 +314,7 @@ class Collection(commands.Cog):
 
             # 6) Replace the “thinking” placeholder with the final status
             await interaction.edit_original_response(
-                content=f"Sent you a DM with {target.mention}'s collection. 📬"
+                content="Sent you a DM with your collection. 📬"
             )
 
         except discord.Forbidden:
