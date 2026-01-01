@@ -280,12 +280,21 @@ class QuestManager:
     async def fast_forward_daily_rollovers(
         self, target_date: date, *, include_user_ids: Iterable[int] | None = None
     ) -> int:
-        """Ensure rollover-style daily quests have slots up to ``target_date`` for known users."""
+        """Ensure rollover-style daily quests have slots up to ``target_date`` for known users.
+
+        - Always refreshes the current day's snapshots to match the loaded quests.json file and
+          seeds slots for starter-role users who have not opened ``/daily``.
+        - When advancing to a future day (simulation or scheduled rollover), keeps existing
+          unclaimed slots intact and only adds entries for the new target date using that day's
+          quest definitions.
+        """
         # First, lock in today's snapshot/slots using the already loaded defs so
         # mid-day quest.json edits don't rewrite the current day's rewards.
         today = now_et().date()
         
-        # Use the defs already loaded for today (refreshing if needed) to stamp today's snapshot.
+        # Lock in today's snapshot/slots using the already loaded defs so mid-day quest.json edits
+        # don't rewrite the current day's rewards. This also updates reward payloads for existing
+        # unclaimed entries since the snapshot upsert refreshes the day metadata.
         await self._refresh_defs_if_needed(today)
         await self._ensure_day_snapshots(self._defs, daily_key(today))
 
@@ -304,19 +313,25 @@ class QuestManager:
                     users.add(val)
         advanced = 0
 
-        # Ensure up through today with the current snapshot (pre-refresh values)
+        # Ensure today's entries exist for all known users so missed rewards are queued when we
+        # advance to the next day.
         for uid in users:
             for q in daily_rollover_quests_today:
                 await self._ensure_daily_rollover_slots(uid, q, today_date=today)
                 advanced += 1
 
-        # Load (but do not persist as "current") the defs for the target rollover day so future slots
-        # use the latest quests.json without changing today's in-memory defs.
-        future_defs = (
-            self._defs if target_date <= today else await self._load_defs_for_date(target_date, mutate=False)
-        )
+        if target_date <= today:
+            return advanced
+
+        # Load (but do not persist as "current") the defs for the target rollover day so future
+        # slots use the quests.json associated with that day without changing today's in-memory
+        # defs.
+        future_defs = await self._load_defs_for_date(target_date, mutate=False)
         await self._ensure_day_snapshots(future_defs, daily_key(target_date))
-        daily_rollover_quests_future = [q for q in future_defs.values() if q.category == "daily" and q.max_rollover_days > 0]
+        daily_rollover_quests_future = [
+            q for q in future_defs.values() if q.category == "daily" and q.max_rollover_days > 0
+        ]
+
 
         for uid in users:
             for q in daily_rollover_quests_future:
