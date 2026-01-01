@@ -492,6 +492,19 @@ def db_collection_total_by_name_and_rarity(state, user_id: int, card_name: str, 
         (total,) = cur.fetchone()
         return int(total or 0)
 
+def db_collection_total_by_rarity(state, user_id: int, rarity: str) -> int:
+    """Return the total owned count for a rarity across all prints."""
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """SELECT COALESCE(SUM(card_qty), 0)
+                 FROM user_collection
+                WHERE user_id = ?
+                  AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))""",
+            (str(user_id), rarity),
+        )
+        (total,) = cur.fetchone()
+    return int(total or 0)
+
 def _normalize_card_identity(card: dict | None, *, name: str | None = None,
                               rarity: str | None = None, card_set: str | None = None,
                               card_code: str | None = None, card_id: str | None = None) -> tuple[str, str, str, str, str]:

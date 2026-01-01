@@ -10,6 +10,7 @@ from core.db import (
     db_admin_add_card,
     db_admin_remove_card,
     db_collection_clear,
+    db_collection_total_by_rarity,
     db_wallet_set,
     db_wallet_add,
     db_wallet_get,
@@ -637,6 +638,81 @@ class Admin(commands.Cog):
             embed.add_field(name="User filter", value=user.mention, inline=True)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="get_poors",
+        description="(Admin) List Fire/Water members with few secret rare cards.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        amount_secrets="Maximum number of secret rares a member can have to be listed (default: 1)",
+    )
+    async def get_poors(
+        self, interaction: discord.Interaction, amount_secrets: int | None = 1
+    ) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        max_secrets = max(0, int(amount_secrets if amount_secrets is not None else 1))
+
+        guild = interaction.guild
+        target_roles = {"Fire", "Water"}
+        members: dict[int, discord.Member] = {}
+        missing_roles: list[str] = []
+
+        for role_name in sorted(target_roles):
+            role = discord.utils.get(guild.roles, name=role_name)
+            if not role:
+                missing_roles.append(role_name)
+                continue
+            for member in role.members:
+                members[member.id] = member
+
+        if not members:
+            msg = "No Fire/Water role members found in this server."
+            if missing_roles:
+                msg += " Missing roles: " + ", ".join(sorted(missing_roles))
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        qualifying: list[tuple[discord.Member, int]] = []
+        for member in members.values():
+            total_secret = db_collection_total_by_rarity(self.state, member.id, "secret")
+            if total_secret <= max_secrets:
+                qualifying.append((member, total_secret))
+
+        if not qualifying:
+            msg = (
+                "No Fire/Water members have secret rare totals at or below "
+                f"**{max_secrets}**."
+            )
+            if missing_roles:
+                msg += " Missing roles: " + ", ".join(sorted(missing_roles))
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        qualifying.sort(key=lambda pair: (pair[1], pair[0].display_name.lower()))
+
+        lines = [
+            f"Fire/Water members with ≤ **{max_secrets}** secret rare(s):",
+        ]
+        for member, total_secret in qualifying:
+            lines.append(
+                f"• {member.mention} — **{total_secret}** secret rare(s) owned"
+            )
+
+        if missing_roles:
+            lines.append("")
+            lines.append("Missing roles: " + ", ".join(sorted(missing_roles)))
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @app_commands.command(
         name="admin_reset_user_quests",
