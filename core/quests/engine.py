@@ -150,22 +150,31 @@ class QuestManager:
     def _day_key_from_date(self, d: date) -> str:
         return f"D:{d.isoformat()}"
 
-    async def _auto_grant_slot(self, user_id: int, slot: dict):
+    async def _auto_grant_slot(self, user_id: int, slot: dict, *, roles: List[str] | None = None):
+        payload = self._resolve_reward_payload_for_user(
+            slot.get("reward_payload") or {},
+            roles=roles,
+        )
         ok = await db_daily_quest_mark_claimed(
             self.state, user_id, slot["quest_id"], slot["day_key"], auto=True
         )
         if ok:
-            payload = slot.get("reward_payload") or {}
             await give_reward(self.state, user_id, slot.get("reward_type"), payload)
 
-    async def _apply_rollover_limit(self, user_id: int, q: QuestDef, slots: List[dict]) -> List[dict]:
+    async def _apply_rollover_limit(
+        self, user_id: int, q: QuestDef, slots: List[dict], *, roles: List[str] | None = None
+    ) -> List[dict]:
         if q.max_rollover_days <= 0:
+            return slots
+        # Do not auto-grant pack rewards; these are handled explicitly via
+        # admin tooling so users receive the correct pack selection later.
+        if any((s.get("reward_type") or "").lower() == "pack" for s in slots):
             return slots
         pending = [s for s in slots if not s.get("claimed_at")]
         # If at or above the cap, auto grant the oldest pending slot to keep the queue size stable
         while len(pending) > q.max_rollover_days > 0:
             oldest = pending.pop(0)
-            await self._auto_grant_slot(user_id, oldest)
+            await self._auto_grant_slot(user_id, oldest, roles=roles)
             stamp = now_et().isoformat()
             oldest["claimed_at"] = oldest.get("claimed_at") or stamp
             oldest["completed_at"] = oldest.get("completed_at") or stamp
@@ -200,7 +209,9 @@ class QuestManager:
 
         return data
 
-    async def _ensure_daily_rollover_slots(self, user_id: int, q: QuestDef, today_date: date | None = None) -> List[dict]:
+    async def _ensure_daily_rollover_slots(
+        self, user_id: int, q: QuestDef, today_date: date | None = None, *, roles: List[str] | None = None
+    ) -> List[dict]:
         today_key = daily_key(today_date)
         slots = await db_daily_quest_get_slots(self.state, user_id, q.quest_id)
         if not slots:
@@ -211,10 +222,16 @@ class QuestManager:
 
         while last_date < today_date_obj:
             last_date = last_date + timedelta(days=1)
-            slots = await self._apply_rollover_limit(user_id, q, slots)
+            slots = await self._apply_rollover_limit(user_id, q, slots, roles=roles)
             slots.append(await db_daily_quest_add_slot(self.state, user_id, q, self._day_key_from_date(last_date)))
 
-        slots = await self._apply_rollover_limit(user_id, q, slots)
+        slots = await self._apply_rollover_limit(user_id, q, slots, roles=roles)
+
+        if roles:
+            slots = [
+                {**slot, "reward_payload": self._resolve_reward_payload_for_user(slot.get("reward_payload") or {}, roles=roles)}
+                for slot in slots
+            ]
         return slots
 
     async def _increment_rollover_daily(self, user_id: int, q: QuestDef, amount: int) -> Tuple[int, bool]:
@@ -260,7 +277,9 @@ class QuestManager:
         pkey = period_key_for_category(q.category)
         return await db_upsert_progress(self.state, user_id, q.quest_id, pkey, amount, q.target_count)
 
-    async def fast_forward_daily_rollovers(self, target_date: date) -> int:
+    async def fast_forward_daily_rollovers(
+        self, target_date: date, *, include_user_ids: Iterable[int] | None = None
+    ) -> int:
         """Ensure rollover-style daily quests have slots up to ``target_date`` for known users."""
         # First, lock in today's snapshot/slots using the already loaded defs so
         # mid-day quest.json edits don't rewrite the current day's rewards.
@@ -274,7 +293,15 @@ class QuestManager:
         if not daily_rollover_quests_today:
             return 0
 
-        users = await db_daily_quest_list_users(self.state)
+        users = set(await db_daily_quest_list_users(self.state))
+        if include_user_ids:
+            for uid in include_user_ids:
+                try:
+                    val = int(uid)
+                except Exception:
+                    continue
+                if val:
+                    users.add(val)
         advanced = 0
 
         # Ensure up through today with the current snapshot (pre-refresh values)
@@ -383,7 +410,7 @@ class QuestManager:
         if not q:
             return False, "Quest not found."
         if q.category == "daily" and q.max_rollover_days > 0:
-            slots = await self._ensure_daily_rollover_slots(user_id, q)
+            slots = await self._ensure_daily_rollover_slots(user_id, q, roles=roles)
             pending = [s for s in slots if not s.get("claimed_at")]
             claimables = [
                 s

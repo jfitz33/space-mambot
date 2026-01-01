@@ -1,10 +1,14 @@
-import os, discord, math
+import os, discord, math, asyncio
+from datetime import datetime, date
 from typing import List
 from discord import app_commands
 from discord.ext import commands
 
 from core.quests.engine import QuestManager
 from core.quests.timekeys import now_et
+from core.daily_rollover import seconds_until_next_rollover, rollover_day_key
+from core.constants import TEAM_ROLE_NAMES
+from core.constants import TEAM_ROLE_NAMES
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -18,12 +22,57 @@ class Quests(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.qm = QuestManager(bot.state)
+        self._rollover_task: asyncio.Task | None = None
+
+    def _starter_member_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for guild in self.bot.guilds:
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if role:
+                    ids.update(m.id for m in role.members)
+        return ids
 
     async def cog_load(self):
         await self.qm.load_defs()
+        await self.bot.wait_until_ready()
         # Ensure rollover-style daily quests have their slots advanced through
         # today in case the bot was restarted and missed the regular scheduler.
-        await self.qm.fast_forward_daily_rollovers(now_et().date())
+        await self._prepare_rollover_for_date(now_et().date())
+
+        self._rollover_task = asyncio.create_task(
+            self._rollover_loop(), name="quest-rollovers"
+        )
+
+    async def cog_unload(self):
+        if self._rollover_task:
+            self._rollover_task.cancel()
+            try:
+                await self._rollover_task
+            except Exception:
+                pass
+
+    async def _prepare_rollover_for_date(self, target_date: date):
+        starter_ids = self._starter_member_ids()
+        await self.qm.fast_forward_daily_rollovers(
+            target_date, include_user_ids=starter_ids
+        )
+
+    async def _rollover_loop(self):
+        while True:
+            try:
+                await asyncio.sleep(seconds_until_next_rollover())
+                # Use the rollover day key to align with other daily systems.
+                day_key = rollover_day_key()
+                try:
+                    target_date = datetime.strptime(day_key, "%Y%m%d").date()
+                except Exception:
+                    target_date = now_et().date()
+                await self._prepare_rollover_for_date(target_date)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(5)
 
     @app_commands.command(name="daily", description="View your daily duel progress and claim reward(s)")
     @app_commands.guilds(GUILD)

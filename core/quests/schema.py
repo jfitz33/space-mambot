@@ -224,6 +224,32 @@ async def db_daily_quest_list_users(state) -> list[int]:
 
     return await asyncio.to_thread(_work)
 
+async def db_daily_quest_find_unclaimed_by_reward_type(
+    state, reward_type: str
+) -> list[dict]:
+    def _work():
+        with _conn(state.db_path) as conn:
+            rows = _query_all(
+                conn,
+                """
+                SELECT s.user_id, s.quest_id, s.day_key, s.progress, s.completed_at, s.claimed_at, s.auto_granted_at,
+                       d.reward_type, d.reward_payload, d.target_count
+                  FROM user_daily_quest_slots s
+                  JOIN daily_quest_days d ON d.quest_id = s.quest_id AND d.day_key = s.day_key
+                 WHERE (s.claimed_at IS NULL OR s.claimed_at = '') AND lower(d.reward_type) = lower(?)
+                 ORDER BY s.user_id ASC, s.day_key ASC
+                """,
+                (reward_type,),
+            )
+        for r in rows:
+            try:
+                r["reward_payload"] = json.loads(r.get("reward_payload") or "{}")
+            except Exception:
+                r["reward_payload"] = {}
+        return rows
+
+    return await asyncio.to_thread(_work)
+
 async def db_daily_quest_update_progress(state, user_id: int, quest_id: str, day_key: str, delta: int, target: int):
     delta = int(delta or 0)
     target = max(1, int(target or 1))

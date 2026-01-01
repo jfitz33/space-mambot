@@ -30,7 +30,12 @@ from core.db import (
     db_convert_all_mambucks_to_shards,
     db_clear_all_daily_quest_slots,
 )
-from core.quests.schema import db_reset_all_user_quests
+from core.quests.engine import QuestManager, give_reward
+from core.quests.schema import (
+    db_reset_all_user_quests,
+    db_daily_quest_mark_claimed,
+    db_daily_quest_find_unclaimed_by_reward_type,
+)
 from core.quests.timekeys import daily_key, now_et
 from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
 from core.currency import shard_set_name  # pretty name per set
@@ -172,6 +177,37 @@ class Admin(commands.Cog):
         games = int(stats.get("games", 0) or 0)
         wins = int(stats.get("wins", 0) or 0)
         return (wins / games * 100.0) if games else 0.0
+    
+    def _starter_member_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for guild in self.bot.guilds:
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if role:
+                    ids.update(m.id for m in role.members)
+        return ids
+
+    async def _resolve_user_and_roles(
+        self, user_id: int, guild: discord.Guild | None
+    ) -> tuple[discord.User | discord.Member | None, discord.Member | None, list[str]]:
+        user = self.bot.get_user(user_id)
+        if not user:
+            try:
+                user = await self.bot.fetch_user(user_id)
+            except Exception:
+                user = None
+
+        member: discord.Member | None = None
+        if guild:
+            member = guild.get_member(user_id)
+            if not member:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except Exception:
+                    member = None
+
+        roles = [r.name for r in getattr(member, "roles", []) if getattr(r, "name", None)]
+        return user, member, roles
 
     @app_commands.command(name="admin_add_card", description="(Admin) Add a card to a user's collection (rarity from pack)")
     @app_commands.guilds(GUILD)
@@ -688,6 +724,91 @@ class Admin(commands.Cog):
                 lines.append(f"(showing latest 10 of {len(slots)} slots)")
 
         await interaction.followup.send("\n".join(lines), ephemeral=True)
+    
+    @app_commands.command(
+        name="award_missed_pack_quests",
+        description="(Admin) DM and award all unclaimed pack-type daily quest rewards.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def award_missed_pack_quests(self, interaction: discord.Interaction) -> None:
+        """Grant any queued pack daily rewards and clear their slots before week 2."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        pending_slots = await db_daily_quest_find_unclaimed_by_reward_type(
+            self.state, "pack"
+        )
+        if not pending_slots:
+            await interaction.followup.send(
+                "No unclaimed pack daily rewards found.", ephemeral=True
+            )
+            return
+
+        qm = QuestManager(self.state)
+        guild = interaction.guild or self.bot.get_guild(GUILD_ID)
+
+        grouped: dict[int, list[dict]] = {}
+        for slot in pending_slots:
+            uid = int(slot.get("user_id") or 0)
+            if not uid:
+                continue
+            grouped.setdefault(uid, []).append(slot)
+
+        total_awarded = 0
+        failures: list[str] = []
+        summaries: list[str] = []
+
+        for user_id, slots in grouped.items():
+            user, _member, roles = await self._resolve_user_and_roles(user_id, guild)
+            intro_sent = False
+
+            for slot in slots:
+                payload = qm._resolve_reward_payload_for_user(
+                    slot.get("reward_payload") or {}, roles=roles
+                )
+                try:
+                    if not intro_sent and user is not None:
+                        try:
+                            await user.send("You missed out on these daily rewards week 1:")
+                        except Exception:
+                            pass
+                        intro_sent = True
+
+                    ack = await give_reward(
+                        self.state,
+                        user_id,
+                        slot.get("reward_type"),
+                        payload,
+                    )
+                    await db_daily_quest_mark_claimed(
+                        self.state, user_id, slot["quest_id"], slot["day_key"], auto=True
+                    )
+                    total_awarded += 1
+                    summaries.append(
+                        f"<@{user_id}> — {slot['day_key'].split(':')[-1]}: {ack}"
+                    )
+                except Exception as e:
+                    failures.append(
+                        f"<@{user_id}> {slot['day_key'].split(':')[-1]}: {e}"
+                    )
+
+        response_lines = [
+            f"Awarded {total_awarded} pending pack daily reward(s) across {len(grouped)} user(s).",
+            "Successful grants were marked claimed to clear queued rewards.",
+        ]
+        if summaries:
+            response_lines.append("\n".join(summaries[:10]))
+            if len(summaries) > 10:
+                response_lines.append(f"…and {len(summaries) - 10} more")
+        if failures:
+            response_lines.append("⚠️ Failures:")
+            response_lines.append("\n".join(failures[:10]))
+            if len(failures) > 10:
+                response_lines.append(f"…and {len(failures) - 10} more failures")
+
+        await interaction.followup.send("\n".join(response_lines), ephemeral=True)
 
     @app_commands.command(
         name="admin_report_loss",
@@ -1347,8 +1468,18 @@ class Admin(commands.Cog):
             results.append("⚠️ Sales cog not loaded.")
 
         quests_cog = self.bot.get_cog("Quests")
+        starter_ids: set[int] = set()
+        if quests_cog and hasattr(quests_cog, "_starter_member_ids"):
+            try:
+                starter_ids = set(quests_cog._starter_member_ids())
+            except Exception:
+                starter_ids = set()
+        if not starter_ids:
+            starter_ids = self._starter_member_ids()
         if quests_cog:
-            advanced = await quests_cog.qm.fast_forward_daily_rollovers(target_date)
+            advanced = await quests_cog.qm.fast_forward_daily_rollovers(
+                target_date, include_user_ids=starter_ids
+            )
             results.append(
                 f"✅ Daily quest rollovers prepared for **{quest_day_key}** "
                 f"({advanced} user/quest slot checks)."
