@@ -129,27 +129,27 @@ PACKS_BY_SET = {
 }
 
 BUNDLES = (
-    {
-        "id": "frostfire",
-        "name": FROSTFIRE_BUNDLE_NAME,
-        "cost": BUNDLE_BOX_COST,
-        "shard_cost": BUNDLE_BOX_SHARD_COST,
-        "set_id": 1,
-    },
-    {
-        "id": "sandstorm",
-        "name": SANDSTORM_BUNDLE_NAME,
-        "cost": BUNDLE_BOX_COST,
-        "shard_cost": BUNDLE_BOX_SHARD_COST,
-        "set_id": 2,
-    },
-    {
-        "id": "temporal",
-        "name": TEMPORAL_BUNDLE_NAME,
-        "cost": BUNDLE_BOX_COST,
-        "shard_cost": BUNDLE_BOX_SHARD_COST,
-        "set_id": 3,
-    },
+    #{
+    #    "id": "frostfire",
+    #    "name": FROSTFIRE_BUNDLE_NAME,
+    #    "cost": BUNDLE_BOX_COST,
+    #    "shard_cost": BUNDLE_BOX_SHARD_COST,
+    #    "set_id": 1,
+    #},
+    #{
+    #    "id": "sandstorm",
+    #    "name": SANDSTORM_BUNDLE_NAME,
+    #    "cost": BUNDLE_BOX_COST,
+    #    "shard_cost": BUNDLE_BOX_SHARD_COST,
+    #    "set_id": 2,
+    #},
+    #{
+    #    "id": "temporal",
+    #    "name": TEMPORAL_BUNDLE_NAME,
+    #    "cost": BUNDLE_BOX_COST,
+    #    "shard_cost": BUNDLE_BOX_SHARD_COST,
+    #    "set_id": 3,
+    #},
 )
 
 # Bundles that should be grouped with a set (uppercase bundle names)

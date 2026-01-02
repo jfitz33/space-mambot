@@ -217,7 +217,7 @@ class Collection(commands.Cog):
 
     @app_commands.command(
         name="collection",
-        description="DMs you a grouped list of a user's collection by pack/starter."
+        description="View a list of all cards in your collection, filterable by set number"
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(set_number="Restrict results to a specific set (optional)")
@@ -326,7 +326,7 @@ class Collection(commands.Cog):
                 content=f"Something went wrong sending the DM: `{e}`"
             )
 
-    @app_commands.command(name="export_collection", description="Export collection CSV for site import")
+    @app_commands.command(name="export_collection", description="Export collection CSV for import into ygoprodeck")
     @app_commands.guilds(GUILD)
     async def export_collection(self, interaction: discord.Interaction):
         target = interaction.user

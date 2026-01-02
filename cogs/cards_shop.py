@@ -475,7 +475,7 @@ class CardsShop(commands.Cog):
 
     @app_commands.command(
         name="craft",
-        description="Craft a specific printing using shards"
+        description="Craft a specific card using shards"
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
@@ -521,7 +521,7 @@ class CardsShop(commands.Cog):
 
     @app_commands.command(
         name="card",
-        description="View card details for a specific printing",
+        description="View card details for a given card name",
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
@@ -578,7 +578,7 @@ class CardsShop(commands.Cog):
 
     @app_commands.command(
         name="fragment",
-        description="Break down a specific printing to receive shards"
+        description="Break down a card into shards"
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(

@@ -613,7 +613,7 @@ class Trade(commands.Cog):
 
     @app_commands.command(
         name="binder_remove",
-        description="Remove card copies from your binder."
+        description="Remove cards from your binder."
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
@@ -683,7 +683,7 @@ class Trade(commands.Cog):
 
     @app_commands.command(
         name="search",
-        description="Find players who have or want a specific card.",
+        description="Search for a specific card and show all players that have it in their binder or wishlist",
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(name="Card to search for")
@@ -738,7 +738,7 @@ class Trade(commands.Cog):
 
     @app_commands.command(
         name="trade_propose",
-        description="Propose a trade: offer up to 5 card items (and optional shards) to another user"
+        description="Propose a trade: offer up to 5 cards and/or shards to another user"
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(
@@ -822,7 +822,7 @@ class Trade(commands.Cog):
 
     @app_commands.command(
         name="trade_accept",
-        description="Receiver adds up to 5 items (and optional shards) to a pending trade"
+        description="Add your cards and/or shards to a trade offer that has been proposed"
     )
     @app_commands.guilds(GUILD)
     @app_commands.describe(

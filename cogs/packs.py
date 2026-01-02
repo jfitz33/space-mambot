@@ -492,7 +492,7 @@ class Packs(commands.Cog):
             return set()
         return keys
 
-    @app_commands.command(name="pack", description="Open packs via dropdown")
+    @app_commands.command(name="pack", description="Purchase and open individual pack(s)")
     @app_commands.guilds(GUILD)
     @app_commands.describe(amount="How many packs (1-100)")
     async def pack(self, interaction: discord.Interaction, amount: app_commands.Range[int,MIN_PACKS,MAX_PACKS]=1):
@@ -516,7 +516,7 @@ class Packs(commands.Cog):
         view = TinSelectionView(self.bot.state, requester=interaction.user)
         await self._send_pack_selection(interaction, "Choose a tin to purchase:", view)
 
-    @app_commands.command(name="box", description=f"Open a sealed box or box bundle.")
+    @app_commands.command(name="box", description=f"Purchase and open a sealed box of 24 packs. Guarantees 5 ultras and 1 secret.")
     @app_commands.guilds(GUILD)
     async def box(self, interaction: discord.Interaction):
         if not self.bot.state.packs_index:
@@ -829,5 +829,6 @@ async def setup(bot: commands.Bot):
                 )
     
     # Removing tin from tree until releasing a tin
-    bot.tree.remove_command("tin", type=discord.AppCommandType.chat_input, guild=guild,)
+    for guild in (GUILD, None):
+        bot.tree.remove_command("tin", type=discord.AppCommandType.chat_input, guild=guild,)
 

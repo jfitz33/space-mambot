@@ -701,7 +701,7 @@ class Start(commands.Cog):
 
         return True
 
-    @app_commands.command(name="start", description="Claim your starter deck and receive your matching starter packs")
+    @app_commands.command(name="start", description="Choose your team and receive your matching starter deck and packs")
     @app_commands.guilds(GUILD)
     async def start(self, interaction: discord.Interaction):
         if not interaction.guild:

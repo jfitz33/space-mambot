@@ -35,7 +35,7 @@ class Wallet(commands.Cog):
         self.bot = bot
         self.state: AppState = self.bot.state
 
-    @app_commands.command(name="wallet", description="View a wallet's balances")
+    @app_commands.command(name="wallet", description="View a user's wallet (default yourself)")
     @app_commands.guilds(GUILD)  # keep guild-scoped as requested
     @app_commands.describe(user="(Optional) Whose wallet to view; defaults to you")
     async def wallet(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
