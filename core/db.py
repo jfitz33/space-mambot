@@ -1333,7 +1333,7 @@ def db_init_starter_daily_rewards(state):
         conn.execute("""
         CREATE TABLE IF NOT EXISTS starter_daily_rewards_config (
             id         INTEGER PRIMARY KEY CHECK(id=1),
-            amount     INTEGER NOT NULL DEFAULT 100,
+            amount     INTEGER NOT NULL DEFAULT 0,
             updated_ts INTEGER NOT NULL
         );
         """)
@@ -1366,7 +1366,7 @@ def db_init_starter_daily_rewards(state):
         conn.execute(
             """
             INSERT INTO starter_daily_rewards_config (id, amount, updated_ts)
-            VALUES (1, 100, ?)
+            VALUES (1, 0, ?)
             ON CONFLICT(id) DO NOTHING;
             """,
             (now,),
@@ -1386,7 +1386,7 @@ def db_starter_daily_get_amount(state) -> int:
         conn.execute(
             """
             INSERT INTO starter_daily_rewards_config (id, amount, updated_ts)
-            VALUES (1, 100, ?)
+            VALUES (1, 0, ?)
             ON CONFLICT(id) DO NOTHING;
             """,
             (int(time.time()),),
@@ -2301,6 +2301,14 @@ def db_user_set_wins_get(state, user_id: int, set_id: int) -> int:
         ).fetchone()
     return int(row[0] or 0) if row else 0
 
+
+def db_user_set_wins_clear(state, user_id: int) -> int:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        deleted = conn.execute(
+            "DELETE FROM user_set_wins WHERE user_id=?",
+            (str(user_id),),
+        ).rowcount
+    return int(deleted or 0)
 
 def db_user_set_wins_for_set(state, set_id: int) -> dict[int, int]:
     with sqlite3.connect(state.db_path) as conn:

@@ -23,6 +23,7 @@ from core.db import (
     db_stats_reset,
     db_stats_record_loss,
     db_stats_revert_result,
+    db_user_set_wins_clear,
     db_team_point_splits_totals,
     db_team_points_all,
     db_team_points_clear,
@@ -36,6 +37,7 @@ from core.quests.schema import (
     db_reset_all_user_quests,
     db_daily_quest_mark_claimed,
     db_daily_quest_find_unclaimed_by_reward_type,
+    db_daily_quest_get_slots_for_user,
 )
 from core.quests.timekeys import daily_key, now_et
 from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
@@ -450,6 +452,7 @@ class Admin(commands.Cog):
         wheel_tokens_removed = db_wheel_tokens_clear(self.state, user.id)
         stats_reset = db_stats_reset(self.state, user.id)
         starter_claims_removed = db_starter_claim_clear(self.state, user.id)
+        set_wins_removed = db_user_set_wins_clear(self.state, user.id)
 
         # Clear stored team points within this guild (if any)
         team_points_removed = 0
@@ -502,6 +505,10 @@ class Admin(commands.Cog):
             lines.append("✅ Cleared the starter claim guard; the user can run /start again.")
         else:
             lines.append("ℹ️ Starter claim guard was already clear.")
+        if set_wins_removed:
+            lines.append(f"✅ Cleared per-set win tracking entries (**{set_wins_removed}** removed).")
+        else:
+            lines.append("ℹ️ No per-set win tracking entries found to clear.")
         if interaction.guild and team_points_removed:
             lines.append(f"✅ Cleared team points entries ({team_points_removed} row(s)).")
         if removed_roles:
@@ -801,6 +808,71 @@ class Admin(commands.Cog):
 
         await interaction.followup.send("\n".join(lines), ephemeral=True)
     
+    @app_commands.command(
+        name="admin_daily_quest_slots",
+        description="(Admin) View raw daily quest slots and claim status for a user.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        user="Member to inspect",
+        quest_id="Optional quest ID filter (leave blank for all daily quests)",
+    )
+    async def admin_daily_quest_slots(
+        self, interaction: discord.Interaction, user: discord.Member, quest_id: str | None = None
+    ) -> None:
+        """Show each queued/completed/claimed daily quest slot for debugging rollovers."""
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        slots = await db_daily_quest_get_slots_for_user(self.state, user.id, quest_id)
+        if not slots:
+            await interaction.followup.send(
+                "No daily quest slots found for that user." + (" (quest filter applied)" if quest_id else ""),
+                ephemeral=True,
+            )
+            return
+
+        grouped: dict[str, list[dict]] = {}
+        for slot in slots:
+            grouped.setdefault(slot.get("quest_id") or "?", []).append(slot)
+
+        lines: list[str] = [
+            f"Daily quest slots for **{user.display_name}**" + (f" (quest `{quest_id}`)" if quest_id else "")
+        ]
+
+        for qid, quest_slots in grouped.items():
+            lines.append(f"\n**{qid}** — {len(quest_slots)} slot(s)")
+
+            display_slots = quest_slots[-25:]
+            for slot in display_slots:
+                target = int(slot.get("target_count") or 0)
+                progress = int(slot.get("progress") or 0)
+
+                if slot.get("claimed_at"):
+                    status = "✅ claimed"
+                elif progress >= max(1, target):
+                    status = "🏁 ready"
+                else:
+                    status = "…"
+
+                flags: list[str] = []
+                if slot.get("auto_granted_at"):
+                    flags.append("auto")
+                if flags:
+                    status += " (" + ", ".join(flags) + ")"
+
+                reward_type = (slot.get("reward_type") or "?").lower()
+                lines.append(
+                    f"• {slot['day_key']}: {progress}/{max(1, target)} — {status} [{reward_type}]"
+                )
+
+            if len(quest_slots) > len(display_slots):
+                lines.append(f"(showing latest {len(display_slots)} of {len(quest_slots)} slots)")
+
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
     @app_commands.command(
         name="award_missed_pack_quests",
         description="(Admin) DM and award all unclaimed pack-type daily quest rewards.",

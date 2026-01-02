@@ -215,8 +215,8 @@ class Teams(commands.Cog):
         if not bot_member:
             return
 
-        channel = await self._ensure_tracker_channel(guild, bot_member)
-        await self._ensure_message_exists(guild, channel)
+        # Team tracker channel has been disabled; skip creating or updating it.
+        return
 
     async def _ensure_tracker_channel(self, guild: discord.Guild, bot_member: discord.Member) -> discord.TextChannel:
         channel = discord.utils.get(guild.text_channels, name=TEAM_CHANNEL_NAME)
@@ -280,8 +280,8 @@ class Teams(commands.Cog):
         return channel
 
     async def _ensure_message_exists(self, guild: discord.Guild, channel: discord.TextChannel | None = None):
-        async with self._update_lock:
-            await self._refresh_tracker(guild, channel=channel)
+        # Team tracker channel has been disabled; no message management needed.
+        return
 
     async def _get_tracker_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         channel = discord.utils.get(guild.text_channels, name=TEAM_CHANNEL_NAME)

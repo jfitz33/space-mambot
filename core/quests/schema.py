@@ -212,6 +212,40 @@ async def db_daily_quest_get_slots(state, user_id: int, quest_id: str) -> list[d
 
     return await asyncio.to_thread(_work)
 
+async def db_daily_quest_get_slots_for_user(
+    state, user_id: int, quest_id: str | None = None
+) -> list[dict]:
+    """Fetch all daily quest slots for a user, optionally filtered by quest."""
+
+    def _work():
+        with _conn(state.db_path) as conn:
+            sql = (
+                """
+                SELECT s.user_id, s.quest_id, s.day_key, s.progress, s.completed_at, s.claimed_at, s.auto_granted_at,
+                       d.reward_type, d.reward_payload, d.target_count
+                  FROM user_daily_quest_slots s
+                  JOIN daily_quest_days d ON d.quest_id = s.quest_id AND d.day_key = s.day_key
+                 WHERE s.user_id=? {quest_filter}
+                 ORDER BY s.quest_id ASC, s.day_key ASC
+                """
+            )
+            params: list[str] = [str(user_id)]
+            if quest_id:
+                sql = sql.replace("{quest_filter}", "AND s.quest_id=?")
+                params.append(quest_id)
+            else:
+                sql = sql.replace("{quest_filter}", "")
+
+            rows = _query_all(conn, sql, params)
+
+        for r in rows:
+            try:
+                r["reward_payload"] = json.loads(r.get("reward_payload") or "{}")
+            except Exception:
+                r["reward_payload"] = {}
+        return rows
+
+    return await asyncio.to_thread(_work)
 
 async def db_daily_quest_list_users(state) -> list[int]:
     def _work():
