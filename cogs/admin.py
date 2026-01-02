@@ -531,6 +531,7 @@ class Admin(commands.Cog):
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         team="Optional team name to filter by",
@@ -652,6 +653,7 @@ class Admin(commands.Cog):
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         amount_secrets="Maximum number of secret rares a member can have to be listed (default: 1)",

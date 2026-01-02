@@ -441,6 +441,7 @@ class Teams(commands.Cog):
     @app_commands.describe(member="Member to award points to", points="Number of points to award")
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def team_award(
         self,
@@ -484,6 +485,7 @@ class Teams(commands.Cog):
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def team_split_points(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -619,6 +621,7 @@ class Teams(commands.Cog):
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def team_reset_points(
         self,
@@ -845,3 +848,12 @@ class Teams(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Teams(bot))
+
+    active_set = latest_team_set_id()
+    if active_set is None or active_set < 2:
+        try:
+            bot.tree.remove_command(
+                "join_team", type=discord.AppCommandType.chat_input, guild=GUILD
+            )
+        except Exception:
+            pass

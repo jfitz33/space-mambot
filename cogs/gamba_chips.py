@@ -27,6 +27,7 @@ class GambaChips(commands.Cog):
         self.bot = bot
         self._task: asyncio.Task | None = None
         self._last_grant_day_key: str | None = None
+        self._week1_enabled = os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1"
 
     async def cog_load(self):
         # Ensure table exists
@@ -43,6 +44,9 @@ class GambaChips(commands.Cog):
                 pass
 
     async def _grant_once(self, *, day_key: str | None = None):
+        if self._week1_enabled:
+            print("[gamba] daily grants disabled during week 1 launch.")
+            return
         day_key = day_key or _today_key()
         self._last_grant_day_key = day_key
         awarded = 0

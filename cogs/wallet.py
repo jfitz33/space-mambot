@@ -6,7 +6,7 @@ from discord import app_commands
 
 from core.state import AppState
 from core.db import db_wallet_get, db_shards_get
-from core.constants import PACKS_BY_SET
+from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET
 from core.images import mambuck_badge
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -45,7 +45,10 @@ class Wallet(commands.Cog):
         mambucks = int(bal.get("mambucks", 0))
 
         # Build shards breakdown
-        set_ids = sorted(PACKS_BY_SET.keys()) or [1]  # default include Set 1 if mapping empty
+        set_ids = [sid for sid in sorted(PACKS_BY_SET.keys()) if sid <= CURRENT_ACTIVE_SET]
+        if not set_ids and not PACKS_BY_SET:
+            # default include Set 1 if mapping empty
+            set_ids = [1]
         lines = []
         for sid in set_ids:
             amt = db_shards_get(self.state, target.id, sid)

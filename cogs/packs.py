@@ -820,10 +820,14 @@ async def setup(bot: commands.Bot):
     await bot.add_cog(Packs(bot))
 
     if is_set1_week1_locked():
-        for cmd_name in ("pack", "box", "tin"):
+        for cmd_name in ("pack", "box"):
             for guild in (GUILD, None):
                 bot.tree.remove_command(
                     cmd_name,
                     type=discord.AppCommandType.chat_input,
                     guild=guild,
                 )
+    
+    # Removing tin from tree until releasing a tin
+    bot.tree.remove_command("tin", type=discord.AppCommandType.chat_input, guild=guild,)
+
