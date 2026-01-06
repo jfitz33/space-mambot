@@ -7,7 +7,7 @@
     "target_count": 2,
     "reward_type": "pack",
     "reward_payload": {
-      "qty": 3,
+      "qty": 5,
       "pack_by_role": {
         "Water": "Storm of the Abyss",
         "Fire": "Blazing Genesis"
