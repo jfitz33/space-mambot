@@ -91,7 +91,7 @@ class Admin(commands.Cog):
     # Re-using shop's suggest prints with set function for admin override ac
     async def ac_print(self, interaction: discord.Interaction, current: str):
         from cogs.cards_shop import suggest_prints_with_set  # you already have this
-        return suggest_prints_with_set(self.state, current)
+        return suggest_prints_with_set(self.state, current, include_starters=True)
     
     def _resolve_print_key(self, print_key: str) -> Optional[dict]:
         """Return a copy of the card metadata for the supplied print key."""

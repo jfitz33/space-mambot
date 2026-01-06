@@ -42,7 +42,9 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 
-def suggest_prints_with_set(state, query: str, limit: int = 25):
+def suggest_prints_with_set(
+    state, query: str, limit: int = 25, *, include_starters: bool = False
+):
     ensure_shop_index(state)
     q_tokens = [t for t in (query or "").lower().split() if t]
 
@@ -57,7 +59,7 @@ def suggest_prints_with_set(state, query: str, limit: int = 25):
         hay = f"{name} {set_} {rarity} {code} {cid}".lower()
         if q_tokens and not all(t in hay for t in q_tokens):
             continue
-        if is_starter_set(set_):
+        if not include_starters and is_starter_set(set_):
             continue
         if is_tin_promo_print(state, card, set_name=set_):
             continue
@@ -75,7 +77,7 @@ def suggest_prints_with_set(state, query: str, limit: int = 25):
         set_present = (card.get("set") or card.get("cardset") or "").strip()
         if not set_present:
             continue
-        if is_starter_set(set_present):
+        if not include_starters and is_starter_set(set_present):
             continue
         if is_tin_promo_print(state, card, set_name=set_present):
             continue
@@ -402,6 +404,10 @@ class CardsShop(commands.Cog):
         # Suggest craftable prints from shop index (set-aware, as before)
         return suggest_prints_with_set(self.state, current)
 
+    async def ac_card_lookup(self, interaction: discord.Interaction, current: str):
+        # Allow starter cards to be suggested for lookup commands
+        return suggest_prints_with_set(self.state, current, include_starters=True)
+
     async def _fetch_cardinfo_from_api(self, card: dict) -> Optional[dict]:
         loop = asyncio.get_running_loop()
 
@@ -527,7 +533,7 @@ class CardsShop(commands.Cog):
     @app_commands.describe(
         cardname="Choose the exact printing",
     )
-    @app_commands.autocomplete(cardname=ac_craft)
+    @app_commands.autocomplete(cardname=ac_card_lookup)
     async def card(self, interaction: discord.Interaction, cardname: str):
         card = find_card_by_print_key(self.state, cardname)
         if not card:
