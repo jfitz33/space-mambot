@@ -217,14 +217,20 @@ class Admin(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
-        user="User to modify",
+        user="User to modify (ignored if all_users=true)",
         card_name="Card to add (choose the exact printing)",
         qty="Quantity to add (default 1)",
+        all_users="Add the card to all starter-role members (Fire/Water)",
     )
     @app_commands.autocomplete(card_name=ac_print)
-    async def admin_add_card(self, interaction: discord.Interaction,
-                             user: discord.User, card_name: str,
-                             qty: app_commands.Range[int,1,999]=1):
+    async def admin_add_card(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.User],
+        card_name: str,
+        qty: app_commands.Range[int, 1, 999] = 1,
+        all_users: bool = False,
+    ):
         card = self._resolve_print_key(card_name)
         if not card:
             await interaction.response.send_message("❌ Card not found for that selection.", ephemeral=True)
@@ -238,6 +244,62 @@ class Admin(commands.Cog):
             return
         card_code = self._card_code(card)
         card_id = self._card_id(card)
+
+        if all_users:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            guild = interaction.guild
+            if guild is None:
+                await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
+                return
+
+            starter_members: set[discord.Member] = set()
+            missing_roles: list[str] = []
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if not role:
+                    missing_roles.append(role_name)
+                    continue
+                starter_members.update(role.members)
+
+            if not starter_members:
+                msg = "❌ No starter-role members (Fire/Water) found to update."
+                if missing_roles:
+                    msg += " Missing roles: " + ", ".join(sorted(missing_roles))
+                await interaction.followup.send(msg, ephemeral=True)
+                return
+
+            for member in starter_members:
+                db_admin_add_card(
+                    self.bot.state,
+                    member.id,
+                    name=name,
+                    rarity=rarity,
+                    card_set=card_set,
+                    card_code=card_code,
+                    card_id=card_id,
+                    qty=qty,
+                )
+
+            display_card = dict(card)
+            display_card.setdefault("set", card_set)
+            label = card_label(display_card)
+            summary = (
+                f"✅ Added **x{qty}** of **{label}** to **{len(starter_members)}** starter members."
+            )
+            if missing_roles:
+                summary += " Missing roles: " + ", ".join(sorted(missing_roles))
+
+            await interaction.followup.send(summary, ephemeral=True)
+            if interaction.channel:
+                await interaction.channel.send(summary)
+            return
+
+        if user is None:
+            await interaction.response.send_message(
+                "❌ Please select a **user** or set **all_users** to true.",
+                ephemeral=True,
+            )
+            return
 
         new_total = db_admin_add_card(
             self.bot.state,
@@ -265,14 +327,20 @@ class Admin(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
-        user="User to modify",
+        user="User to modify (ignored if all_users=true)",
         card_name="Card to remove (choose the exact printing)",
         qty="Quantity to remove (default 1)",
+        all_users="Remove the card from all starter-role members (Fire/Water)",
     )
     @app_commands.autocomplete(card_name=ac_print)
-    async def admin_remove_card(self, interaction: discord.Interaction,
-                                user: discord.User, card_name: str,
-                                qty: app_commands.Range[int,1,999]=1):
+    async def admin_remove_card(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.User],
+        card_name: str,
+        qty: app_commands.Range[int, 1, 999] = 1,
+        all_users: bool = False,
+    ):
         card = self._resolve_print_key(card_name)
         if not card:
             await interaction.response.send_message("❌ Card not found for that selection.", ephemeral=True)
@@ -286,6 +354,71 @@ class Admin(commands.Cog):
             return
         card_code = self._card_code(card)
         card_id = self._card_id(card)
+
+        if all_users:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            guild = interaction.guild
+            if guild is None:
+                await interaction.followup.send("❌ This command can only be used in a server.", ephemeral=True)
+                return
+
+            starter_members: set[discord.Member] = set()
+            missing_roles: list[str] = []
+            for role_name in TEAM_ROLE_NAMES:
+                role = discord.utils.get(guild.roles, name=role_name)
+                if not role:
+                    missing_roles.append(role_name)
+                    continue
+                starter_members.update(role.members)
+
+            if not starter_members:
+                msg = "❌ No starter-role members (Fire/Water) found to update."
+                if missing_roles:
+                    msg += " Missing roles: " + ", ".join(sorted(missing_roles))
+                await interaction.followup.send(msg, ephemeral=True)
+                return
+
+            total_removed = 0
+            affected_members = 0
+            for member in starter_members:
+                removed, _ = db_admin_remove_card(
+                    self.bot.state,
+                    member.id,
+                    name=name,
+                    rarity=rarity,
+                    card_set=card_set,
+                    card_code=card_code,
+                    card_id=card_id,
+                    qty=qty,
+                )
+                if removed:
+                    total_removed += removed
+                    affected_members += 1
+
+            display_card = dict(card)
+            display_card.setdefault("set", card_set)
+            label = card_label(display_card)
+            if total_removed == 0:
+                summary = "ℹ️ No matching rows found for starter members."
+            else:
+                summary = (
+                    f"🗑 Removed up to **x{qty}** of **{label}** from **{affected_members}** "
+                    f"starter members (total removed: **{total_removed}**)."
+                )
+            if missing_roles:
+                summary += " Missing roles: " + ", ".join(sorted(missing_roles))
+
+            await interaction.followup.send(summary, ephemeral=True)
+            if total_removed > 0 and interaction.channel:
+                await interaction.channel.send(summary)
+            return
+
+        if user is None:
+            await interaction.response.send_message(
+                "❌ Please select a **user** or set **all_users** to true.",
+                ephemeral=True,
+            )
+            return
 
         removed, remaining = db_admin_remove_card(
             self.bot.state,
