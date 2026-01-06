@@ -23,7 +23,9 @@ BOOP_LINES = [
     "A boop a day keeps the... uhm... I forget what I was gonna say 😳",
     "Don't touch me I'm sterile!",
     "Ba da da da da da da. Tequila! 🍹",
-    "You booped me! Norway!!!"
+    "You booped me! Norway!!!",
+    "Pssst, I'm secretly rooting for the fire team. Don't tell anyone!",
+    "Pssst, I'm secretly rooting for the water team. Don't tell anyone!"
 ]
 
 def boop_image_path() -> Path:

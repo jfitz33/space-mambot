@@ -437,72 +437,16 @@ class Teams(commands.Cog):
                 return role.name
         return None
 
-    @app_commands.command(name="team_award", description="(Admin) Award points to a team member")
-    @app_commands.describe(member="Member to award points to", points="Number of points to award")
-    @app_commands.guilds(GUILD)
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def team_award(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        points: app_commands.Range[int, 1, 1_000_000],
-    ):
-        if not interaction.guild:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
+    async def split_duel_team_points(
+        self, guild: discord.Guild
+    ) -> tuple[bool, str | None, discord.Embed | None]:
+        if not guild:
+            return False, "This command can only be used in a server.", None
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        team_name = self._resolve_member_team(member)
-        if not team_name:
-            await interaction.followup.send(
-                "That member does not have a team role for the current set assigned.",
-                ephemeral=True,
-            )
-            return
-
-        new_total = db_team_points_add(
-            self.state,
-            interaction.guild.id,
-            member.id,
-            team_name,
-            int(points),
-        )
-
-        await self._ensure_message_exists(interaction.guild)
-
-        await interaction.followup.send(
-            f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
-            f"They now have **{new_total:,}** points.",
-            ephemeral=True,
-        )
-
-    @app_commands.command(
-        name="team_split_points",
-        description="(Admin) Split duel team points based on wins for the active set.",
-    )
-    @app_commands.guilds(GUILD)
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def team_split_points(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        guild = interaction.guild
         set_id = CURRENT_ACTIVE_SET
         wins_by_user = db_user_set_wins_for_set(self.state, set_id)
         if not wins_by_user:
-            await interaction.followup.send(
-                "No duel wins recorded for the current set; nothing to distribute.",
-                ephemeral=True,
-            )
-            return
+            return False, "No duel wins recorded for the current set; nothing to distribute.", None
 
         active_team_names = set(_get_active_team_names())
         allocations: list[dict] = []
@@ -522,11 +466,11 @@ class Teams(commands.Cog):
 
         total_wins = sum(team_wins.values())
         if total_wins <= 0:
-            await interaction.followup.send(
+            return (
+                False,
                 "No duel wins recorded for any active team members in the current set.",
-                ephemeral=True,
+                None,
             )
-            return
 
         total_points = DUEL_TEAM_POINTS_TOTAL
         previous_splits = db_team_point_splits_for_set(self.state, guild.id, set_id)
@@ -601,14 +545,80 @@ class Teams(commands.Cog):
                 value=f"Wins: **{wins:,}**",
                 inline=True,
             )
+        
+        content = (
+            f"Split complete. Awarded points to **{awarded_members}** member"
+            f"{'s' if awarded_members != 1 else ''}."
+        ).strip()
+
+        return True, content, embed
+
+    @app_commands.command(name="team_award", description="(Admin) Award points to a team member")
+    @app_commands.describe(member="Member to award points to", points="Number of points to award")
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_award(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        points: app_commands.Range[int, 1, 1_000_000],
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        team_name = self._resolve_member_team(member)
+        if not team_name:
+            await interaction.followup.send(
+                "That member does not have a team role for the current set assigned.",
+                ephemeral=True,
+            )
+            return
+
+        new_total = db_team_points_add(
+            self.state,
+            interaction.guild.id,
+            member.id,
+            team_name,
+            int(points),
+        )
+
+        await self._ensure_message_exists(interaction.guild)
+
+        await interaction.followup.send(
+            f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
+            f"They now have **{new_total:,}** points.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_split_points",
+        description="(Admin) Split duel team points based on wins for the active set.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_split_points(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        success, content, embed = await self.split_duel_team_points(interaction.guild)
+        if not success:
+            await interaction.followup.send(content or "No duel wins recorded.", ephemeral=True)
+            return
 
         await interaction.followup.send(
             embed=embed,
-            content=(
-                f"Split complete. Awarded points to **{awarded_members}** member"
-                f"{'s' if awarded_members != 1 else ''}."
-            ).strip(),
-            ephemeral=True,
+            content=content,
+            ephemeral=True
         )
 
     @app_commands.command(

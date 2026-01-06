@@ -1,4 +1,5 @@
 import os, discord
+import asyncio
 from typing import Optional
 from discord.ext import commands
 from discord import app_commands
@@ -105,6 +106,21 @@ class Stats(commands.Cog):
                 await queue.clear_pairing(caller.id, opponent.id)
         except Exception as e:
             print("[stats] failed to clear duel pairing:", e)
+        
+        await self._trigger_team_points_split(interaction.guild)
+
+    async def _trigger_team_points_split(self, guild: discord.Guild | None):
+        if not guild:
+            return
+
+        teams = self.bot.get_cog("Teams")
+        if not teams or not hasattr(teams, "split_duel_team_points"):
+            return
+
+        try:
+            await teams.split_duel_team_points(guild)
+        except Exception as exc:
+            print("[stats] failed to split duel team points:", exc)
 
     @app_commands.command(name="stats", description="View a player's win/loss record and win%.")
     @app_commands.guilds(GUILD)

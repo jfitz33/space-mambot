@@ -1021,6 +1021,21 @@ class Admin(commands.Cog):
         except Exception as e:
             print("[admin] failed to clear duel pairing:", e)
 
+        await self._trigger_team_points_split(interaction.guild)
+
+    async def _trigger_team_points_split(self, guild: discord.Guild | None):
+        if not guild:
+            return
+
+        teams = self.bot.get_cog("Teams")
+        if not teams or not hasattr(teams, "split_duel_team_points"):
+            return
+
+        try:
+            await teams.split_duel_team_points(guild)
+        except Exception as exc:
+            print("[admin] failed to split duel team points:", exc)
+
     @app_commands.command(
         name="admin_revert_result",
         description="(Admin) Revert the most recent recorded result between two players.",

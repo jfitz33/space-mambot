@@ -833,7 +833,22 @@ class Tournaments(commands.Cog):
             ephemeral=not announce_publicly,
         )
 
+        await self._trigger_team_points_split(interaction.guild)
+
         return True
+    
+    async def _trigger_team_points_split(self, guild: discord.Guild | None):
+        if not guild:
+            return
+
+        teams = self.bot.get_cog("Teams")
+        if not teams or not hasattr(teams, "split_duel_team_points"):
+            return
+
+        try:
+            await teams.split_duel_team_points(guild)
+        except Exception:
+            self.logger.exception("[tournaments] failed to split duel team points")
 
     async def _find_existing_challonge_participant(
         self,
