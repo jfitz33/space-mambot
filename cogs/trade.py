@@ -222,7 +222,8 @@ class TradeConfirmView(discord.ui.View):
                 return f"<@{user_id}>"
 
         await interaction.channel.send(
-            f"🛑 trade between **{name_for(t['proposer_id'])}** and **{name_for(t['receiver_id'])}** was cancelled"
+            f"🛑 trade **#{t['trade_id']}** between **{name_for(t['proposer_id'])}** and "
+            f"**{name_for(t['receiver_id'])}** was cancelled"
         )
         await interaction.response.send_message("🛑 Trade cancelled.", ephemeral=True)
 
@@ -937,7 +938,8 @@ class Trade(commands.Cog):
                 return f"<@{user_id}>"
 
         await interaction.channel.send(
-            f"🛑 trade between **{name_for(t['proposer_id'])}** and **{name_for(t['receiver_id'])}** was cancelled"
+            f"🛑 trade **#{t['trade_id']}** between **{name_for(t['proposer_id'])}** and "
+            f"**{name_for(t['receiver_id'])}** was cancelled"
         )
         await interaction.response.send_message("🛑 Trade cancelled.", ephemeral=True)
 

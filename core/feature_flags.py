@@ -13,3 +13,7 @@ def is_set1_week1_locked() -> bool:
     if override is not None:
         return override == "1"
     return os.getenv("DAILY_DUEL_WEEK1_ENABLE", "1") == "1"
+
+def is_shop_gamba_enabled() -> bool:
+    """Return True when shop and gamba commands should be enabled."""
+    return os.getenv("SHOP_GAMBA_ENABLED", "1") == "1"

@@ -4,7 +4,7 @@ import os
 import logging
 import discord
 import requests
-from core.feature_flags import is_set1_week1_locked
+from core.feature_flags import is_shop_gamba_enabled
 from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -819,7 +819,7 @@ class Packs(commands.Cog):
 async def setup(bot: commands.Bot):
     await bot.add_cog(Packs(bot))
 
-    if is_set1_week1_locked():
+    if not is_shop_gamba_enabled():
         for cmd_name in ("pack", "box"):
             for guild in (GUILD, None):
                 bot.tree.remove_command(
