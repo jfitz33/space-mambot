@@ -110,8 +110,36 @@ def db_init(state: AppState):
             PRIMARY KEY (guild_id, set_id, user_id)
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS duelingbook_names (
+            user_id    TEXT NOT NULL PRIMARY KEY,
+            name       TEXT NOT NULL,
+            updated_ts INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        """)
 
 DEBUG_COLLECTION = False  # set True while testing
+
+def db_duelingbook_name_set(state: AppState, user_id: int, name: str) -> None:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO duelingbook_names (user_id, name, updated_ts)
+            VALUES (?, ?, strftime('%s','now'))
+            ON CONFLICT(user_id) DO UPDATE SET
+                name = excluded.name,
+                updated_ts = excluded.updated_ts;
+            """,
+            (str(user_id), name),
+        )
+
+def db_duelingbook_name_get(state: AppState, user_id: int) -> str | None:
+    with sqlite3.connect(state.db_path) as conn:
+        row = conn.execute(
+            "SELECT name FROM duelingbook_names WHERE user_id = ?;",
+            (str(user_id),),
+        ).fetchone()
+    return row[0] if row else None
 
 def db_add_cards(
     state,

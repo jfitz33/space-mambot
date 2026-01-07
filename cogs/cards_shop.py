@@ -101,7 +101,9 @@ def _normalize_tokens(q: str) -> List[str]:
         out.append("".join(cur))
     return [t for t in out if t]
 
-def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 25) -> List[app_commands.Choice[str]]:
+def suggest_owned_prints_relaxed(
+    state, user_id: int, query: str, limit: int = 25, *, include_starters: bool = False
+) -> List[app_commands.Choice[str]]:
     ensure_shop_index(state)
     tokens = _normalize_tokens(query)
     # pull more rows than we’ll show, to improve chances
@@ -121,7 +123,7 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
         hay = f"{name} {set_} {rty} {code} {cid}".lower()
         if tokens and not all(t in hay for t in tokens):
             continue
-        if is_starter_set(set_):
+        if not include_starters and is_starter_set(set_):
             continue
 
         # Build/lookup a proper print key for this owned row
@@ -139,7 +141,7 @@ def suggest_owned_prints_relaxed(state, user_id: int, query: str, limit: int = 2
         card = find_card_by_print_key(state, print_key)
         if not card:
             continue
-        if is_starter_card(card):
+        if not include_starters and is_starter_card(card):
             continue
 
         label = card_label(card)

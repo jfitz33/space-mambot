@@ -13,7 +13,8 @@ Welcome to the Space Mambot Command Guide. Here you can find details for every c
 
 ## Checking Your Inventory
 - **/wallet** `user` — View mambucks and shard balances for yourself or another member; `user` optional default is you.
-- **/collection** `set_number` — View your collection; `set_number` optional to filter by set.
+- **/collection** `set_number` `include_binder` — View your collection; `set_number` optional to filter by set; `include_binder` optional default true, set to false to
+exclude cards in your binder from collection output
 - **/export_collection** — Get a CSV export of your collection compatible with ygoprodeck. NOTE: For imports into ygopro, you must delete your collection each time prior
 to importing
 - **/card** `cardname` — View card details for a given cardname
@@ -45,7 +46,8 @@ to importing
 
 ## Duels and Stats
 - **/deck_check** `deck_file` — Validate a YDK deck against your collection and the banlist
-- **/join_queue** — Join the rated duel queue in **#duel-arena** (must be used in that channel).
+- **/join_queue** `duelingbook_name` — Join the rated duel queue in **#duel-arena** (must be used in that channel). The Duelingbook name is required the first time you
+join queue and may be provided if you wish to update your duelingbook name
 - **/leave_queue** — Leave the rated duel queue if you are waiting for a pairing.
 - **/report** `opponent`, `outcome` — Report the result of a queued duel against your opponent. Either the winner or loser of a match may use this.
 - **/stats** `user` — View win/loss record, win percentage, and team points for a member; `user` optional default is you.

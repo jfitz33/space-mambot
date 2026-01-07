@@ -1,4 +1,4 @@
-# cogs/trade.py
+import logging
 import os
 from typing import List, Tuple, Optional
 
@@ -35,6 +35,8 @@ from cogs.collection import (
     group_and_format_rows,
     sections_to_embed_descriptions,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---- Guild scoping ----
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -83,9 +85,24 @@ def _item_dict_from_print_key(state: AppState, key: str) -> dict:
     """
     card = find_card_by_print_key(state, key)
     if not card:
+        known_prints = getattr(state, "_shop_print_by_key", {})
+        logger.warning(
+            "Card printing not found for trade print_key=%s known_prints=%s",
+            key,
+            len(known_prints),
+        )
         raise ValueError("Card printing not found.")
     set_name = resolve_card_set(state, card)
     if not set_name:
+        logger.warning(
+            "Card printing missing set for trade print_key=%s name=%s rarity=%s code=%s id=%s raw_set=%s",
+            key,
+            (card.get("name") or card.get("cardname") or "").strip(),
+            (card.get("rarity") or card.get("cardrarity") or "").strip(),
+            (card.get("code") or card.get("cardcode") or "").strip(),
+            (card.get("id") or card.get("cardid") or "").strip(),
+            (card.get("set") or card.get("cardset") or "").strip(),
+        )
         raise ValueError("Printing has no set; cannot trade.")
     return {
         "name": (card.get("name") or card.get("cardname") or "").strip(),
@@ -274,7 +291,9 @@ class Trade(commands.Cog):
         return choices
     
     async def ac_binder_add_owned(self, interaction: discord.Interaction, current: str):
-        return suggest_owned_prints_relaxed(self.state, interaction.user.id, current)
+        return suggest_owned_prints_relaxed(
+            self.state, interaction.user.id, current, include_starters=True
+        )
 
     def _known_shard_sets(self) -> list[tuple[int, str]]:
         """

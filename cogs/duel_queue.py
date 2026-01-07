@@ -7,6 +7,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.db import db_duelingbook_name_get, db_duelingbook_name_set
+
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
@@ -120,7 +122,12 @@ class DuelQueue(commands.Cog):
         user2 = self.bot.get_user(user2_id)
         mention1 = user1.mention if user1 else f"<@{user1_id}>"
         mention2 = user2.mention if user2 else f"<@{user2_id}>"
-        await channel.send(f"{mention1} is paired vs {mention2}. Good luck duelists!")
+        name1 = db_duelingbook_name_get(self.bot.state, user1_id) or "unknown"
+        name2 = db_duelingbook_name_get(self.bot.state, user2_id) or "unknown"
+        await channel.send(
+            f"{mention1} (duelingbook name: {name1}) is paired vs "
+            f"{mention2} (duelingbook name: {name2}). Good luck duelists!"
+        )
 
     async def _request_confirmation(self, waiting_user_id: int, challenger_id: int, channel_id: int | None, guild: discord.Guild | None):
         member: discord.abc.User | None = None
@@ -251,9 +258,21 @@ class DuelQueue(commands.Cog):
 
     @app_commands.command(name="join_queue", description="Join the rated duel queue.")
     @app_commands.guilds(GUILD)
-    async def join_queue(self, interaction: discord.Interaction):
+    @app_commands.describe(duelingbook_name="Your Duelingbook username.")
+    async def join_queue(self, interaction: discord.Interaction, duelingbook_name: str | None = None):
         if not self._in_duel_channel(interaction):
             await interaction.response.send_message("This command can only be used in #duel-arena.", ephemeral=True)
+            return
+
+        cleaned_name = duelingbook_name.strip() if duelingbook_name else None
+        if cleaned_name:
+            db_duelingbook_name_set(self.bot.state, interaction.user.id, cleaned_name)
+        stored_name = db_duelingbook_name_get(self.bot.state, interaction.user.id)
+        if not stored_name:
+            await interaction.response.send_message(
+                "Please provide your Duelingbook name to join the queue (e.g., `/join_queue duelingbook_name:YourName`).",
+                ephemeral=True,
+            )
             return
 
         async with self.lock:

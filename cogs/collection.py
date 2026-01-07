@@ -5,7 +5,7 @@ from typing import Dict, Iterable, List, Tuple, Any
 from discord.ext import commands
 from discord import app_commands
 
-from core.db import db_get_collection
+from core.db import db_binder_list, db_get_collection, _normalize_card_identity
 from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, set_id_for_pack
 from core.constants import PACKS_BY_SET, set_id_for_pack
 
@@ -220,12 +220,16 @@ class Collection(commands.Cog):
         description="View a list of all cards in your collection, filterable by set number"
     )
     @app_commands.guilds(GUILD)
-    @app_commands.describe(set_number="Restrict results to a specific set (optional)")
+    @app_commands.describe(
+        set_number="Restrict results to a specific set (optional)",
+        include_binder="Include cards stored in your binder (default: true)",
+    )
     @app_commands.choices(set_number=SET_CHOICES)
     async def collection(
         self,
         interaction: discord.Interaction,
         set_number: app_commands.Choice[int] = None,
+        include_binder: bool = True,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -256,6 +260,29 @@ class Collection(commands.Cog):
                 await interaction.edit_original_response(
                     content=f"{target.mention} has no cards in Set {selected_set_id}."
                 )
+                return
+
+        if not include_binder:
+            binder_rows = db_binder_list(self.bot.state, target.id)
+            binder_qty = defaultdict(int)
+            for item in binder_rows:
+                name, rarity, cset, code, cid = _normalize_card_identity(item)
+                key = (name.lower(), rarity.lower(), cset.lower(), code, cid)
+                binder_qty[key] += int(item.get("qty") or 0)
+
+            filtered_rows = []
+            for name, qty, rarity, cset, code, cid in rows:
+                n_name, n_rarity, n_set, n_code, n_cid = _normalize_card_identity(
+                    None, name=name, rarity=rarity, card_set=cset, card_code=code, card_id=cid
+                )
+                key = (n_name.lower(), n_rarity.lower(), n_set.lower(), n_code, n_cid)
+                remaining = int(qty or 0) - binder_qty.get(key, 0)
+                if remaining > 0:
+                    filtered_rows.append((name, remaining, rarity, cset, code, cid))
+
+            rows = filtered_rows
+            if not rows:
+                await interaction.edit_original_response(content=f"{target.mention} has no cards.")
                 return
 
         try:
