@@ -1,6 +1,7 @@
 {
   "default_limit": 3,
   "forbidden": [
+    "Code Hack"
   ],
   "limited": [
     "Sangan",
