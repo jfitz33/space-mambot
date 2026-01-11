@@ -15,6 +15,7 @@ from core.db import (
     db_trade_get_active_for_user, db_trade_store_public_message,
     db_shards_get,
     db_collection_list_owned_prints,
+    db_get_collection,
     db_wishlist_add, db_wishlist_remove, db_wishlist_list, db_wishlist_clear,
     db_wishlist_holders,
     db_binder_add, db_binder_remove, db_binder_list, db_binder_clear,
@@ -24,17 +25,20 @@ from core.cards_shop import (
     register_print_if_missing,
     find_card_by_print_key,
     card_label,
+    canonicalize_rarity,
     get_card_rarity,
     resolve_card_set,
     ensure_shop_index,
 )
 from cogs.cards_shop import suggest_owned_prints_relaxed
+from cogs.cards_shop import ac_pack_names
 from core.currency import shard_set_name, SHARD_SET_NAMES
 from cogs.collection import (
     build_badge_tokens_from_state,
     group_and_format_rows,
     sections_to_embed_descriptions,
 )
+from core.util_norm import normalize_set_name
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,15 @@ logger = logging.getLogger(__name__)
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
+BINDER_BULK_RARITY_ORDER = ["secret", "ultra", "super", "rare", "common"]
+BINDER_BULK_RARITY_LABELS = {
+    "common": "Common",
+    "rare": "Rare",
+    "super": "Super Rare",
+    "ultra": "Ultra Rare",
+    "secret": "Secret Rare",
+}
+BINDER_BULK_RARITY_RANK = {rarity: idx for idx, rarity in enumerate(BINDER_BULK_RARITY_ORDER)}
 
 # ---------------- Formatting helpers ----------------
 def _fmt_card_line(it: dict) -> str:
@@ -431,6 +444,18 @@ class Trade(commands.Cog):
                 break
         return choices
 
+    async def ac_binder_bulk_rarity(self, interaction: discord.Interaction, current: str):
+        q = (current or "").lower()
+        choices: list[app_commands.Choice[str]] = []
+        for rarity in BINDER_BULK_RARITY_ORDER:
+            label = BINDER_BULK_RARITY_LABELS.get(rarity, rarity.title())
+            if q and q not in rarity and q not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=label, value=rarity))
+            if len(choices) >= 25:
+                break
+        return choices
+
     # ---------- Commands ----------
 
     @app_commands.command(
@@ -755,6 +780,146 @@ class Trade(commands.Cog):
             f"✅ Cleared your binder ({removed} entries removed).",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="binder_bulk_add",
+        description="Add excess copies from your collection into your binder."
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.describe(
+        min_rarity="Minimum rarity to include (default: common)",
+        exact_rarity="Only add cards of this exact rarity",
+        pack="Only add cards from this pack",
+        excess_amount="Minimum copies to keep in collection (default: 3)",
+    )
+    @app_commands.autocomplete(
+        min_rarity=ac_binder_bulk_rarity,
+        exact_rarity=ac_binder_bulk_rarity,
+        pack=ac_pack_names,
+    )
+    async def binder_bulk_add(
+        self,
+        interaction: discord.Interaction,
+        min_rarity: Optional[str] = "common",
+        exact_rarity: Optional[str] = None,
+        pack: Optional[str] = None,
+        excess_amount: app_commands.Range[int, 0, 999] = 3,
+    ):
+        min_rarity_norm = canonicalize_rarity(min_rarity or "common")
+        if min_rarity_norm not in BINDER_BULK_RARITY_RANK:
+            await interaction.response.send_message("❌ Unknown minimum rarity.", ephemeral=True)
+            return
+
+        exact_rarity_norm = None
+        if exact_rarity:
+            exact_rarity_norm = canonicalize_rarity(exact_rarity)
+            if exact_rarity_norm not in BINDER_BULK_RARITY_RANK:
+                await interaction.response.send_message("❌ Unknown exact rarity.", ephemeral=True)
+                return
+
+        pack_name = normalize_set_name(pack) if pack else None
+        if pack_name and pack_name not in (self.state.packs_index or {}):
+            await interaction.response.send_message("❌ Unknown pack name.", ephemeral=True)
+            return
+
+        collection_rows = db_get_collection(self.state, interaction.user.id)
+        if not collection_rows:
+            await interaction.response.send_message("ℹ️ Your collection is empty.", ephemeral=True)
+            return
+
+        binder_rows = db_binder_list(self.state, interaction.user.id)
+        binder_qty: dict[str, int] = {}
+        for row in binder_rows:
+            key = register_print_if_missing(self.state, {
+                "cardname": row.get("card_name"),
+                "cardrarity": row.get("card_rarity"),
+                "cardset": row.get("card_set"),
+                "cardcode": row.get("card_code"),
+                "cardid": row.get("card_id"),
+            })
+            binder_qty[key] = int(row.get("qty", 0))
+
+        binder_unique_count = len(binder_qty)
+        min_rank = BINDER_BULK_RARITY_RANK[min_rarity_norm]
+        plan_rows = []
+        for name, qty, rarity, card_set, code, cid in collection_rows:
+            owned_qty = int(qty or 0)
+            if owned_qty <= 0:
+                continue
+            row_rarity = canonicalize_rarity(rarity)
+            rank = BINDER_BULK_RARITY_RANK.get(row_rarity, 999)
+            if exact_rarity_norm:
+                if row_rarity != exact_rarity_norm:
+                    continue
+            elif rank > min_rank:
+                continue
+            if pack_name and (card_set or "").strip().lower() != pack_name.lower():
+                continue
+            plan_rows.append({
+                "name": name,
+                "rarity": row_rarity,
+                "card_set": card_set,
+                "card_code": code or "",
+                "card_id": cid or "",
+                "qty": owned_qty,
+                "rank": rank,
+            })
+
+        if not plan_rows:
+            await interaction.response.send_message("ℹ️ No cards match those filters.", ephemeral=True)
+            return
+
+        plan_rows.sort(key=lambda row: (row["rank"], (row["name"] or "").lower(), (row["card_set"] or "").lower()))
+
+        added_copies = 0
+        added_unique = 0
+        capacity_hit = False
+        for row in plan_rows:
+            target_qty = max(0, int(row["qty"]) - int(excess_amount))
+            if target_qty <= 0:
+                continue
+            key = register_print_if_missing(self.state, {
+                "cardname": row["name"],
+                "cardrarity": row["rarity"],
+                "cardset": row["card_set"],
+                "cardcode": row["card_code"],
+                "cardid": row["card_id"],
+            })
+            existing_qty = binder_qty.get(key, 0)
+            if target_qty <= existing_qty:
+                continue
+            if existing_qty == 0 and binder_unique_count >= 30:
+                capacity_hit = True
+                continue
+            to_add = target_qty - existing_qty
+            item = {
+                "name": row["name"],
+                "rarity": row["rarity"],
+                "card_set": row["card_set"],
+                "card_code": row["card_code"],
+                "card_id": row["card_id"],
+            }
+            db_binder_add(self.state, interaction.user.id, item, to_add)
+            binder_qty[key] = existing_qty + to_add
+            if existing_qty == 0:
+                binder_unique_count += 1
+                added_unique += 1
+            added_copies += to_add
+
+        if added_copies <= 0:
+            msg = "ℹ️ No excess copies were added to your binder."
+            if capacity_hit:
+                msg += " Binder is already at its 30-card limit."
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
+
+        summary = (
+            f"✅ Added **x{added_copies}** copies across **{added_unique}** new binder cards. "
+            f"Binder now has **{binder_unique_count}** unique cards."
+        )
+        if capacity_hit:
+            summary += " ⚠️ Binder hit the 30-card limit; some cards were not added."
+        await interaction.response.send_message(summary, ephemeral=True)
 
     @app_commands.command(
         name="trade_propose",

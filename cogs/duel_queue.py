@@ -125,8 +125,8 @@ class DuelQueue(commands.Cog):
         name1 = db_duelingbook_name_get(self.bot.state, user1_id) or "unknown"
         name2 = db_duelingbook_name_get(self.bot.state, user2_id) or "unknown"
         await channel.send(
-            f"{mention1} (duelingbook name: {name1}) is paired vs "
-            f"{mention2} (duelingbook name: {name2}). Good luck duelists!"
+            f"{mention1} (Duelingbook name: {name1}) is paired vs "
+            f"{mention2} (Duelingbook name: {name2}). Good luck duelists!"
         )
 
     async def _request_confirmation(self, waiting_user_id: int, challenger_id: int, channel_id: int | None, guild: discord.Guild | None):

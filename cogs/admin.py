@@ -790,9 +790,13 @@ class Admin(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         amount_secrets="Maximum number of secret rares a member can have to be listed (default: 1)",
+        amount_ultras="Maximum number of ultra rares a member can have to be listed (default: 1)",
     )
     async def get_poors(
-        self, interaction: discord.Interaction, amount_secrets: int | None = 1
+        self,
+        interaction: discord.Interaction,
+        amount_secrets: int | None = 1,
+        amount_ultras: int | None = 1,
     ) -> None:
         if not interaction.guild:
             await interaction.response.send_message(
@@ -803,6 +807,7 @@ class Admin(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         max_secrets = max(0, int(amount_secrets if amount_secrets is not None else 1))
+        max_ultras = max(0, int(amount_ultras if amount_ultras is not None else 1))
 
         guild = interaction.guild
         target_roles = {"Fire", "Water"}
@@ -824,30 +829,37 @@ class Admin(commands.Cog):
             await interaction.followup.send(msg, ephemeral=True)
             return
 
-        qualifying: list[tuple[discord.Member, int]] = []
+        qualifying: list[tuple[discord.Member, int, int]] = []
         for member in members.values():
             total_secret = db_collection_total_by_rarity(self.state, member.id, "secret")
-            if total_secret <= max_secrets:
-                qualifying.append((member, total_secret))
+            total_ultra = db_collection_total_by_rarity(self.state, member.id, "ultra")
+            if total_secret <= max_secrets and total_ultra <= max_ultras:
+                qualifying.append((member, total_secret, total_ultra))
 
         if not qualifying:
             msg = (
                 "No Fire/Water members have secret rare totals at or below "
-                f"**{max_secrets}**."
+                f"**{max_secrets}** and ultra rare totals at or below **{max_ultras}**."
             )
             if missing_roles:
                 msg += " Missing roles: " + ", ".join(sorted(missing_roles))
             await interaction.followup.send(msg, ephemeral=True)
             return
 
-        qualifying.sort(key=lambda pair: (pair[1], pair[0].display_name.lower()))
+        qualifying.sort(key=lambda pair: (pair[1], pair[2], pair[0].display_name.lower()))
 
         lines = [
-            f"Fire/Water members with ≤ **{max_secrets}** secret rare(s):",
+            (
+                f"Fire/Water members with ≤ **{max_secrets}** secret rare(s) and "
+                f"≤ **{max_ultras}** ultra rare(s):"
+            ),
         ]
-        for member, total_secret in qualifying:
+        for member, total_secret, total_ultra in qualifying:
             lines.append(
-                f"• {member.mention} — **{total_secret}** secret rare(s) owned"
+                (
+                    f"• {member.mention} — **{total_secret}** secret rare(s), "
+                    f"**{total_ultra}** ultra rare(s) owned"
+                )
             )
 
         if missing_roles:
