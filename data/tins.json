@@ -1,18 +1,30 @@
 [
   {
-    "name": "Nemesis Tin Wave 1",
+    "name": "Frostfire Tins Wave 1",
     "promo_cards": [
       {
-        "name": "Tidal, Dragon Ruler of Waterfalls",
-        "rarity": "Secret",
+        "name": "Bottomless Trap Hole",
+        "rarity": "Ultra",
         "cardcode": "CT10-EN001",
-        "cardid": "26400609"
+        "cardid": "29401950"
       },
       {
-        "name": "Blaster, Dragon Ruler of Infernos",
-        "rarity": "Secret",
+        "name": "Black Rose Dragon",
+        "rarity": "Ultra",
         "cardcode": "CT10-EN002",
-        "cardid": "53804307"
+        "cardid": "73580471"
+      },
+      {
+        "name": "Dimensional Prison",
+        "rarity": "Ultra",
+        "cardcode": "CT10-EN003",
+        "cardid": "70342110"
+      },
+      {
+        "name": "Book of Moon",
+        "rarity": "Ultra",
+        "cardcode": "CT10-EN004",
+        "cardid": "14087893"
       }
     ],
     "packs": [

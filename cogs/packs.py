@@ -827,8 +827,5 @@ async def setup(bot: commands.Bot):
                     type=discord.AppCommandType.chat_input,
                     guild=guild,
                 )
-    
-    # Removing tin from tree until releasing a tin
-    for guild in (GUILD, None):
-        bot.tree.remove_command("tin", type=discord.AppCommandType.chat_input, guild=guild,)
+
 
