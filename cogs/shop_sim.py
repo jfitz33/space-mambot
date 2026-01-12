@@ -281,7 +281,7 @@ class ShopSim(commands.Cog):
             f"• Pack: **{PACK_COST} {mambuck_icon} mambucks**",
             f"• Box (24 packs): **{BOX_COST} {mambuck_icon} mambucks**",
             #f"• Bundle (1 box of each pack): **{BUNDLE_BOX_COST} {mambuck_icon} mambucks**",
-            #f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**",
+            f"• Tin (1 promo card and 5 packs): **{TIN_COST} {mambuck_icon} mambucks**",
         ]
 
         if shard_section_text:

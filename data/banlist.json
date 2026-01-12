@@ -1,10 +1,12 @@
 {
   "default_limit": 3,
   "forbidden": [
-    "Code Hack"
+    "Code Hack",
+    "Scrap Iron Scarecrow"
   ],
   "limited": [
     "Sangan",
+    "Blue Flame Swordsman",
     "Black Rose Dragon",
     "Stardust Charge Warrior",
     "Fabled Ragin",
@@ -15,11 +17,11 @@
     "Compulsory Evacuation Device"
   ],
   "semi_limited": [
-    "Batteryman Fuel Cell",
-    "Gold Sarcophagus",
     "One for One",
     "Salvage",
     "Bottomless Trap Hole",
-    "Dragolithia Kunzite"
+    "Dragolithia Kunzite",
+    "Lamia",
+    "Therion \"Bull\" Ain"
   ]
 }
