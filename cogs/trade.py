@@ -33,6 +33,7 @@ from core.cards_shop import (
 from cogs.cards_shop import suggest_owned_prints_relaxed
 from cogs.cards_shop import ac_pack_names
 from core.currency import shard_set_name, SHARD_SET_NAMES
+from core.constants import CURRENT_ACTIVE_SET
 from cogs.collection import (
     build_badge_tokens_from_state,
     group_and_format_rows,
@@ -314,7 +315,11 @@ class Trade(commands.Cog):
         Uses core.currency.SHARD_SET_NAMES so only real types are suggested.
         Preserves insertion order of the dict (e.g., Frostfire first).
         """
-        return [(int(sid), name) for sid, name in SHARD_SET_NAMES.items()]
+        return [
+            (int(sid), name)
+            for sid, name in SHARD_SET_NAMES.items()
+            if int(sid) <= CURRENT_ACTIVE_SET
+        ]
     
     def _suggest_prints_any(self, query: str, limit: int = 25) -> list[app_commands.Choice[str]]:
         ensure_shop_index(self.state)
