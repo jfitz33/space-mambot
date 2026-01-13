@@ -275,7 +275,12 @@ class Trade(commands.Cog):
         choices: List[app_commands.Choice[str]] = []
         seen = set()
 
-        owned = db_collection_list_owned_prints(self.state, interaction.user.id, name_filter=None, limit=200)
+        owned = db_collection_list_owned_prints(
+            self.state,
+            interaction.user.id,
+            name_filter=cur if cur else None,
+            limit=200,
+        )
         for row in owned:
             name = (row.get("name") or "").strip()
             pack = (row.get("set") or "").strip()
