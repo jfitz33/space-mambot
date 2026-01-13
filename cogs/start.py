@@ -27,7 +27,7 @@ from core.wallet_api import credit_mambucks, add_shards
 from core.constants import TEAM_ROLE_MAPPING, TEAM_ROLE_NAMES, CURRENT_ACTIVE_SET
 from core.currency import mambucks_label, shards_label
 from core.wallet_api import get_mambucks, credit_mambucks, get_shards, add_shards
-from core.quests.timekeys import now_et
+from core.quests.timekeys import now_et, rollover_date
 from PIL import Image
 # Guild scoping (same as your other cogs)  :contentReference[oaicite:5]{index=5}
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -671,7 +671,7 @@ class Start(commands.Cog):
         try:
             if quests_cog and getattr(quests_cog, "qm", None):
                 await quests_cog.qm.fast_forward_daily_rollovers(
-                    now_et().date(), include_user_ids=[member.id]
+                    rollover_date(), include_user_ids=[member.id]
                 )
         except Exception:
             pass

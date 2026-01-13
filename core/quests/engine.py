@@ -21,7 +21,7 @@ from core.quests.schema import (
     db_daily_quest_update_progress,
     db_seed_quests_from_json,
 )
-from .timekeys import now_et, period_key_for_category, daily_key
+from .timekeys import now_et, period_key_for_category, daily_key, rollover_date
 from core.db import db_wallet_add, db_shards_add
 from core.constants import set_id_for_pack
 from core.currency import shard_set_name
@@ -70,7 +70,7 @@ class QuestManager:
     async def load_defs(self) -> None:
         rows = await db_fetch_active_quests(self.state)
         self._defs = self._build_defs(rows)
-        self._last_defs_refresh_date = self._last_defs_refresh_date or now_et().date()
+        self._last_defs_refresh_date = self._last_defs_refresh_date or rollover_date()
 
     def _build_defs(self, rows: Iterable[dict]) -> dict[str, QuestDef]:
         return {
@@ -110,14 +110,14 @@ class QuestManager:
         return defs
 
     async def _refresh_defs_if_needed(self, target_date: date | None = None) -> None:
-        target_date = target_date or now_et().date()
+        target_date = target_date or rollover_date()
         if self._last_defs_refresh_date == target_date and self._defs:
             return
 
         await self._load_defs_for_date(target_date, mutate=True)
 
     async def ensure_today_daily_snapshots(self) -> None:
-        today = now_et().date()
+        today = rollover_date()
         await self._refresh_defs_if_needed(today)
         await self._ensure_day_snapshots(self._defs, daily_key(today))
 
@@ -145,7 +145,7 @@ class QuestManager:
             _, iso = day_key.split(":", 1)
             return datetime.fromisoformat(iso).date()
         except Exception:
-            return now_et().date()
+            return rollover_date()
 
     def _day_key_from_date(self, d: date) -> str:
         return f"D:{d.isoformat()}"
@@ -268,7 +268,7 @@ class QuestManager:
         return 0, False
 
     async def increment(self, user_id: int, quest_id: str, amount: int = 1) -> Tuple[int, bool]:
-        await self._refresh_defs_if_needed(now_et().date())
+        await self._refresh_defs_if_needed(rollover_date())
         q = self._defs.get(quest_id)
         if not q or not q.active:
             return 0, False
@@ -290,7 +290,7 @@ class QuestManager:
         """
         # First, lock in today's snapshot/slots using the already loaded defs so
         # mid-day quest.json edits don't rewrite the current day's rewards.
-        today = now_et().date()
+        today = rollover_date()
         
         # Lock in today's snapshot/slots using the already loaded defs so mid-day quest.json edits
         # don't rewrite the current day's rewards. This also updates reward payloads for existing

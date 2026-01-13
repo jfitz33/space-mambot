@@ -1,38 +1,24 @@
-from datetime import datetime, date, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, date, timedelta
 
-try:
-    from zoneinfo import ZoneInfo  # Python 3.9+
-except Exception:
-    ZoneInfo = None
-
-def get_et_tz():
-    """
-    Preferred: IANA 'America/New_York' via ZoneInfo (+ tzdata on Windows).
-    Fallback: fixed UTC-5 (no DST) so the bot still runs, but boundaries will be off during DST.
-    """
-    if ZoneInfo:
-        try:
-            return ZoneInfo("America/New_York")
-        except Exception:
-            pass
-    return timezone(timedelta(hours=-5))
-
-ET = get_et_tz()
+from core.daily_rollover import rollover_day, rollover_timezone
 
 def now_et() -> datetime:
-    return datetime.now(ET)
+    return datetime.now(rollover_timezone())
+
+def rollover_date(dt: datetime | None = None) -> date:
+    return rollover_day(dt)
+
 
 def daily_key(dt: datetime | date | None = None) -> str:
     if isinstance(dt, date) and not isinstance(dt, datetime):
         d = dt
     else:
-        d = (dt or now_et()).date()
+        d = rollover_day(dt)
     return f"D:{d.isoformat()}"
 
 def weekly_key(dt: datetime | None = None) -> str:
     # Weekly boundary: Sunday night midnight → Monday 00:00 ET
-    d = (dt or now_et()).date()
+    d = rollover_day(dt)
     monday = d - timedelta(days=d.weekday())  # Monday date (Mon=0)
     iso_year, iso_week, _ = monday.isocalendar()
     return f"W:{iso_year}-{iso_week:02d}"

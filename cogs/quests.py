@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.quests.engine import QuestManager
-from core.quests.timekeys import now_et
+from core.quests.timekeys import now_et, rollover_date
 from core.daily_rollover import seconds_until_next_rollover, rollover_day_key
 from core.constants import TEAM_ROLE_NAMES
 from core.constants import TEAM_ROLE_NAMES
@@ -38,7 +38,7 @@ class Quests(commands.Cog):
         await self.bot.wait_until_ready()
         # Ensure rollover-style daily quests have their slots advanced through
         # today in case the bot was restarted and missed the regular scheduler.
-        await self._prepare_rollover_for_date(now_et().date())
+        await self._prepare_rollover_for_date(rollover_date())
 
         self._rollover_task = asyncio.create_task(
             self._rollover_loop(), name="quest-rollovers"
@@ -67,7 +67,7 @@ class Quests(commands.Cog):
                 try:
                     target_date = datetime.strptime(day_key, "%Y%m%d").date()
                 except Exception:
-                    target_date = now_et().date()
+                    target_date = rollover_date()
                 await self._prepare_rollover_for_date(target_date)
             except asyncio.CancelledError:
                 raise

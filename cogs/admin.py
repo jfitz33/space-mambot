@@ -39,7 +39,7 @@ from core.quests.schema import (
     db_daily_quest_find_unclaimed_by_reward_type,
     db_daily_quest_get_slots_for_user,
 )
-from core.quests.timekeys import daily_key, now_et
+from core.quests.timekeys import daily_key, now_et, rollover_date
 from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
@@ -915,7 +915,7 @@ class Admin(commands.Cog):
             return
 
         qm = quests_cog.qm
-        await qm._refresh_defs_if_needed(now_et().date())
+        await qm._refresh_defs_if_needed(rollover_date())
 
         daily_rollover_quests = [
             q for q in qm._defs.values() if q.category == "daily" and q.max_rollover_days > 0
