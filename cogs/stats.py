@@ -8,7 +8,7 @@ from core.state import AppState
 from core.db import (
     db_init_user_stats, db_init_match_log, db_init_user_set_wins,
     db_stats_get, db_stats_record_loss,
-    db_match_h2h, db_team_points_for_user,
+    db_match_h2h, db_team_battleground_user_points_for_user,
 )
 from core.constants import CURRENT_ACTIVE_SET, TEAM_ROLE_NAMES
 
@@ -82,6 +82,22 @@ class Stats(commands.Cog):
             set_id=CURRENT_ACTIVE_SET,
         )
 
+        moved_points = 0
+        same_team_note = ""
+        teams = interaction.client.get_cog("Teams")
+        if interaction.guild and teams and hasattr(teams, "apply_duel_result"):
+            try:
+                moved_points, info = await teams.apply_duel_result(
+                    interaction.guild,
+                    winner=winner,
+                    loser=loser,
+                    winner_stats=winner_after,
+                )
+                if info.get("same_team") == "yes":
+                    same_team_note = " (same team)"
+            except Exception as exc:
+                print("[stats] failed to apply battleground points:", exc)
+
         # Optional quest ticks using your QuestManager wrappers/IDs
         quests = interaction.client.get_cog("Quests")
         try:
@@ -93,7 +109,10 @@ class Stats(commands.Cog):
 
         embed = discord.Embed(
             title="Match Result Recorded",
-            description=f"**{winner.display_name}** defeated **{loser.display_name}**.",
+            description=(
+                f"**{winner.display_name}** defeated **{loser.display_name}**.\n"
+                f"Points moved: **{moved_points:,}**{same_team_note}"
+            ),
             color=0xCC3333,
         )
 
@@ -106,21 +125,7 @@ class Stats(commands.Cog):
                 await queue.clear_pairing(caller.id, opponent.id)
         except Exception as e:
             print("[stats] failed to clear duel pairing:", e)
-        
-        await self._trigger_team_points_split(interaction.guild)
 
-    async def _trigger_team_points_split(self, guild: discord.Guild | None):
-        if not guild:
-            return
-
-        teams = self.bot.get_cog("Teams")
-        if not teams or not hasattr(teams, "split_duel_team_points"):
-            return
-
-        try:
-            await teams.split_duel_team_points(guild)
-        except Exception as exc:
-            print("[stats] failed to split duel team points:", exc)
 
     @app_commands.command(name="stats", description="View a player's win/loss record and win%.")
     @app_commands.guilds(GUILD)
@@ -144,10 +149,12 @@ class Stats(commands.Cog):
         team_lines: list[str] = []
         guild = interaction.guild
         if guild and isinstance(target, discord.Member):
-            team_points = db_team_points_for_user(self.state, guild.id, target.id)
+            team_points = db_team_battleground_user_points_for_user(
+                self.state, guild.id, CURRENT_ACTIVE_SET, target.id
+            )
             team_roles = [role.name for role in target.roles if role.name in TEAM_ROLE_NAMES]
             for role_name in sorted(team_roles, key=str.lower):
-                points = team_points.get(role_name, 0)
+                points = int(team_points.get(role_name, {}).get("earned_points", 0))
                 team_lines.append(f"Team {role_name}: **{points:,}**")
 
         if team_lines:

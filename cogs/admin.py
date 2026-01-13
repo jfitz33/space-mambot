@@ -24,8 +24,11 @@ from core.db import (
     db_stats_record_loss,
     db_stats_revert_result,
     db_user_set_wins_clear,
-    db_team_point_splits_totals,
-    db_team_points_all,
+    db_team_battleground_user_points_all,
+    db_team_battleground_user_points_clear,
+    db_team_battleground_user_points_for_user_all_sets,
+    db_team_battleground_totals_get,
+    db_team_battleground_totals_update,
     db_team_points_clear,
     db_wheel_tokens_clear,
     db_wishlist_clear,
@@ -592,6 +595,28 @@ class Admin(commands.Cog):
         if interaction.guild:
             team_points_removed = db_team_points_clear(self.state, interaction.guild.id, user.id)
 
+        battleground_points_removed = 0
+        if interaction.guild:
+            battleground_rows = db_team_battleground_user_points_for_user_all_sets(
+                self.state, interaction.guild.id, user.id
+            )
+            for row in battleground_rows:
+                db_team_battleground_totals_update(
+                    self.state,
+                    interaction.guild.id,
+                    int(row.get("set_id") or 0),
+                    str(row.get("team") or ""),
+                    duel_delta=-int(row.get("net_points") or 0),
+                    bonus_delta=-int(row.get("bonus_points") or 0),
+                )
+            for set_id in {int(row.get("set_id") or 0) for row in battleground_rows}:
+                battleground_points_removed += db_team_battleground_user_points_clear(
+                    self.state,
+                    interaction.guild.id,
+                    int(set_id),
+                    user.id,
+                )
+
         # Remove team roles (if present)
         removed_roles: list[str] = []
         failed_roles: list[str] = []
@@ -644,6 +669,8 @@ class Admin(commands.Cog):
             lines.append("ℹ️ No per-set win tracking entries found to clear.")
         if interaction.guild and team_points_removed:
             lines.append(f"✅ Cleared team points entries ({team_points_removed} row(s)).")
+        if battleground_points_removed:
+            lines.append(f"✅ Cleared battleground point entries ({battleground_points_removed} row(s)).")
         if removed_roles:
             lines.append("✅ Removed team role(s): " + ", ".join(sorted(removed_roles)))
         missing_roles = [name for name in TEAM_ROLE_NAMES if name not in removed_roles and name not in failed_roles]
@@ -660,7 +687,7 @@ class Admin(commands.Cog):
 
     @app_commands.command(
         name="get_team_points",
-        description="(Admin) View team points totals, including duel split points.",
+        description="(Admin) View battleground team points for the active set.",
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
@@ -688,38 +715,23 @@ class Admin(commands.Cog):
         team_filter = (team or "").strip() or None
         user_filter_id = user.id if user else None
 
-        totals = db_team_points_all(
-            self.state, interaction.guild.id, team_filter, user_filter_id
+        set_id = CURRENT_ACTIVE_SET
+        rows = db_team_battleground_user_points_all(
+            self.state,
+            interaction.guild.id,
+            set_id,
+            team_filter,
+            user_filter_id,
         )
-        duel_totals = db_team_point_splits_totals(
-            self.state, interaction.guild.id, team_filter, user_filter_id
-        )
 
-        combined: dict[int, dict[str, int | str]] = {}
-        for row in totals:
-            combined[int(row["user_id"])] = {
-                "team": str(row.get("team") or team_filter or ""),
-                "total": int(row.get("points") or 0),
-                "duel": 0,
-            }
-
-        for user_id, info in duel_totals.items():
-            entry = combined.setdefault(
-                int(user_id),
-                {"team": str(info.get("team") or team_filter or ""), "total": 0, "duel": 0},
-            )
-            if not entry.get("team") and info.get("team"):
-                entry["team"] = str(info.get("team") or "")
-            entry["duel"] = int(info.get("points") or 0)
-
-        if user_filter_id is not None and user_filter_id not in combined:
+        if user_filter_id is not None and not rows:
             await interaction.followup.send(
                 "No team points found for that member.",
                 ephemeral=True,
             )
             return
 
-        if not combined:
+        if not rows:
             await interaction.followup.send(
                 "No team point entries found for the requested filters.",
                 ephemeral=True,
@@ -727,46 +739,40 @@ class Admin(commands.Cog):
             return
 
         lines = []
-        for user_id, info in sorted(
-            combined.items(), key=lambda item: (-int(item[1].get("total", 0)), item[0])
+        for info in sorted(
+            rows, key=lambda item: (-int(item.get("earned_points", 0)), int(item.get("user_id", 0)))
         ):
+            user_id = int(info.get("user_id") or 0)
             member = interaction.guild.get_member(user_id)
             name = member.mention if member else f"User {user_id}"
             team_label = info.get("team") or "Unassigned"
-            total_points = int(info.get("total") or 0)
-            duel_points = int(info.get("duel") or 0)
+            earned_points = int(info.get("earned_points") or 0)
+            net_points = int(info.get("net_points") or 0)
+            bonus_points = int(info.get("bonus_points") or 0)
             lines.append(
-                f"{name} — Team: **{team_label}**, Total: **{total_points:,}**, Duel wins: **{duel_points:,}**"
+                f"{name} — Team: **{team_label}**, Earned: **{earned_points:,}**, "
+                f"Net: **{net_points:,}**, Bonus: **{bonus_points:,}**"
             )
 
         if user_filter_id is None:
-            team_totals: dict[str, int] = {}
-            for info in combined.values():
-                team_label = info.get("team") or "Unassigned"
-                total_points = int(info.get("total") or 0)
-                team_totals[team_label] = team_totals.get(team_label, 0) + total_points
-
-            team_lines = ["", "Team totals:"]
-            for team_label, points in sorted(
-                team_totals.items(), key=lambda item: (-item[1], item[0].lower())
+            totals = db_team_battleground_totals_get(
+                self.state,
+                interaction.guild.id,
+                set_id,
+            )
+            team_lines = ["", "Team totals (battleground):"]
+            for team_label, info in sorted(
+                totals.items(), key=lambda item: (-(int(item[1].get("duel_points", 0)) + int(item[1].get("bonus_points", 0))), item[0].lower())
             ):
-                team_lines.append(f"• **{team_label}** — **{points:,}** points")
+                duel_points = int(info.get("duel_points", 0))
+                bonus_points = int(info.get("bonus_points", 0))
+                total_points = duel_points + bonus_points
+                team_lines.append(
+                    f"• **{team_label}** — **{total_points:,}** total "
+                    f"(duel: {duel_points:,}, bonus: {bonus_points:,})"
+                )
 
             lines.extend(team_lines)
-
-            duel_totals_by_team: dict[str, int] = {}
-            for info in combined.values():
-                team_label = info.get("team") or "Unassigned"
-                duel_points = int(info.get("duel") or 0)
-                duel_totals_by_team[team_label] = duel_totals_by_team.get(team_label, 0) + duel_points
-
-            duel_lines = ["", "Points from dueling totals:"]
-            for team_label, points in sorted(
-                duel_totals_by_team.items(), key=lambda item: (-item[1], item[0].lower())
-            ):
-                duel_lines.append(f"• **{team_label}** — **{points:,}** duel points")
-
-            lines.extend(duel_lines)
 
         embed = discord.Embed(
             title="Team Points Overview",
@@ -1138,6 +1144,22 @@ class Admin(commands.Cog):
             set_id=CURRENT_ACTIVE_SET,
         )
 
+        moved_points = 0
+        same_team_note = ""
+        teams = interaction.client.get_cog("Teams")
+        if interaction.guild and teams and hasattr(teams, "apply_duel_result"):
+            try:
+                moved_points, info = await teams.apply_duel_result(
+                    interaction.guild,
+                    winner=winner,
+                    loser=loser,
+                    winner_stats=winner_after,
+                )
+                if info.get("same_team") == "yes":
+                    same_team_note = " (same team)"
+            except Exception as exc:
+                print("[admin] failed to apply battleground points:", exc)
+
         quests = interaction.client.get_cog("Quests")
         try:
             if quests and getattr(quests, "qm", None):
@@ -1148,14 +1170,18 @@ class Admin(commands.Cog):
 
         embed = discord.Embed(
             title="Admin Match Recorded",
-            description=f"**{loser.display_name}** lost to **{winner.display_name}**.",
+            description=(
+                f"**{loser.display_name}** lost to **{winner.display_name}**.\n"
+                f"Points moved: **{moved_points:,}**{same_team_note}"
+            ),
             color=0xCC3333,
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
         if interaction.channel:
             await interaction.channel.send(
-                f"📝 Admin recorded a result: **{loser.display_name}** lost to **{winner.display_name}**."
+                f"📝 Admin recorded a result: **{loser.display_name}** lost to **{winner.display_name}**. "
+                f"Points moved: **{moved_points:,}**{same_team_note}."
             )
 
         # Remove the user(s) from the queue if there is an actively paired match
@@ -1166,20 +1192,6 @@ class Admin(commands.Cog):
         except Exception as e:
             print("[admin] failed to clear duel pairing:", e)
 
-        await self._trigger_team_points_split(interaction.guild)
-
-    async def _trigger_team_points_split(self, guild: discord.Guild | None):
-        if not guild:
-            return
-
-        teams = self.bot.get_cog("Teams")
-        if not teams or not hasattr(teams, "split_duel_team_points"):
-            return
-
-        try:
-            await teams.split_duel_team_points(guild)
-        except Exception as exc:
-            print("[admin] failed to split duel team points:", exc)
 
     @app_commands.command(
         name="admin_revert_result",

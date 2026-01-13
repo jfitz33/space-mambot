@@ -11,24 +11,33 @@ from discord.ext import commands
 
 from core.db import (
     db_add_cards,
-    db_team_point_split_set_ids,
-    db_team_point_splits_for_set,
-    db_team_point_splits_delete,
-    db_team_point_splits_replace,
-    db_team_points_for_teams,
-    db_team_points_add,
-    db_team_points_totals,
-    db_team_points_top,
+    db_match_log_games_for_set,
+    db_team_battleground_totals_ensure,
+    db_team_battleground_totals_get,
+    db_team_battleground_totals_update,
+    db_team_battleground_user_points_clear,
+    db_team_battleground_user_points_for_user,
+    db_team_battleground_user_points_top,
+    db_team_battleground_user_points_update,
+    db_team_battleground_totals_clear,
     db_team_tracker_load,
     db_team_tracker_store,
-    db_user_set_wins_for_set,
 )
 from core.state import AppState
 from core.constants import (
     CURRENT_ACTIVE_SET,
-    DUEL_TEAM_POINTS_TOTAL,
-    TEAM_ROLE_NAMES,
+    DUEL_TEAM_ACTIVITY_IMPACT,
+    DUEL_TEAM_ACTIVITY_MATCH_THRESHOLD,
+    DUEL_TEAM_ACTIVITY_MULTIPLIER_MAX,
+    DUEL_TEAM_ACTIVITY_MULTIPLIER_MIN,
+    DUEL_TEAM_SAME_TEAM_MULTIPLIER,
+    DUEL_TEAM_TRANSFER_BASE,
+    DUEL_TEAM_TRANSFER_MAX,
+    DUEL_TEAM_TRANSFER_MIN,
+    DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX,
+    DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN,
     TEAM_SETS,
+    TEAM_BATTLEGROUND_START_POINTS,
     latest_team_set_id,
 )
 from core.packs import open_pack_from_csv, open_pack_with_guaranteed_top_from_csv
@@ -356,8 +365,14 @@ class Teams(commands.Cog):
 
     async def _build_tracker_embed(self, guild: discord.Guild) -> discord.Embed:
         set_id, cfg = _get_active_team_set()
-        totals = db_team_points_totals(self.state, guild.id)
-        display_totals = self._round_totals_for_display(totals)
+        if set_id:
+            self._ensure_battleground_totals(guild, int(set_id))
+        totals = db_team_battleground_totals_get(self.state, guild.id, int(set_id or 0))
+        combined_totals = {
+            team: int(info.get("duel_points", 0)) + int(info.get("bonus_points", 0))
+            for team, info in totals.items()
+        }
+        display_totals = self._round_totals_for_display(combined_totals)
         embed = discord.Embed(
             title="Team Points Tracker",
             description=(
@@ -374,8 +389,14 @@ class Teams(commands.Cog):
             info = teams.get(team, {})
             title = info.get("display") or team
             emoji = info.get("emoji", "")
-            total_points = display_totals.get(team, totals.get(team, 0))
-            rows = db_team_points_top(self.state, guild.id, team, limit=3)
+            total_points = display_totals.get(team, combined_totals.get(team, 0))
+            rows = db_team_battleground_user_points_top(
+                self.state,
+                guild.id,
+                int(set_id or 0),
+                team,
+                limit=3,
+            )
             value = await self._format_leaderboard(guild, rows)
             name = f"{title} {emoji} — {total_points:,} pts"
             embed.add_field(name=name, value=value, inline=True)
@@ -437,121 +458,158 @@ class Teams(commands.Cog):
                 return role.name
         return None
 
+    def _ensure_battleground_totals(self, guild: discord.Guild, set_id: int) -> None:
+        db_team_battleground_totals_ensure(
+            self.state,
+            guild.id,
+            int(set_id),
+            _get_active_team_names(),
+            TEAM_BATTLEGROUND_START_POINTS,
+        )
+
+    @staticmethod
+    def _win_pct_multiplier(stats: dict) -> float:
+        wins = int(stats.get("wins", 0) or 0)
+        games = int(stats.get("games", 0) or 0)
+        win_pct = (wins / games) if games > 0 else 0.0
+        span = DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX - DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN
+        multiplier = DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX - (win_pct * span)
+        return max(DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN, min(DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX, multiplier))
+
+    def _activity_multiplier(
+        self,
+        guild: discord.Guild,
+        set_id: int,
+        winner_team: str,
+        loser_team: str,
+    ) -> float:
+        if winner_team == loser_team:
+            return 1.0
+
+        games_by_user = db_match_log_games_for_set(self.state, set_id)
+        active_counts: defaultdict[str, int] = defaultdict(int)
+        active_names = set(_get_active_team_names())
+        for member in guild.members:
+            team_name = self._resolve_member_team(member)
+            if not team_name or team_name not in active_names:
+                continue
+
+            games = games_by_user.get(member.id, 0)
+            if games >= DUEL_TEAM_ACTIVITY_MATCH_THRESHOLD:
+                active_counts[team_name] += 1
+
+        winner_count = active_counts.get(winner_team, 0)
+        loser_count = active_counts.get(loser_team, 0)
+        if winner_count == loser_count:
+            return 1.0
+
+    def _calculate_transfer_points(
+        self,
+        *,
+        win_multiplier: float,
+        activity_multiplier: float,
+        same_team: bool,
+    ) -> int:
+        multiplier = win_multiplier * activity_multiplier
+        if same_team:
+            multiplier *= DUEL_TEAM_SAME_TEAM_MULTIPLIER
+
+        raw_points = DUEL_TEAM_TRANSFER_BASE * multiplier
+        points = int(round(raw_points))
+        return max(DUEL_TEAM_TRANSFER_MIN, min(DUEL_TEAM_TRANSFER_MAX, points))
+
+    async def apply_duel_result(
+        self,
+        guild: discord.Guild,
+        *,
+        winner: discord.Member,
+        loser: discord.Member,
+        winner_stats: dict,
+    ) -> tuple[int, dict[str, str]]:
+        set_id, _ = _get_active_team_set()
+        if not set_id:
+            return 0, {"reason": "No active team set configured."}
+
+        winner_team = self._resolve_member_team(winner)
+        loser_team = self._resolve_member_team(loser)
+        if not winner_team or not loser_team:
+            return 0, {"reason": "Missing team role for one or more players."}
+
+            active_names = set(_get_active_team_names())
+        if winner_team not in active_names or loser_team not in active_names:
+            return 0, {"reason": "Team roles are not part of the active set."}
+
+        self._ensure_battleground_totals(guild, int(set_id))
+
+        win_multiplier = self._win_pct_multiplier(winner_stats)
+        activity_multiplier = self._activity_multiplier(guild, int(set_id), winner_team, loser_team)
+        same_team = winner_team == loser_team
+        transfer_points = self._calculate_transfer_points(
+            win_multiplier=win_multiplier,
+            activity_multiplier=activity_multiplier,
+            same_team=same_team,
+        )
+
+        totals = db_team_battleground_totals_get(self.state, guild.id, int(set_id))
+        loser_points = int(totals.get(loser_team, {}).get("duel_points", TEAM_BATTLEGROUND_START_POINTS))
+        moved_points = transfer_points if same_team else min(transfer_points, loser_points)
+
+        if moved_points > 0 and not same_team:
+            db_team_battleground_totals_update(
+                self.state,
+                guild.id,
+                int(set_id),
+                winner_team,
+                duel_delta=moved_points,
+            )
+
+            db_team_battleground_totals_update(
+                self.state,
+                guild.id,
+                int(set_id),
+                loser_team,
+                duel_delta=-moved_points,
+            )
+
+        if moved_points > 0:
+            db_team_battleground_user_points_update(
+                self.state,
+                guild.id,
+                int(set_id),
+                winner.id,
+                winner_team,
+                earned_delta=moved_points,
+                net_delta=moved_points,
+            )
+            db_team_battleground_user_points_update(
+                self.state,
+                guild.id,
+                int(set_id),
+                loser.id,
+                loser_team,
+                earned_delta=0,
+                net_delta=-moved_points,
+            )
+        await self._ensure_message_exists(guild)
+
+        
+        return moved_points, {
+            "winner_team": winner_team,
+            "loser_team": loser_team,
+            "same_team": "yes" if same_team else "no",
+        }
+
     async def split_duel_team_points(
         self, guild: discord.Guild
     ) -> tuple[bool, str | None, discord.Embed | None]:
         if not guild:
             return False, "This command can only be used in a server.", None
 
-        set_id = CURRENT_ACTIVE_SET
-        wins_by_user = db_user_set_wins_for_set(self.state, set_id)
-        if not wins_by_user:
-            return False, "No duel wins recorded for the current set; nothing to distribute.", None
-
-        active_team_names = set(_get_active_team_names())
-        allocations: list[dict] = []
-        team_wins: defaultdict[str, int] = defaultdict(int)
-
-        for member in guild.members:
-            team_name = self._resolve_member_team(member)
-            if not team_name or team_name not in active_team_names:
-                continue
-
-            wins = wins_by_user.get(member.id, 0)
-            if wins <= 0:
-                continue
-
-            team_wins[team_name] += wins
-            allocations.append({"member": member, "team": team_name, "wins": wins})
-
-        total_wins = sum(team_wins.values())
-        if total_wins <= 0:
-            return (
-                False,
-                "No duel wins recorded for any active team members in the current set.",
-                None,
-            )
-
-        total_points = DUEL_TEAM_POINTS_TOTAL
-        previous_splits = db_team_point_splits_for_set(self.state, guild.id, set_id)
-        distributed: list[dict] = []
-        for entry in allocations:
-            exact = (total_points * entry["wins"]) / total_wins
-            base_points = int(exact)
-            distributed.append(
-                {
-                    "member": entry["member"],
-                    "team": entry["team"],
-                    "wins": entry["wins"],
-                    "points": base_points,
-                    "fraction": exact - base_points,
-                }
-            )
-
-        remainder = total_points - sum(item["points"] for item in distributed)
-        if remainder > 0 and distributed:
-            sorted_entries = sorted(distributed, key=lambda i: i["fraction"], reverse=True)
-            for idx in range(remainder):
-                sorted_entries[idx % len(sorted_entries)]["points"] += 1
-
-        team_points_awarded: defaultdict[str, int] = defaultdict(int)
-        awarded_members = 0
-        for user_id, previous in previous_splits.items():
-            prior_points = int(previous.get("points") or 0)
-            if prior_points <= 0:
-                continue
-            db_team_points_add(
-                self.state,
-                guild.id,
-                user_id,
-                str(previous.get("team") or ""),
-                -prior_points,
-            )
-
-        new_splits: list[tuple[int, str, int]] = []
-        for entry in distributed:
-            points = int(entry["points"])
-            if points <= 0:
-                continue
-            team_points_awarded[entry["team"]] += points
-            awarded_members += 1
-            db_team_points_add(
-                self.state,
-                guild.id,
-                entry["member"].id,
-                entry["team"],
-                points,
-            )
-            new_splits.append((entry["member"].id, entry["team"], points))
-
-        db_team_point_splits_replace(self.state, guild.id, set_id, new_splits)
-
-        await self._ensure_message_exists(guild)
-
-        description = (
-            "Updated" if previous_splits else "Distributed"
-        + f" **{total_points:,}** duel team points based on wins in set **{set_id}**."
+        return (
+            False,
+            "Battleground team points are updated automatically per match; no split is required.",
+            None,
         )
-        embed = discord.Embed(
-            title="Team Point Split",
-            description=description,
-            color=discord.Color.gold(),
-        )
-        for team_name in _get_active_team_names():
-            wins = team_wins.get(team_name, 0)
-            points = team_points_awarded.get(team_name, 0)
-            embed.add_field(
-                name=f"{team_name} — {points:,} pts",
-                value=f"Wins: **{wins:,}**",
-                inline=True,
-            )
-        
-        content = (
-            f"Split complete. Awarded points to **{awarded_members}** member"
-            f"{'s' if awarded_members != 1 else ''}."
-        ).strip()
-
-        return True, content, embed
 
     @app_commands.command(name="team_award", description="(Admin) Award points to a team member")
     @app_commands.describe(member="Member to award points to", points="Number of points to award")
@@ -571,6 +629,14 @@ class Teams(commands.Cog):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
+        set_id, _ = _get_active_team_set()
+        if not set_id:
+            await interaction.followup.send(
+                "No active team set is configured for awarding points.",
+                ephemeral=True,
+            )
+            return
+
         team_name = self._resolve_member_team(member)
         if not team_name:
             await interaction.followup.send(
@@ -579,19 +645,32 @@ class Teams(commands.Cog):
             )
             return
 
-        new_total = db_team_points_add(
+        self._ensure_battleground_totals(interaction.guild, int(set_id))
+
+        totals = db_team_battleground_totals_update(
             self.state,
             interaction.guild.id,
+            int(set_id),
+            team_name,
+            bonus_delta=int(points),
+        )
+        db_team_battleground_user_points_update(
+            self.state,
+            interaction.guild.id,
+            int(set_id),
             member.id,
             team_name,
-            int(points),
+            earned_delta=int(points),
+            net_delta=0,
+            bonus_delta=int(points),
         )
 
         await self._ensure_message_exists(interaction.guild)
 
+        total_points = int(totals.get("duel_points", 0)) + int(totals.get("bonus_points", 0))
         await interaction.followup.send(
             f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
-            f"They now have **{new_total:,}** points.",
+            f"{team_name} now has **{total_points:,}** total points.",
             ephemeral=True,
         )
 
@@ -623,10 +702,10 @@ class Teams(commands.Cog):
 
     @app_commands.command(
         name="team_reset_points",
-        description="(Admin) Reset team points for a set.",
+        description="(Admin) Reset battleground team points for a set.",
     )
     @app_commands.describe(
-        set_id="Team set number to clear split points for",
+        set_id="Team set number to clear battleground points for",
         member="Optional member to target; clears all for the set when omitted",
     )
     @app_commands.guilds(GUILD)
@@ -646,136 +725,95 @@ class Teams(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
-        splits = db_team_point_splits_for_set(self.state, guild.id, int(set_id))
-        if not splits:
-            set_cfg = TEAM_SETS.get(int(set_id), {})
-            configured_names = tuple(
-                set_cfg.get("order") or (set_cfg.get("teams") or {}).keys()
+        if member:
+            entries = db_team_battleground_user_points_for_user(
+                self.state, guild.id, int(set_id), member.id
             )
-            all_team_names = tuple(
-                dict.fromkeys(
-                    name
-                    for name in (
-                        *configured_names,
-                        *tuple(db_team_points_totals(self.state, guild.id).keys()),
-                    )
-                    if name
-                )
-            )
-            orphan_rows = db_team_points_for_teams(self.state, guild.id, all_team_names)
-            if orphan_rows:
-                removed_points: defaultdict[str, int] = defaultdict(int)
-                cleared_members = 0
-                for row in orphan_rows:
-                    points = int(row.get("points") or 0)
-                    if points <= 0:
-                        continue
-                    cleared_members += 1
-                    team_name = str(row.get("team") or "")
-                    removed_points[team_name] += points
-                    db_team_points_add(
-                        self.state,
-                        guild.id,
-                        int(row.get("user_id") or 0),
-                        team_name,
-                        -points,
-                    )
-
-                await self._ensure_message_exists(guild)
-
-                embed = discord.Embed(
-                    title="Team Points Reset",
-                    description=f"Cleared orphaned totals for set **{int(set_id)}**",
-                    color=discord.Color.red(),
-                )
-                for team_name, points in removed_points.items():
-                    if points <= 0:
-                        continue
-                    embed.add_field(
-                        name=f"{team_name}",
-                        value=f"Removed **{points:,}** pts",
-                        inline=True,
-                    )
-
+            entry = next(iter(entries.values()), None)
+            if not entry:
                 await interaction.followup.send(
-                    embed=embed,
-                    content=(
-                        f"Cleared team point entries for **{cleared_members}** member"
-                        f"{'s' if cleared_members != 1 else ''}."
-                    ),
+                    "No stored battleground points were found for that member in this set.",
                     ephemeral=True,
                 )
                 return
 
-            available_sets = db_team_point_split_set_ids(self.state, guild.id)
-            suggestions = (
-                " No stored splits were found." if not available_sets else
-                " Available set IDs with stored splits: " + ", ".join(str(s) for s in available_sets)
+            team_name = str(entry.get("team") or "")
+            net_points = int(entry.get("net_points") or 0)
+            bonus_points = int(entry.get("bonus_points") or 0)
+
+            if team_name:
+                db_team_battleground_totals_update(
+                    self.state,
+                    guild.id,
+                    int(set_id),
+                    team_name,
+                    duel_delta=-net_points,
+                    bonus_delta=-bonus_points,
+                )
+
+            cleared_rows = db_team_battleground_user_points_clear(
+                self.state,
+                guild.id,
+                int(set_id),
+                member.id,
             )
+            
+            await self._ensure_message_exists(guild)
+
+            embed = discord.Embed(
+                title="Team Points Reset",
+                description=(
+                    f"Cleared battleground points for set **{int(set_id)}**"
+                    f" for {member.mention}"
+                ),
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Net removed",
+                value=f"**{net_points:,}**",
+                inline=True,
+            )
+            embed.add_field(
+                name="Bonus removed",
+                value=f"**{bonus_points:,}**",
+                inline=True,
+            )
+
             await interaction.followup.send(
-                f"No team point splits stored for set **{int(set_id)}**." + suggestions,
+                embed=embed,
+                content=(
+                    f"Cleared battleground entries for **{cleared_rows}** member"
+                    f"{'s' if cleared_rows != 1 else ''}."
+                ),
                 ephemeral=True,
             )
             return
 
-        targeted: dict[int, dict[str, int | str]]
-        if member:
-            entry = splits.get(member.id)
-            targeted = {member.id: entry} if entry else {}
-        else:
-            targeted = splits
-
-        if not targeted:
-            await interaction.followup.send(
-                "No matching split allocations were found to clear.",
-                ephemeral=True,
-            )
-            return
-
-        removed_points: defaultdict[str, int] = defaultdict(int)
-        cleared_members = 0
-        for user_id, info in targeted.items():
-            if not info:
-                continue
-            cleared_members += 1
-            points = int(info.get("points") or 0)
-            if points <= 0:
-                continue
-            team_name = str(info.get("team") or "")
-            removed_points[team_name] += points
-            db_team_points_add(self.state, guild.id, user_id, team_name, -points)
-
-        db_team_point_splits_delete(
+        cleared_totals = db_team_battleground_totals_clear(
             self.state,
             guild.id,
             int(set_id),
-            member.id if member else None,
+        )
+        cleared_members = db_team_battleground_user_points_clear(
+            self.state,
+            guild.id,
+            int(set_id),
         )
 
         await self._ensure_message_exists(guild)
 
         embed = discord.Embed(
             title="Team Points Reset",
-            description=(
-                f"Cleared stored split points for set **{int(set_id)}**"
-                + (f" for {member.mention}" if member else " for all members")
-            ),
+            description=f"Cleared battleground points for set **{int(set_id)}**",
             color=discord.Color.red(),
         )
-        if removed_points:
-            for team_name, points in removed_points.items():
-                if points <= 0:
-                    continue
-                embed.add_field(
-                    name=f"{team_name}",
-                    value=f"Removed **{points:,}** pts",
-                    inline=True,
-                )
+        embed.add_field(name="Teams cleared", value=f"**{cleared_totals}**", inline=True)
+        embed.add_field(name="Members cleared", value=f"**{cleared_members}**", inline=True)
 
         await interaction.followup.send(
             embed=embed,
             content=(
-                f"Cleared allocations for **{cleared_members}** member"
+                f"Cleared battleground points for **{cleared_members}** member"
                 f"{'s' if cleared_members != 1 else ''}."
             ),
             ephemeral=True,

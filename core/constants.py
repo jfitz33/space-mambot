@@ -37,8 +37,18 @@ def _parse_active_set_env() -> int:
 
 CURRENT_ACTIVE_SET = _parse_active_set_env()
 
-# Total duel team points to distribute during set recap splits
-DUEL_TEAM_POINTS_TOTAL = 1500
+# Battleground-style duel team points configuration.
+TEAM_BATTLEGROUND_START_POINTS = 1000
+DUEL_TEAM_TRANSFER_BASE = 25
+DUEL_TEAM_TRANSFER_MIN = 5
+DUEL_TEAM_TRANSFER_MAX = 100
+DUEL_TEAM_SAME_TEAM_MULTIPLIER = 0.4
+DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN = 0.85
+DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX = 1.15
+DUEL_TEAM_ACTIVITY_MULTIPLIER_MIN = 0.9
+DUEL_TEAM_ACTIVITY_MULTIPLIER_MAX = 1.1
+DUEL_TEAM_ACTIVITY_IMPACT = 0.2
+DUEL_TEAM_ACTIVITY_MATCH_THRESHOLD = 5
 
 # Daily sale layout: (rarity, number of entries)
 SALE_LAYOUT = [

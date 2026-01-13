@@ -56,6 +56,30 @@ def db_init(state: AppState):
         );
         """)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_battleground_totals (
+            guild_id     TEXT NOT NULL,
+            set_id       INTEGER NOT NULL,
+            team_name    TEXT NOT NULL,
+            duel_points  INTEGER NOT NULL DEFAULT 0,
+            bonus_points INTEGER NOT NULL DEFAULT 0,
+            updated_ts   INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (guild_id, set_id, team_name)
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_battleground_user_points (
+            guild_id      TEXT NOT NULL,
+            set_id        INTEGER NOT NULL,
+            user_id       TEXT NOT NULL,
+            team_name     TEXT NOT NULL,
+            earned_points INTEGER NOT NULL DEFAULT 0,
+            net_points    INTEGER NOT NULL DEFAULT 0,
+            bonus_points  INTEGER NOT NULL DEFAULT 0,
+            updated_ts    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (guild_id, set_id, user_id)
+        );
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS team_tracker_message (
             guild_id   TEXT NOT NULL PRIMARY KEY,
             channel_id TEXT NOT NULL,
@@ -2978,6 +3002,394 @@ def db_team_points_clear(state, guild_id: int, user_id: int) -> int:
         )
         return int(cur.rowcount)
 
+
+def db_team_battleground_totals_ensure(
+    state,
+    guild_id: int,
+    set_id: int,
+    team_names: Iterable[str],
+    start_points: int,
+) -> None:
+    import sqlite3, time
+
+    names = [name for name in team_names if name]
+    if not names:
+        return
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO team_battleground_totals (
+                guild_id,
+                set_id,
+                team_name,
+                duel_points,
+                bonus_points,
+                updated_ts
+            )
+            VALUES (?, ?, ?, ?, 0, ?)
+            """,
+            [
+                (str(guild_id), int(set_id), name, int(start_points), now)
+                for name in names
+            ],
+        )
+
+
+def db_team_battleground_totals_get(
+    state,
+    guild_id: int,
+    set_id: int,
+) -> dict[str, dict[str, int]]:
+    import sqlite3
+
+    totals: dict[str, dict[str, int]] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT team_name, duel_points, bonus_points
+              FROM team_battleground_totals
+             WHERE guild_id = ? AND set_id = ?
+            """,
+            (str(guild_id), int(set_id)),
+        )
+        for team_name, duel_points, bonus_points in cur.fetchall():
+            if not team_name:
+                continue
+            totals[str(team_name)] = {
+                "duel_points": int(duel_points or 0),
+                "bonus_points": int(bonus_points or 0),
+            }
+    return totals
+
+
+def db_team_battleground_totals_update(
+    state,
+    guild_id: int,
+    set_id: int,
+    team_name: str,
+    *,
+    duel_delta: int = 0,
+    bonus_delta: int = 0,
+) -> dict[str, int]:
+    import sqlite3, time
+
+    team_name = (team_name or "").strip()
+    if not team_name:
+        return {"duel_points": 0, "bonus_points": 0}
+
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO team_battleground_totals (
+                guild_id,
+                set_id,
+                team_name,
+                duel_points,
+                bonus_points,
+                updated_ts
+            )
+            VALUES (?, ?, ?, 0, 0, ?)
+            """,
+            (str(guild_id), int(set_id), team_name, now),
+        )
+        conn.execute(
+            """
+            UPDATE team_battleground_totals
+               SET duel_points = MAX(0, duel_points + ?),
+                   bonus_points = MAX(0, bonus_points + ?),
+                   updated_ts = ?
+             WHERE guild_id = ? AND set_id = ? AND team_name = ?
+            """,
+            (
+                int(duel_delta),
+                int(bonus_delta),
+                now,
+                str(guild_id),
+                int(set_id),
+                team_name,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT duel_points, bonus_points
+              FROM team_battleground_totals
+             WHERE guild_id = ? AND set_id = ? AND team_name = ?
+            """,
+            (str(guild_id), int(set_id), team_name),
+        ).fetchone()
+    duel_points = int(row[0] or 0) if row else 0
+    bonus_points = int(row[1] or 0) if row else 0
+    return {"duel_points": duel_points, "bonus_points": bonus_points}
+
+
+def db_team_battleground_user_points_update(
+    state,
+    guild_id: int,
+    set_id: int,
+    user_id: int,
+    team_name: str,
+    *,
+    earned_delta: int = 0,
+    net_delta: int = 0,
+    bonus_delta: int = 0,
+) -> dict[str, int | str]:
+    import sqlite3, time
+
+    team_name = (team_name or "").strip()
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO team_battleground_user_points (
+                guild_id,
+                set_id,
+                user_id,
+                team_name,
+                earned_points,
+                net_points,
+                bonus_points,
+                updated_ts
+            )
+            VALUES (?, ?, ?, ?, 0, 0, 0, ?)
+            """,
+            (str(guild_id), int(set_id), str(user_id), team_name, now),
+        )
+        conn.execute(
+            """
+            UPDATE team_battleground_user_points
+               SET team_name = ?,
+                   earned_points = MAX(0, earned_points + ?),
+                   net_points = net_points + ?,
+                   bonus_points = MAX(0, bonus_points + ?),
+                   updated_ts = ?
+             WHERE guild_id = ? AND set_id = ? AND user_id = ?
+            """,
+            (
+                team_name,
+                int(earned_delta),
+                int(net_delta),
+                int(bonus_delta),
+                now,
+                str(guild_id),
+                int(set_id),
+                str(user_id),
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT team_name, earned_points, net_points, bonus_points
+              FROM team_battleground_user_points
+             WHERE guild_id = ? AND set_id = ? AND user_id = ?
+            """,
+            (str(guild_id), int(set_id), str(user_id)),
+        ).fetchone()
+    if not row:
+        return {"team": team_name, "earned_points": 0, "net_points": 0, "bonus_points": 0}
+    return {
+        "team": str(row[0]),
+        "earned_points": int(row[1] or 0),
+        "net_points": int(row[2] or 0),
+        "bonus_points": int(row[3] or 0),
+    }
+
+
+def db_team_battleground_user_points_for_user(
+    state,
+    guild_id: int,
+    set_id: int,
+    user_id: int,
+) -> dict[str, dict[str, int | str]]:
+    import sqlite3
+
+    results: dict[str, dict[str, int | str]] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT team_name, earned_points, net_points, bonus_points
+              FROM team_battleground_user_points
+             WHERE guild_id = ? AND set_id = ? AND user_id = ?
+            """,
+            (str(guild_id), int(set_id), str(user_id)),
+        )
+        for team_name, earned_points, net_points, bonus_points in cur.fetchall():
+            results[str(team_name)] = {
+                "earned_points": int(earned_points or 0),
+                "net_points": int(net_points or 0),
+                "bonus_points": int(bonus_points or 0),
+            }
+    return results
+
+
+def db_team_battleground_user_points_all(
+    state,
+    guild_id: int,
+    set_id: int,
+    team_name: str | None = None,
+    user_id: int | None = None,
+) -> list[dict[str, int | str]]:
+    import sqlite3
+
+    where_clauses = ["guild_id = ?", "set_id = ?"]
+    params: list[str | int] = [str(guild_id), int(set_id)]
+
+    if team_name:
+        where_clauses.append("team_name = ?")
+        params.append(team_name)
+
+    if user_id is not None:
+        where_clauses.append("user_id = ?")
+        params.append(str(user_id))
+
+    where_sql = " AND ".join(where_clauses)
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            f"""
+            SELECT user_id, team_name, earned_points, net_points, bonus_points
+              FROM team_battleground_user_points
+             WHERE {where_sql}
+            """,
+            params,
+        )
+        return [
+            {
+                "user_id": int(row[0]),
+                "team": str(row[1]),
+                "earned_points": int(row[2] or 0),
+                "net_points": int(row[3] or 0),
+                "bonus_points": int(row[4] or 0),
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def db_team_battleground_user_points_for_user_all_sets(
+    state,
+    guild_id: int,
+    user_id: int,
+) -> list[dict[str, int | str]]:
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT set_id, team_name, earned_points, net_points, bonus_points
+              FROM team_battleground_user_points
+             WHERE guild_id = ? AND user_id = ?
+            """,
+            (str(guild_id), str(user_id)),
+        )
+        return [
+            {
+                "set_id": int(row[0]),
+                "team": str(row[1]),
+                "earned_points": int(row[2] or 0),
+                "net_points": int(row[3] or 0),
+                "bonus_points": int(row[4] or 0),
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def db_team_battleground_user_points_top(
+    state,
+    guild_id: int,
+    set_id: int,
+    team_name: str,
+    limit: int = 3,
+) -> list[tuple[int, int]]:
+    import sqlite3
+
+    rows: list[tuple[int, int]] = []
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT user_id, earned_points
+              FROM team_battleground_user_points
+             WHERE guild_id = ? AND set_id = ? AND team_name = ? AND earned_points > 0
+             ORDER BY earned_points DESC, user_id ASC
+             LIMIT ?
+            """,
+            (str(guild_id), int(set_id), team_name, int(limit)),
+        )
+        for user_id, points in cur.fetchall():
+            rows.append((int(user_id), int(points)))
+    return rows
+
+
+def db_team_battleground_user_points_clear(
+    state,
+    guild_id: int,
+    set_id: int,
+    user_id: int | None = None,
+) -> int:
+    import sqlite3
+
+    params: list[str | int] = [str(guild_id), int(set_id)]
+    where_user = ""
+    if user_id is not None:
+        where_user = " AND user_id = ?"
+        params.append(str(user_id))
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute(
+            f"""
+            DELETE FROM team_battleground_user_points
+             WHERE guild_id = ? AND set_id = ?{where_user}
+            """,
+            params,
+        )
+        return int(cur.rowcount)
+
+
+def db_team_battleground_totals_clear(
+    state,
+    guild_id: int,
+    set_id: int,
+) -> int:
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        cur = conn.execute(
+            """
+            DELETE FROM team_battleground_totals
+             WHERE guild_id = ? AND set_id = ?
+            """,
+            (str(guild_id), int(set_id)),
+        )
+        return int(cur.rowcount)
+
+
+def db_match_log_games_for_set(state, set_id: int) -> dict[int, int]:
+    import sqlite3
+
+    games: dict[int, int] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT winner_id, COUNT(*) FROM match_log
+             WHERE set_id = ?
+             GROUP BY winner_id
+            """,
+            (int(set_id),),
+        )
+        for user_id, count in cur.fetchall():
+            games[int(user_id)] = games.get(int(user_id), 0) + int(count or 0)
+
+        cur = conn.execute(
+            """
+            SELECT loser_id, COUNT(*) FROM match_log
+             WHERE set_id = ?
+             GROUP BY loser_id
+            """,
+            (int(set_id),),
+        )
+        for user_id, count in cur.fetchall():
+            games[int(user_id)] = games.get(int(user_id), 0) + int(count or 0)
+
+    return games
 
 def db_team_tracker_store(state, guild_id: int, channel_id: int, message_id: int):
     import sqlite3, time
