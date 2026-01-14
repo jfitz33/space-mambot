@@ -92,6 +92,7 @@ class Stats(commands.Cog):
                     winner=winner,
                     loser=loser,
                     winner_stats=winner_after,
+                    loser_stats=loser_after,
                 )
                 winner_team = info.get("winner_team", "Unknown team")
                 loser_team = info.get("loser_team", "Unknown team")

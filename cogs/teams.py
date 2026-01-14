@@ -612,7 +612,7 @@ class Teams(commands.Cog):
                 loser.id,
                 loser_team,
                 earned_delta=0,
-                net_delta=-moved_points,
+                net_delta=0 if same_team else -moved_points,
             )
         await self._ensure_message_exists(guild)
 
@@ -695,6 +695,186 @@ class Teams(commands.Cog):
         await interaction.followup.send(
             f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
             f"{team_name} now has **{total_points:,}** total points.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_transfer_points",
+        description="(Admin) Transfer duel points between teams without assigning member points.",
+    )
+    @app_commands.describe(
+        from_team="Team losing points",
+        to_team="Team gaining points",
+        points="Number of points to transfer",
+        set_id="Team set number to adjust (defaults to the active set)",
+    )
+    @app_commands.autocomplete(from_team=_team_autocomplete, to_team=_team_autocomplete)
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_transfer_points(
+        self,
+        interaction: discord.Interaction,
+        from_team: str,
+        to_team: str,
+        points: app_commands.Range[int, 1, 1_000_000],
+        set_id: app_commands.Range[int, 1, 9999] | None = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if from_team == to_team:
+            await interaction.followup.send("Source and destination teams must be different.", ephemeral=True)
+            return
+
+        active_set_id, _ = _get_active_team_set()
+        resolved_set_id = int(set_id or active_set_id or 0)
+        if not resolved_set_id:
+            await interaction.followup.send("No active team set is configured.", ephemeral=True)
+            return
+
+        active_names = set(_get_active_team_names())
+        if from_team not in active_names or to_team not in active_names:
+            await interaction.followup.send(
+                "Both teams must be part of the active team set.",
+                ephemeral=True,
+            )
+            return
+
+        self._ensure_battleground_totals(interaction.guild, resolved_set_id)
+        totals = db_team_battleground_totals_get(self.state, interaction.guild.id, resolved_set_id)
+        from_points = int(totals.get(from_team, {}).get("duel_points", 0))
+        moved_points = min(int(points), from_points)
+        if moved_points <= 0:
+            await interaction.followup.send(
+                f"Team **{from_team}** does not have any duel points to transfer.",
+                ephemeral=True,
+            )
+            return
+
+        db_team_battleground_totals_update(
+            self.state,
+            interaction.guild.id,
+            resolved_set_id,
+            from_team,
+            duel_delta=-moved_points,
+        )
+        db_team_battleground_totals_update(
+            self.state,
+            interaction.guild.id,
+            resolved_set_id,
+            to_team,
+            duel_delta=moved_points,
+        )
+        await self._ensure_message_exists(interaction.guild)
+
+        await interaction.followup.send(
+            f"Transferred **{moved_points:,}** points from **{from_team}** to **{to_team}** "
+            f"for set **{resolved_set_id}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_award_transfer",
+        description="(Admin) Award points to a member and transfer them from another team.",
+    )
+    @app_commands.describe(
+        member="Member receiving points",
+        points="Number of points to award and transfer",
+        from_team="Team losing points (defaults to the opposing team when possible)",
+    )
+    @app_commands.autocomplete(from_team=_team_autocomplete)
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_award_transfer(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        points: app_commands.Range[int, 1, 1_000_000],
+        from_team: str | None = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        set_id, _ = _get_active_team_set()
+        if not set_id:
+            await interaction.followup.send("No active team set is configured.", ephemeral=True)
+            return
+
+        team_name = self._resolve_member_team(member)
+        if not team_name:
+            await interaction.followup.send(
+                "That member does not have a team role for the current set assigned.",
+                ephemeral=True,
+            )
+            return
+
+        active_names = [name for name in _get_active_team_names() if name]
+        transfer_from = (from_team or "").strip()
+        if not transfer_from:
+            other_names = [name for name in active_names if name != team_name]
+            transfer_from = other_names[0] if len(other_names) == 1 else ""
+        if not transfer_from or transfer_from == team_name:
+            await interaction.followup.send(
+                "Please specify a valid opposing team to transfer points from.",
+                ephemeral=True,
+            )
+            return
+        if transfer_from not in active_names:
+            await interaction.followup.send(
+                "The source team must be part of the active team set.",
+                ephemeral=True,
+            )
+            return
+
+        self._ensure_battleground_totals(interaction.guild, int(set_id))
+        totals = db_team_battleground_totals_get(self.state, interaction.guild.id, int(set_id))
+        from_points = int(totals.get(transfer_from, {}).get("duel_points", 0))
+        moved_points = min(int(points), from_points)
+        if moved_points <= 0:
+            await interaction.followup.send(
+                f"Team **{transfer_from}** does not have any duel points to transfer.",
+                ephemeral=True,
+            )
+            return
+
+        db_team_battleground_totals_update(
+            self.state,
+            interaction.guild.id,
+            int(set_id),
+            team_name,
+            duel_delta=moved_points,
+        )
+        db_team_battleground_totals_update(
+            self.state,
+            interaction.guild.id,
+            int(set_id),
+            transfer_from,
+            duel_delta=-moved_points,
+        )
+        db_team_battleground_user_points_update(
+            self.state,
+            interaction.guild.id,
+            int(set_id),
+            member.id,
+            team_name,
+            earned_delta=moved_points,
+            net_delta=moved_points,
+        )
+        await self._ensure_message_exists(interaction.guild)
+
+        await interaction.followup.send(
+            f"Awarded **{moved_points:,}** points to {member.mention} on **{team_name}** "
+            f"and transferred them from **{transfer_from}**.",
             ephemeral=True,
         )
 
@@ -840,6 +1020,45 @@ class Teams(commands.Cog):
                 f"Cleared battleground points for **{cleared_members}** member"
                 f"{'s' if cleared_members != 1 else ''}."
             ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_clear_member_points",
+        description="(Admin) Clear battleground member points without changing team totals.",
+    )
+    @app_commands.describe(
+        set_id="Team set number to clear member points for",
+        member="Optional member to target; clears all members when omitted",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_clear_member_points(
+        self,
+        interaction: discord.Interaction,
+        set_id: app_commands.Range[int, 1, 9999],
+        member: discord.Member | None = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        cleared_rows = db_team_battleground_user_points_clear(
+            self.state,
+            interaction.guild.id,
+            int(set_id),
+            member.id if member else None,
+        )
+        await self._ensure_message_exists(interaction.guild)
+
+        target = member.mention if member else "all members"
+        await interaction.followup.send(
+            f"Cleared battleground member points for {target} in set **{int(set_id)}** "
+            f"({cleared_rows} record{'s' if cleared_rows != 1 else ''}).",
             ephemeral=True,
         )
 
