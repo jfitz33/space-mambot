@@ -1145,7 +1145,7 @@ class Admin(commands.Cog):
         )
 
         moved_points = 0
-        same_team_note = ""
+        team_message = None
         teams = interaction.client.get_cog("Teams")
         if interaction.guild and teams and hasattr(teams, "apply_duel_result"):
             try:
@@ -1155,10 +1155,15 @@ class Admin(commands.Cog):
                     loser=loser,
                     winner_stats=winner_after,
                 )
-                if info.get("same_team") == "yes":
-                    same_team_note = " (same team)"
+                winner_team = info.get("winner_team", "Unknown team")
+                loser_team = info.get("loser_team", "Unknown team")
+                team_message = (
+                    f"Team **{winner_team}** took **{moved_points:,}** points from **{loser_team}**."
+                )
             except Exception as exc:
                 print("[admin] failed to apply battleground points:", exc)
+        if team_message is None:
+            team_message = "Team points could not be updated for this match."
 
         quests = interaction.client.get_cog("Quests")
         try:
@@ -1172,7 +1177,7 @@ class Admin(commands.Cog):
             title="Admin Match Recorded",
             description=(
                 f"**{loser.display_name}** lost to **{winner.display_name}**.\n"
-                f"Points moved: **{moved_points:,}**{same_team_note}"
+                f"{team_message}"
             ),
             color=0xCC3333,
         )
@@ -1181,7 +1186,7 @@ class Admin(commands.Cog):
         if interaction.channel:
             await interaction.channel.send(
                 f"📝 Admin recorded a result: **{loser.display_name}** lost to **{winner.display_name}**. "
-                f"Points moved: **{moved_points:,}**{same_team_note}."
+                f"{team_message}"
             )
 
         # Remove the user(s) from the queue if there is an actively paired match

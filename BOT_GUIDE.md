@@ -33,6 +33,7 @@ to importing
 - **/search** `card` — See who has a given card in binders and who wants it on wishlists.
 - **/binder** `user` — Show a player’s binder contents in the channel; `user` optional default is you.
 - **/binder_add** `card` `copies` — Move owned cards into your binder; `copies` optional default is 1, capped by how many you own.
+- **/binder_bulk_add** `min_rarity` `exact_rarity` `pack` `excess_amount` — Add extra copies from your collection into your binder; `min_rarity` optional default is common, `exact_rarity` optional to match a specific rarity, `pack` optional to target a specific set, `excess_amount` optional default is 3 copies to keep.
 - **/binder_remove** `card` `copies` — Remove cards from your binder; `copies` optional default is 1.
 - **/binder_clear** — Empty your binder completely.
 - **/wishlist** `user` — Post the wishlist for you or another player; `user` optional default is you.

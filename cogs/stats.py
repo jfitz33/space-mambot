@@ -83,7 +83,7 @@ class Stats(commands.Cog):
         )
 
         moved_points = 0
-        same_team_note = ""
+        team_message = None
         teams = interaction.client.get_cog("Teams")
         if interaction.guild and teams and hasattr(teams, "apply_duel_result"):
             try:
@@ -93,10 +93,15 @@ class Stats(commands.Cog):
                     loser=loser,
                     winner_stats=winner_after,
                 )
-                if info.get("same_team") == "yes":
-                    same_team_note = " (same team)"
+                winner_team = info.get("winner_team", "Unknown team")
+                loser_team = info.get("loser_team", "Unknown team")
+                team_message = (
+                    f"Team **{winner_team}** took **{moved_points:,}** points from **{loser_team}**."
+                )
             except Exception as exc:
                 print("[stats] failed to apply battleground points:", exc)
+        if team_message is None:
+            team_message = "Team points could not be updated for this match."
 
         # Optional quest ticks using your QuestManager wrappers/IDs
         quests = interaction.client.get_cog("Quests")
@@ -111,7 +116,7 @@ class Stats(commands.Cog):
             title="Match Result Recorded",
             description=(
                 f"**{winner.display_name}** defeated **{loser.display_name}**.\n"
-                f"Points moved: **{moved_points:,}**{same_team_note}"
+                f"{team_message}"
             ),
             color=0xCC3333,
         )

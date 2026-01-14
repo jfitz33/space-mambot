@@ -26,18 +26,14 @@ from core.db import (
 from core.state import AppState
 from core.constants import (
     CURRENT_ACTIVE_SET,
-    DUEL_TEAM_ACTIVITY_IMPACT,
-    DUEL_TEAM_ACTIVITY_MATCH_THRESHOLD,
-    DUEL_TEAM_ACTIVITY_MULTIPLIER_MAX,
-    DUEL_TEAM_ACTIVITY_MULTIPLIER_MIN,
     DUEL_TEAM_SAME_TEAM_MULTIPLIER,
     DUEL_TEAM_TRANSFER_BASE,
     DUEL_TEAM_TRANSFER_MAX,
     DUEL_TEAM_TRANSFER_MIN,
-    DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX,
-    DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN,
-    TEAM_SETS,
+    TEAM_BATTLEGROUND_MIDPOINT,
+    TEAM_BATTLEGROUND_SEGMENT_SIZE,
     TEAM_BATTLEGROUND_START_POINTS,
+    TEAM_SETS,
     latest_team_set_id,
 )
 from core.packs import open_pack_from_csv, open_pack_with_guaranteed_top_from_csv
@@ -468,13 +464,13 @@ class Teams(commands.Cog):
         )
 
     @staticmethod
-    def _win_pct_multiplier(stats: dict) -> float:
-        wins = int(stats.get("wins", 0) or 0)
-        games = int(stats.get("games", 0) or 0)
-        win_pct = (wins / games) if games > 0 else 0.0
-        span = DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX - DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN
-        multiplier = DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX - (win_pct * span)
-        return max(DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN, min(DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX, multiplier))
+    def _skill_multiplier(winner_stats: dict, loser_stats: dict) -> float:
+        winner_wins = int(winner_stats.get("wins", 0) or 0)
+        winner_losses = int(winner_stats.get("losses", 0) or 0)
+        loser_wins = int(loser_stats.get("wins", 0) or 0)
+        loser_losses = int(loser_stats.get("losses", 0) or 0)
+        skill_diff = (winner_wins - winner_losses) - (loser_wins - loser_losses)
+        return 2 / (1 + math.pow(10, skill_diff / 65))
 
     def _activity_multiplier(
         self,
@@ -487,30 +483,46 @@ class Teams(commands.Cog):
             return 1.0
 
         games_by_user = db_match_log_games_for_set(self.state, set_id)
-        active_counts: defaultdict[str, int] = defaultdict(int)
+        team_games: defaultdict[str, int] = defaultdict(int)
         active_names = set(_get_active_team_names())
         for member in guild.members:
             team_name = self._resolve_member_team(member)
             if not team_name or team_name not in active_names:
                 continue
+            team_games[team_name] += int(games_by_user.get(member.id, 0))
 
-            games = games_by_user.get(member.id, 0)
-            if games >= DUEL_TEAM_ACTIVITY_MATCH_THRESHOLD:
-                active_counts[team_name] += 1
+        winner_games = team_games.get(winner_team, 0)
+        loser_games = team_games.get(loser_team, 0)
+        raw_multiplier = (loser_games + 1) / (winner_games + 1)
+        return max(2 / 3, min(3 / 2, raw_multiplier))
 
-        winner_count = active_counts.get(winner_team, 0)
-        loser_count = active_counts.get(loser_team, 0)
-        if winner_count == loser_count:
+    @staticmethod
+    def _segments_owned(points: int) -> int:
+        threshold = TEAM_BATTLEGROUND_MIDPOINT + (TEAM_BATTLEGROUND_SEGMENT_SIZE // 2)
+        if points < threshold:
+            return 0
+        return 1 + math.floor((points - threshold) / TEAM_BATTLEGROUND_SEGMENT_SIZE)
+
+    def _segment_advantage_multiplier(self, winner_points: int, loser_points: int) -> float:
+        winner_segments = self._segments_owned(winner_points)
+        loser_segments = self._segments_owned(loser_points)
+        if winner_segments == loser_segments:
             return 1.0
+        lead = abs(winner_segments - loser_segments)
+        if winner_segments > loser_segments:
+            numerator = max(1, 11 - lead)
+        else:
+            numerator = 11 + lead
+        return numerator / 11
+    
 
     def _calculate_transfer_points(
         self,
         *,
-        win_multiplier: float,
-        activity_multiplier: float,
+        base_multiplier: float,
         same_team: bool,
     ) -> int:
-        multiplier = win_multiplier * activity_multiplier
+        multiplier = base_multiplier
         if same_team:
             multiplier *= DUEL_TEAM_SAME_TEAM_MULTIPLIER
 
@@ -525,6 +537,7 @@ class Teams(commands.Cog):
         winner: discord.Member,
         loser: discord.Member,
         winner_stats: dict,
+        loser_stats: dict,
     ) -> tuple[int, dict[str, str]]:
         set_id, _ = _get_active_team_set()
         if not set_id:
@@ -535,26 +548,37 @@ class Teams(commands.Cog):
         if not winner_team or not loser_team:
             return 0, {"reason": "Missing team role for one or more players."}
 
-            active_names = set(_get_active_team_names())
+        active_names = set(_get_active_team_names())
         if winner_team not in active_names or loser_team not in active_names:
             return 0, {"reason": "Team roles are not part of the active set."}
+        
+        same_team = winner_team == loser_team
+        transfer_loser_team = loser_team
+        if same_team:
+            opposing_team = next((name for name in active_names if name != winner_team), None)
+            if not opposing_team:
+                return 0, {"reason": "No opposing team configured for the active set."}
+            transfer_loser_team = opposing_team
 
         self._ensure_battleground_totals(guild, int(set_id))
 
-        win_multiplier = self._win_pct_multiplier(winner_stats)
-        activity_multiplier = self._activity_multiplier(guild, int(set_id), winner_team, loser_team)
-        same_team = winner_team == loser_team
+        totals = db_team_battleground_totals_get(self.state, guild.id, int(set_id))
+        winner_points = int(totals.get(winner_team, {}).get("duel_points", TEAM_BATTLEGROUND_START_POINTS))
+        loser_points = int(
+            totals.get(transfer_loser_team, {}).get("duel_points", TEAM_BATTLEGROUND_START_POINTS)
+        )
+
+        skill_multiplier = self._skill_multiplier(winner_stats, loser_stats)
+        activity_multiplier = self._activity_multiplier(guild, int(set_id), winner_team, transfer_loser_team)
+        segment_multiplier = self._segment_advantage_multiplier(winner_points, loser_points)
         transfer_points = self._calculate_transfer_points(
-            win_multiplier=win_multiplier,
-            activity_multiplier=activity_multiplier,
+            base_multiplier=skill_multiplier * activity_multiplier * segment_multiplier,
             same_team=same_team,
         )
 
-        totals = db_team_battleground_totals_get(self.state, guild.id, int(set_id))
-        loser_points = int(totals.get(loser_team, {}).get("duel_points", TEAM_BATTLEGROUND_START_POINTS))
-        moved_points = transfer_points if same_team else min(transfer_points, loser_points)
+        moved_points = min(transfer_points, loser_points)
 
-        if moved_points > 0 and not same_team:
+        if moved_points > 0:
             db_team_battleground_totals_update(
                 self.state,
                 guild.id,
@@ -567,7 +591,7 @@ class Teams(commands.Cog):
                 self.state,
                 guild.id,
                 int(set_id),
-                loser_team,
+                transfer_loser_team,
                 duel_delta=-moved_points,
             )
 
@@ -595,7 +619,7 @@ class Teams(commands.Cog):
         
         return moved_points, {
             "winner_team": winner_team,
-            "loser_team": loser_team,
+            "loser_team": transfer_loser_team,
             "same_team": "yes" if same_team else "no",
         }
 
