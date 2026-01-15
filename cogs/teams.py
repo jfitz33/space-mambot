@@ -2,6 +2,7 @@
 import asyncio
 import math
 import os
+import random
 from collections import defaultdict
 from typing import Iterable
 
@@ -43,6 +44,14 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 TEAM_CHANNEL_NAME = "team-points-tracker"
+TEAM_COLOR_EMOJIS = {
+    "fire": "🟥",
+    "water": "🟦",
+    "wind": "🟩",
+    "earth": "🟫",
+    "past": "🟨",
+    "future": "🟪",
+}
 
 
 async def _clear_channel_messages(channel: discord.TextChannel):
@@ -220,8 +229,7 @@ class Teams(commands.Cog):
         if not bot_member:
             return
 
-        # Team tracker channel has been disabled; skip creating or updating it.
-        return
+        await self._ensure_message_exists(guild)
 
     async def _ensure_tracker_channel(self, guild: discord.Guild, bot_member: discord.Member) -> discord.TextChannel:
         channel = discord.utils.get(guild.text_channels, name=TEAM_CHANNEL_NAME)
@@ -285,8 +293,7 @@ class Teams(commands.Cog):
         return channel
 
     async def _ensure_message_exists(self, guild: discord.Guild, channel: discord.TextChannel | None = None):
-        # Team tracker channel has been disabled; no message management needed.
-        return
+        await self._refresh_tracker(guild, channel=channel)
 
     async def _get_tracker_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         channel = discord.utils.get(guild.text_channels, name=TEAM_CHANNEL_NAME)
@@ -371,9 +378,7 @@ class Teams(commands.Cog):
         display_totals = self._round_totals_for_display(combined_totals)
         embed = discord.Embed(
             title="Team Points Tracker",
-            description=(
-                "Top contributors for the current team set." if set_id else "No active team set found."
-            ),
+            description=("No active team set found." if not set_id else None),
             color=discord.Color.orange(),
         )
 
@@ -381,6 +386,22 @@ class Teams(commands.Cog):
             return embed
 
         teams = cfg.get("teams") or {}
+        progress_lines = self._format_battleground_progress_lines(
+            totals,
+            display_totals,
+            teams,
+        )
+        if progress_lines:
+            embed.add_field(
+                name="Battleground Control",
+                value="\n".join(progress_lines),
+                inline=False,
+            )
+            embed.add_field(
+                name="Top points earners",
+                value="\u200b",
+                inline=False,
+            )
         for team in _get_active_team_names():
             info = teams.get(team, {})
             title = info.get("display") or team
@@ -402,6 +423,181 @@ class Teams(commands.Cog):
 
         return embed
 
+    @staticmethod
+    def _team_color_block(team_name: str) -> str:
+        return TEAM_COLOR_EMOJIS.get(team_name.casefold(), "⬜")
+
+    def _format_battleground_progress_lines(
+        self,
+        totals: dict[str, dict],
+        display_totals: dict[str, int],
+        teams: dict[str, dict],
+    ) -> list[str]:
+        if not totals:
+            return []
+
+        team_names = [name for name in _get_active_team_names() if name in totals]
+        if len(team_names) < 2:
+            return []
+
+        left_team, right_team = team_names[:2]
+        def _split_points(value: dict | int | float) -> tuple[int, int]:
+            if isinstance(value, dict):
+                return int(value.get("duel_points", 0)), int(value.get("bonus_points", 0))
+            return int(value or 0), 0
+
+        left_duel, left_bonus = _split_points(totals.get(left_team, {}))
+        right_duel, right_bonus = _split_points(totals.get(right_team, {}))
+        if left_duel <= 0 and right_duel <= 0 and left_bonus <= 0 and right_bonus <= 0:
+            return []
+
+        segment_units = 5
+        segment_size = TEAM_BATTLEGROUND_SEGMENT_SIZE
+        points_per_unit = segment_size / segment_units
+        left_color = self._team_color_block(left_team)
+        right_color = self._team_color_block(right_team)
+        empty_block = "⬛"
+
+        def _filled_column(units: int, color: str) -> list[str]:
+            units = max(0, min(segment_units, units))
+            cells = [empty_block] * segment_units
+            for idx in range(segment_units - units, segment_units):
+                if 0 <= idx < segment_units:
+                    cells[idx] = color
+            return cells
+
+        def _bonus_columns(bonus_points: int, color: str, side: str) -> list[list[str]]:
+            columns: list[list[str]] = []
+            remaining = max(0, bonus_points)
+            full_columns = remaining // segment_size
+            remainder = remaining % segment_size
+
+            full = [_filled_column(segment_units, color) for _ in range(full_columns)]
+            partial: list[list[str]] = []
+            if remainder > 0:
+                units = int(remainder / points_per_unit)
+                units = max(0, min(segment_units, units))
+                partial.append(_filled_column(units, color))
+
+            if side == "left":
+                columns.extend(partial)
+                columns.extend(full)
+            else:
+                columns.extend(full)
+                columns.extend(partial)
+            return columns
+
+        def _distribute_duel_squares() -> tuple[int, int]:
+            total_squares = segment_units * 5
+            left_exact = left_duel / points_per_unit if points_per_unit else 0
+            right_exact = right_duel / points_per_unit if points_per_unit else 0
+            left_floor = int(math.floor(left_exact))
+            right_floor = int(math.floor(right_exact))
+            remaining = max(0, total_squares - (left_floor + right_floor))
+            left_remainder = left_exact - left_floor
+            right_remainder = right_exact - right_floor
+            if remaining:
+                if left_remainder >= right_remainder:
+                    left_floor += remaining
+                else:
+                    right_floor += remaining
+            left_floor = max(0, min(total_squares, left_floor))
+            right_floor = max(0, min(total_squares - left_floor, right_floor))
+            return left_floor, right_floor
+
+        left_squares, right_squares = _distribute_duel_squares()
+
+        base_columns = [[empty_block] * segment_units for _ in range(5)]
+        left_remaining = left_squares
+        for col_idx in range(5):
+            if left_remaining <= 0:
+                break
+            units = min(segment_units, left_remaining)
+            left_remaining -= units
+            base_columns[col_idx] = _filled_column(units, left_color)
+
+        right_remaining = right_squares
+        for col_idx in range(4, -1, -1):
+            if right_remaining <= 0:
+                break
+            units = min(segment_units, right_remaining)
+            right_remaining -= units
+            column = base_columns[col_idx]
+            for idx in range(0, units):
+                if 0 <= idx < segment_units:
+                    column[idx] = right_color
+
+        left_bonus_columns = _bonus_columns(left_bonus, left_color, "left")
+        right_bonus_columns = _bonus_columns(right_bonus, right_color, "right")
+
+        columns = [*left_bonus_columns, *base_columns, *right_bonus_columns]
+        base_middle_index = 2
+        left_total = display_totals.get(left_team, left_duel + left_bonus)
+        right_total = display_totals.get(right_team, right_duel + right_bonus)
+        left_segments = max(0, left_total // segment_size)
+        right_segments = max(0, right_total // segment_size)
+        lead = right_segments - left_segments
+        contested_base_index = max(0, min(4, base_middle_index - lead))
+        middle_index = len(left_bonus_columns) + base_middle_index
+        contested_index = len(left_bonus_columns) + contested_base_index
+
+        def _header_label(value: int) -> str:
+            keycap = {
+                0: "0️⃣",
+                1: "1️⃣",
+                2: "2️⃣",
+                3: "3️⃣",
+                4: "4️⃣",
+                5: "5️⃣",
+                6: "6️⃣",
+                7: "7️⃣",
+                8: "8️⃣",
+                9: "9️⃣",
+                10: "🔟",
+            }
+            return keycap.get(value, str(value))
+
+        left_info = teams.get(left_team, {})
+        right_info = teams.get(right_team, {})
+        left_icon = left_info.get("emoji") or left_color
+        right_icon = right_info.get("emoji") or right_color
+        if right_team.casefold() == "water":
+            right_icon = "🌊"
+
+        rows = []
+        header_cells = [left_icon, " "]
+        for col_idx in range(len(columns)):
+            if col_idx == contested_index:
+                header_cells.append(" ")
+            header_cells.append(_header_label(abs(col_idx - middle_index)))
+            if col_idx == contested_index:
+                header_cells.append(" ")
+        header_cells.extend([" ", right_icon])
+        rows.append("".join(header_cells).rstrip())
+
+        rows.append("")
+        for row_idx in range(segment_units):
+            row_cells = [left_icon, " "]
+            for col_idx, column in enumerate(columns):
+                if col_idx == contested_index:
+                    row_cells.append(" ")
+                row_cells.append(column[row_idx])
+                if col_idx == contested_index:
+                    row_cells.append(" ")
+            row_cells.extend([" ", right_icon])
+            rows.append("".join(row_cells).rstrip())
+
+        lines = rows + ["", ""]
+        for team in (left_team, right_team):
+            info = teams.get(team, {})
+            title = info.get("display") or team
+            emoji = info.get("emoji", "")
+            shown_points = display_totals.get(team, 0)
+            color = self._team_color_block(team)
+            lines.append(f"{color} {title} {emoji}: **{shown_points:,} pts**")
+
+        return lines
+    
     async def _format_leaderboard(
         self,
         guild: discord.Guild,
@@ -538,6 +734,7 @@ class Teams(commands.Cog):
         loser: discord.Member,
         winner_stats: dict,
         loser_stats: dict,
+        refresh_tracker: bool = True,
     ) -> tuple[int, dict[str, str]]:
         set_id, _ = _get_active_team_set()
         if not set_id:
@@ -614,7 +811,8 @@ class Teams(commands.Cog):
                 earned_delta=0,
                 net_delta=0 if same_team else -moved_points,
             )
-        await self._ensure_message_exists(guild)
+        if refresh_tracker:
+            await self._ensure_message_exists(guild)
 
         
         return moved_points, {
@@ -695,6 +893,97 @@ class Teams(commands.Cog):
         await interaction.followup.send(
             f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
             f"{team_name} now has **{total_points:,}** total points.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="team_simulate_matches",
+        description="(Admin) Simulate a batch of battleground matches.",
+    )
+    @app_commands.describe(
+        matches="Number of simulated matches to run",
+        favored_team="Team more likely to win",
+        favored_win_rate="Chance that the favored team wins (0.0 to 1.0)",
+        seed="Optional random seed for reproducibility",
+    )
+    @app_commands.autocomplete(favored_team=_team_autocomplete)
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def team_simulate_matches(
+        self,
+        interaction: discord.Interaction,
+        matches: app_commands.Range[int, 1, 1_000],
+        favored_team: str,
+        favored_win_rate: app_commands.Range[float, 0.0, 1.0] = 0.5,
+        seed: int | None = None,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild = interaction.guild
+        set_id, _ = _get_active_team_set()
+        if not set_id:
+            await interaction.followup.send("No active team set is configured.", ephemeral=True)
+            return
+
+        active_names = list(_get_active_team_names())
+        if favored_team not in active_names:
+            await interaction.followup.send("Favored team must be part of the active team set.", ephemeral=True)
+            return
+
+        opposing_team = next((name for name in active_names if name != favored_team), None)
+        if not opposing_team:
+            await interaction.followup.send("No opposing team found for the active team set.", ephemeral=True)
+            return
+
+        team_members: dict[str, list[discord.Member]] = {
+            team: [member for member in guild.members if self._resolve_member_team(member) == team]
+            for team in (favored_team, opposing_team)
+        }
+        if not team_members[favored_team] or not team_members[opposing_team]:
+            await interaction.followup.send(
+                "Both teams need at least one member to simulate matches.",
+                ephemeral=True,
+            )
+            return
+
+        favored_member = team_members[favored_team][0]
+        opposing_member = team_members[opposing_team][0]
+
+        rng = random.Random(seed)
+        total_moved = 0
+        favored_wins = 0
+
+        for _ in range(int(matches)):
+            favored_won = rng.random() < float(favored_win_rate)
+            winner = favored_member if favored_won else opposing_member
+            loser = opposing_member if favored_won else favored_member
+            if favored_won:
+                favored_wins += 1
+
+            moved, _ = await self.apply_duel_result(
+                guild,
+                winner=winner,
+                loser=loser,
+                winner_stats={"wins": 10, "losses": 2},
+                loser_stats={"wins": 2, "losses": 10},
+                refresh_tracker=False,
+            )
+            total_moved += moved
+
+        await self._ensure_message_exists(guild)
+
+        await interaction.followup.send(
+            (
+                f"Simulated **{int(matches):,}** matches with **{favored_team}** favored "
+                f"({favored_wins:,} wins, {int(matches) - favored_wins:,} losses). "
+                f"Total points moved: **{total_moved:,}**."
+            ),
             ephemeral=True,
         )
 
