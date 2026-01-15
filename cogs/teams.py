@@ -43,7 +43,7 @@ from core.views import _pack_embed_for_cards
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
-TEAM_CHANNEL_NAME = "team-points-tracker"
+TEAM_CHANNEL_NAME = "team-territory-tracker"
 TEAM_COLOR_EMOJIS = {
     "fire": "🟥",
     "water": "🟦",
@@ -377,8 +377,12 @@ class Teams(commands.Cog):
         }
         display_totals = self._round_totals_for_display(combined_totals)
         embed = discord.Embed(
-            title="Team Points Tracker",
-            description=("No active team set found." if not set_id else None),
+            title="Team Territory Tracker",
+            description=(
+                "No active team set found."
+                if not set_id
+                else "Each column is a **region** (200 territory). Each block is a **sector** (40 territory)."
+            ),
             color=discord.Color.orange(),
         )
 
@@ -393,12 +397,12 @@ class Teams(commands.Cog):
         )
         if progress_lines:
             embed.add_field(
-                name="Battleground Control",
+                name="Battleground Territory",
                 value="\n".join(progress_lines),
                 inline=False,
             )
             embed.add_field(
-                name="Top points earners",
+                name="Top territory claimers",
                 value="\u200b",
                 inline=False,
             )
@@ -415,7 +419,7 @@ class Teams(commands.Cog):
                 limit=3,
             )
             value = await self._format_leaderboard(guild, rows)
-            name = f"{title} {emoji} — {total_points:,} pts"
+            name = f"{title} {emoji} — Territory controlled: {total_points:,}"
             embed.add_field(name=name, value=value, inline=True)
 
         if len(embed.fields) == 1:
@@ -587,14 +591,14 @@ class Teams(commands.Cog):
             row_cells.extend([" ", right_icon])
             rows.append("".join(row_cells).rstrip())
 
-        lines = rows + ["", ""]
+        lines = rows + ["", "", "Total Territory Controlled"]
         for team in (left_team, right_team):
             info = teams.get(team, {})
             title = info.get("display") or team
             emoji = info.get("emoji", "")
             shown_points = display_totals.get(team, 0)
             color = self._team_color_block(team)
-            lines.append(f"{color} {title} {emoji}: **{shown_points:,} pts**")
+            lines.append(f"{color} Team {title} {emoji}: {shown_points:,}")
 
         return lines
     
@@ -617,7 +621,7 @@ class Teams(commands.Cog):
                     member = None
             display = member.display_name if member else f"<@{user_id}>"
             rounded_points = self._round_nearest(points)
-            lines.append(f"{idx}. {display} — **{rounded_points:,}**")
+            lines.append(f"{idx}. {display} — territory claimed: **{rounded_points:,}**")
         return "\n".join(lines)
     
     def _round_totals_for_display(self, totals: dict[str, int | float]) -> dict[str, int]:
@@ -814,11 +818,17 @@ class Teams(commands.Cog):
         if refresh_tracker:
             await self._ensure_message_exists(guild)
 
-        
+        updated_totals = db_team_battleground_totals_get(self.state, guild.id, int(set_id))
+        def _total_for(team: str) -> int:
+            info = updated_totals.get(team, {})
+            return int(info.get("duel_points", 0)) + int(info.get("bonus_points", 0))
+
         return moved_points, {
             "winner_team": winner_team,
             "loser_team": transfer_loser_team,
             "same_team": "yes" if same_team else "no",
+            "winner_total": _total_for(winner_team),
+            "loser_total": _total_for(transfer_loser_team),
         }
 
     async def split_duel_team_points(
@@ -829,12 +839,12 @@ class Teams(commands.Cog):
 
         return (
             False,
-            "Battleground team points are updated automatically per match; no split is required.",
+            "Battleground team territory is updated automatically per match; no split is required.",
             None,
         )
 
-    @app_commands.command(name="team_award", description="(Admin) Award points to a team member")
-    @app_commands.describe(member="Member to award points to", points="Number of points to award")
+    @app_commands.command(name="team_award", description="(Admin) Award territory to a team member")
+    @app_commands.describe(member="Member to award territory to", points="Amount of territory to award")
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
@@ -854,7 +864,7 @@ class Teams(commands.Cog):
         set_id, _ = _get_active_team_set()
         if not set_id:
             await interaction.followup.send(
-                "No active team set is configured for awarding points.",
+                "No active team set is configured for awarding territory.",
                 ephemeral=True,
             )
             return
@@ -891,8 +901,8 @@ class Teams(commands.Cog):
 
         total_points = int(totals.get("duel_points", 0)) + int(totals.get("bonus_points", 0))
         await interaction.followup.send(
-            f"Awarded **{int(points):,}** points to {member.mention} on **{team_name}**. "
-            f"{team_name} now has **{total_points:,}** total points.",
+            f"{member.display_name} claimed **{int(points):,}** units of territory for the {team_name} team. "
+            f"Territory controlled: **{total_points:,}**.",
             ephemeral=True,
         )
 
@@ -982,19 +992,19 @@ class Teams(commands.Cog):
             (
                 f"Simulated **{int(matches):,}** matches with **{favored_team}** favored "
                 f"({favored_wins:,} wins, {int(matches) - favored_wins:,} losses). "
-                f"Total points moved: **{total_moved:,}**."
+                f"Total territory moved: **{total_moved:,}**."
             ),
             ephemeral=True,
         )
 
     @app_commands.command(
         name="team_transfer_points",
-        description="(Admin) Transfer duel points between teams without assigning member points.",
+        description="(Admin) Transfer duel territory between teams without assigning member territory.",
     )
     @app_commands.describe(
-        from_team="Team losing points",
-        to_team="Team gaining points",
-        points="Number of points to transfer",
+        from_team="Team losing territory",
+        to_team="Team gaining territory",
+        points="Amount of territory to transfer",
         set_id="Team set number to adjust (defaults to the active set)",
     )
     @app_commands.autocomplete(from_team=_team_autocomplete, to_team=_team_autocomplete)
@@ -1040,7 +1050,7 @@ class Teams(commands.Cog):
         moved_points = min(int(points), from_points)
         if moved_points <= 0:
             await interaction.followup.send(
-                f"Team **{from_team}** does not have any duel points to transfer.",
+                f"Team **{from_team}** does not have any duel territory to transfer.",
                 ephemeral=True,
             )
             return
@@ -1061,20 +1071,28 @@ class Teams(commands.Cog):
         )
         await self._ensure_message_exists(interaction.guild)
 
+        updated_totals = db_team_battleground_totals_get(
+            self.state,
+            interaction.guild.id,
+            resolved_set_id,
+        )
+        to_total = int(updated_totals.get(to_team, {}).get("duel_points", 0)) + int(
+            updated_totals.get(to_team, {}).get("bonus_points", 0)
+        )
         await interaction.followup.send(
-            f"Transferred **{moved_points:,}** points from **{from_team}** to **{to_team}** "
-            f"for set **{resolved_set_id}**.",
+            f"{interaction.user.display_name} claimed **{moved_points:,}** units of territory "
+            f"for the {to_team} team (set **{resolved_set_id}**). Territory controlled: **{to_total:,}**.",
             ephemeral=True,
         )
 
     @app_commands.command(
         name="team_award_transfer",
-        description="(Admin) Award points to a member and transfer them from another team.",
+        description="(Admin) Award territory to a member and transfer it from another team.",
     )
     @app_commands.describe(
-        member="Member receiving points",
-        points="Number of points to award and transfer",
-        from_team="Team losing points (defaults to the opposing team when possible)",
+        member="Member receiving territory",
+        points="Amount of territory to award and transfer",
+        from_team="Team losing territory (defaults to the opposing team when possible)",
     )
     @app_commands.autocomplete(from_team=_team_autocomplete)
     @app_commands.guilds(GUILD)
@@ -1114,7 +1132,7 @@ class Teams(commands.Cog):
             transfer_from = other_names[0] if len(other_names) == 1 else ""
         if not transfer_from or transfer_from == team_name:
             await interaction.followup.send(
-                "Please specify a valid opposing team to transfer points from.",
+                "Please specify a valid opposing team to transfer territory from.",
                 ephemeral=True,
             )
             return
@@ -1131,7 +1149,7 @@ class Teams(commands.Cog):
         moved_points = min(int(points), from_points)
         if moved_points <= 0:
             await interaction.followup.send(
-                f"Team **{transfer_from}** does not have any duel points to transfer.",
+                f"Team **{transfer_from}** does not have any duel territory to transfer.",
                 ephemeral=True,
             )
             return
@@ -1161,15 +1179,23 @@ class Teams(commands.Cog):
         )
         await self._ensure_message_exists(interaction.guild)
 
+        updated_totals = db_team_battleground_totals_get(
+            self.state,
+            interaction.guild.id,
+            int(set_id),
+        )
+        team_total = int(updated_totals.get(team_name, {}).get("duel_points", 0)) + int(
+            updated_totals.get(team_name, {}).get("bonus_points", 0)
+        )
         await interaction.followup.send(
-            f"Awarded **{moved_points:,}** points to {member.mention} on **{team_name}** "
-            f"and transferred them from **{transfer_from}**.",
+            f"{member.display_name} claimed **{moved_points:,}** units of territory for the {team_name} team "
+            f"(transferred from {transfer_from}). Territory controlled: **{team_total:,}**.",
             ephemeral=True,
         )
 
     @app_commands.command(
         name="team_split_points",
-        description="(Admin) Split duel team points based on wins for the active set.",
+        description="(Admin) Split duel team territory based on wins for the active set.",
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
@@ -1195,10 +1221,10 @@ class Teams(commands.Cog):
 
     @app_commands.command(
         name="team_reset_points",
-        description="(Admin) Reset battleground team points for a set.",
+        description="(Admin) Reset battleground team territory for a set.",
     )
     @app_commands.describe(
-        set_id="Team set number to clear battleground points for",
+        set_id="Team set number to clear battleground territory for",
         member="Optional member to target; clears all for the set when omitted",
     )
     @app_commands.guilds(GUILD)
@@ -1225,7 +1251,7 @@ class Teams(commands.Cog):
             entry = next(iter(entries.values()), None)
             if not entry:
                 await interaction.followup.send(
-                    "No stored battleground points were found for that member in this set.",
+                    "No stored battleground territory was found for that member in this set.",
                     ephemeral=True,
                 )
                 return
@@ -1254,28 +1280,28 @@ class Teams(commands.Cog):
             await self._ensure_message_exists(guild)
 
             embed = discord.Embed(
-                title="Team Points Reset",
+                title="Team Territory Reset",
                 description=(
-                    f"Cleared battleground points for set **{int(set_id)}**"
+                    f"Cleared battleground territory for set **{int(set_id)}**"
                     f" for {member.mention}"
                 ),
                 color=discord.Color.red(),
             )
             embed.add_field(
-                name="Net removed",
-                value=f"**{net_points:,}**",
+                name="Net territory removed",
+                value=f"**{net_points:,} territory**",
                 inline=True,
             )
             embed.add_field(
-                name="Bonus removed",
-                value=f"**{bonus_points:,}**",
+                name="Bonus territory removed",
+                value=f"**{bonus_points:,} territory**",
                 inline=True,
             )
 
             await interaction.followup.send(
                 embed=embed,
                 content=(
-                    f"Cleared battleground entries for **{cleared_rows}** member"
+                    f"Cleared battleground territory entries for **{cleared_rows}** member"
                     f"{'s' if cleared_rows != 1 else ''}."
                 ),
                 ephemeral=True,
@@ -1296,8 +1322,8 @@ class Teams(commands.Cog):
         await self._ensure_message_exists(guild)
 
         embed = discord.Embed(
-            title="Team Points Reset",
-            description=f"Cleared battleground points for set **{int(set_id)}**",
+            title="Team Territory Reset",
+            description=f"Cleared battleground territory for set **{int(set_id)}**",
             color=discord.Color.red(),
         )
         embed.add_field(name="Teams cleared", value=f"**{cleared_totals}**", inline=True)
@@ -1306,7 +1332,7 @@ class Teams(commands.Cog):
         await interaction.followup.send(
             embed=embed,
             content=(
-                f"Cleared battleground points for **{cleared_members}** member"
+                f"Cleared battleground territory for **{cleared_members}** member"
                 f"{'s' if cleared_members != 1 else ''}."
             ),
             ephemeral=True,
@@ -1314,10 +1340,10 @@ class Teams(commands.Cog):
 
     @app_commands.command(
         name="team_clear_member_points",
-        description="(Admin) Clear battleground member points without changing team totals.",
+        description="(Admin) Clear battleground member territory without changing team totals.",
     )
     @app_commands.describe(
-        set_id="Team set number to clear member points for",
+        set_id="Team set number to clear member territory for",
         member="Optional member to target; clears all members when omitted",
     )
     @app_commands.guilds(GUILD)
@@ -1346,7 +1372,7 @@ class Teams(commands.Cog):
 
         target = member.mention if member else "all members"
         await interaction.followup.send(
-            f"Cleared battleground member points for {target} in set **{int(set_id)}** "
+            f"Cleared battleground member territory for {target} in set **{int(set_id)}** "
             f"({cleared_rows} record{'s' if cleared_rows != 1 else ''}).",
             ephemeral=True,
         )

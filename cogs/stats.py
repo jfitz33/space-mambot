@@ -96,13 +96,17 @@ class Stats(commands.Cog):
                 )
                 winner_team = info.get("winner_team", "Unknown team")
                 loser_team = info.get("loser_team", "Unknown team")
+                winner_total = info.get("winner_total")
                 team_message = (
-                    f"Team **{winner_team}** took **{moved_points:,}** points from **{loser_team}**."
+                    f"{winner.display_name} claimed **{moved_points:,}** units of territory "
+                    f"for the {winner_team} team."
                 )
+                if winner_total is not None:
+                    team_message += f" Territory controlled: **{int(winner_total):,}**."
             except Exception as exc:
                 print("[stats] failed to apply battleground points:", exc)
         if team_message is None:
-            team_message = "Team points could not be updated for this match."
+            team_message = "Team territory could not be updated for this match."
 
         # Optional quest ticks using your QuestManager wrappers/IDs
         quests = interaction.client.get_cog("Quests")
@@ -161,14 +165,14 @@ class Stats(commands.Cog):
             team_roles = [role.name for role in target.roles if role.name in TEAM_ROLE_NAMES]
             for role_name in sorted(team_roles, key=str.lower):
                 points = int(team_points.get(role_name, {}).get("earned_points", 0))
-                team_lines.append(f"Team {role_name}: **{points:,}**")
+                team_lines.append(f"Team {role_name}: territory claimed: **{points:,}**")
 
         if team_lines:
             value = "\n".join(team_lines)
         else:
             value = "No team roles assigned."
 
-        embed.add_field(name="Team Points", value=value, inline=False)
+        embed.add_field(name="Team Territory", value=value, inline=False)
 
         await interaction.response.send_message(embed=embed)
 
