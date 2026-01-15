@@ -668,9 +668,9 @@ class Admin(commands.Cog):
         else:
             lines.append("ℹ️ No per-set win tracking entries found to clear.")
         if interaction.guild and team_points_removed:
-            lines.append(f"✅ Cleared team points entries ({team_points_removed} row(s)).")
+            lines.append(f"✅ Cleared team territory entries ({team_points_removed} row(s)).")
         if battleground_points_removed:
-            lines.append(f"✅ Cleared battleground point entries ({battleground_points_removed} row(s)).")
+            lines.append(f"✅ Cleared battleground territory entries ({battleground_points_removed} row(s)).")
         if removed_roles:
             lines.append("✅ Removed team role(s): " + ", ".join(sorted(removed_roles)))
         missing_roles = [name for name in TEAM_ROLE_NAMES if name not in removed_roles and name not in failed_roles]
@@ -687,7 +687,7 @@ class Admin(commands.Cog):
 
     @app_commands.command(
         name="get_team_points",
-        description="(Admin) View battleground team points for the active set.",
+        description="(Admin) View battleground team territory for the active set.",
     )
     @app_commands.guilds(GUILD)
     @app_commands.guild_only()
@@ -726,14 +726,14 @@ class Admin(commands.Cog):
 
         if user_filter_id is not None and not rows:
             await interaction.followup.send(
-                "No team points found for that member.",
+                "No team territory found for that member.",
                 ephemeral=True,
             )
             return
 
         if not rows:
             await interaction.followup.send(
-                "No team point entries found for the requested filters.",
+                "No team territory entries found for the requested filters.",
                 ephemeral=True,
             )
             return
@@ -750,8 +750,8 @@ class Admin(commands.Cog):
             net_points = int(info.get("net_points") or 0)
             bonus_points = int(info.get("bonus_points") or 0)
             lines.append(
-                f"{name} — Team: **{team_label}**, Earned: **{earned_points:,}**, "
-                f"Net: **{net_points:,}**, Bonus: **{bonus_points:,}**"
+                f"{name} — Team: **{team_label}**, Territory claimed: **{earned_points:,}**, "
+                f"Net territory: **{net_points:,}**, Bonus territory: **{bonus_points:,}**"
             )
 
         if user_filter_id is None:
@@ -760,7 +760,7 @@ class Admin(commands.Cog):
                 interaction.guild.id,
                 set_id,
             )
-            team_lines = ["", "Team totals (battleground):"]
+            team_lines = ["", "Total Territory Controlled"]
             for team_label, info in sorted(
                 totals.items(), key=lambda item: (-(int(item[1].get("duel_points", 0)) + int(item[1].get("bonus_points", 0))), item[0].lower())
             ):
@@ -768,14 +768,14 @@ class Admin(commands.Cog):
                 bonus_points = int(info.get("bonus_points", 0))
                 total_points = duel_points + bonus_points
                 team_lines.append(
-                    f"• **{team_label}** — **{total_points:,}** total "
+                    f"• Team **{team_label}**: Territory controlled: **{total_points:,}** "
                     f"(duel: {duel_points:,}, bonus: {bonus_points:,})"
                 )
 
             lines.extend(team_lines)
 
         embed = discord.Embed(
-            title="Team Points Overview",
+            title="Team Territory Overview",
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
@@ -1158,13 +1158,17 @@ class Admin(commands.Cog):
                 )
                 winner_team = info.get("winner_team", "Unknown team")
                 loser_team = info.get("loser_team", "Unknown team")
+                winner_total = info.get("winner_total")
                 team_message = (
-                    f"Team **{winner_team}** took **{moved_points:,}** points from **{loser_team}**."
+                    f"{winner.display_name} claimed **{moved_points:,}** units of territory "
+                    f"for the {winner_team} team."
                 )
+                if winner_total is not None:
+                    team_message += f" Territory controlled: **{int(winner_total):,}**."
             except Exception as exc:
                 print("[admin] failed to apply battleground points:", exc)
         if team_message is None:
-            team_message = "Team points could not be updated for this match."
+            team_message = "Team territory could not be updated for this match."
 
         quests = interaction.client.get_cog("Quests")
         try:
