@@ -165,14 +165,14 @@ class Stats(commands.Cog):
             team_roles = [role.name for role in target.roles if role.name in TEAM_ROLE_NAMES]
             for role_name in sorted(team_roles, key=str.lower):
                 points = int(team_points.get(role_name, {}).get("earned_points", 0))
-                team_lines.append(f"Team {role_name}: territory claimed: **{points:,}**")
+                team_lines.append(f"Team {role_name}: **{points:,}**")
 
         if team_lines:
             value = "\n".join(team_lines)
         else:
             value = "No team roles assigned."
 
-        embed.add_field(name="Team Territory", value=value, inline=False)
+        embed.add_field(name="Total Territory Claimed", value=value, inline=False)
 
         await interaction.response.send_message(embed=embed)
 
