@@ -96,13 +96,13 @@ class Stats(commands.Cog):
                 )
                 winner_team = info.get("winner_team", "Unknown team")
                 loser_team = info.get("loser_team", "Unknown team")
-                winner_total = info.get("winner_total")
                 team_message = (
                     f"{winner.display_name} claimed **{moved_points:,}** units of territory "
                     f"for the {winner_team} team."
                 )
-                if winner_total is not None:
-                    team_message += f" Territory controlled: **{int(winner_total):,}**."
+                sector_message = info.get("sector_message")
+                if sector_message:
+                    team_message += f"\n{sector_message}"
             except Exception as exc:
                 print("[stats] failed to apply battleground points:", exc)
         if team_message is None:

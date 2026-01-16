@@ -43,7 +43,7 @@ from core.views import _pack_embed_for_cards
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
-TEAM_CHANNEL_NAME = "team-territory-tracker"
+TEAM_CHANNEL_NAME = "battleground-⚔️"
 TEAM_COLOR_EMOJIS = {
     "fire": "🟥",
     "water": "🟦",
@@ -328,6 +328,8 @@ class Teams(commands.Cog):
                     stored_channel = await guild.fetch_channel(info["channel_id"])
                 except Exception:
                     stored_channel = None
+            if stored_channel and stored_channel.name != TEAM_CHANNEL_NAME:
+                stored_channel = None
             if stored_channel:
                 try:
                     message = await stored_channel.fetch_message(info["message_id"])
@@ -377,13 +379,16 @@ class Teams(commands.Cog):
         }
         display_totals = self._round_totals_for_display(combined_totals)
         embed = discord.Embed(
-            title="Team Territory Tracker",
+            title="Team Battleground Tracker",
             description=(
                 "No active team set found."
                 if not set_id
-                else "Each column is a **region** (200 territory). Each block is a **sector** (40 territory)."
+                else "Each column is a **region** (200 units of territory). Each block is a **sector** (40 units of territory)."
             ),
             color=discord.Color.orange(),
+        )
+        embed.set_footer(
+            text=f"Use /join_queue in the duel-arena channel to join the fight for your team!"
         )
 
         if not set_id:
@@ -401,29 +406,6 @@ class Teams(commands.Cog):
                 value="\n".join(progress_lines),
                 inline=False,
             )
-            embed.add_field(
-                name="Top territory claimers",
-                value="\u200b",
-                inline=False,
-            )
-        for team in _get_active_team_names():
-            info = teams.get(team, {})
-            title = info.get("display") or team
-            emoji = info.get("emoji", "")
-            total_points = display_totals.get(team, combined_totals.get(team, 0))
-            rows = db_team_battleground_user_points_top(
-                self.state,
-                guild.id,
-                int(set_id or 0),
-                team,
-                limit=3,
-            )
-            value = await self._format_leaderboard(guild, rows)
-            name = f"{title} {emoji} — Territory controlled: {total_points:,}"
-            embed.add_field(name=name, value=value, inline=True)
-
-        if len(embed.fields) == 1:
-            embed.add_field(name="\u200b", value="\u200b", inline=True)
 
         return embed
 
@@ -541,7 +523,8 @@ class Teams(commands.Cog):
         left_segments = max(0, left_total // segment_size)
         right_segments = max(0, right_total // segment_size)
         lead = right_segments - left_segments
-        contested_base_index = max(0, min(4, base_middle_index - lead))
+        contested_shift = lead if lead >= 0 else lead + 1
+        contested_base_index = max(0, min(4, base_middle_index - contested_shift))
         middle_index = len(left_bonus_columns) + base_middle_index
         contested_index = len(left_bonus_columns) + contested_base_index
 
@@ -591,14 +574,14 @@ class Teams(commands.Cog):
             row_cells.extend([" ", right_icon])
             rows.append("".join(row_cells).rstrip())
 
-        lines = rows + ["", "", "Total Territory Controlled"]
+        lines = rows + ["", "", f"**Total Territory Controlled**"]
         for team in (left_team, right_team):
             info = teams.get(team, {})
             title = info.get("display") or team
             emoji = info.get("emoji", "")
             shown_points = display_totals.get(team, 0)
             color = self._team_color_block(team)
-            lines.append(f"{color} Team {title} {emoji}: {shown_points:,}")
+            lines.append(f"{color} {title} {emoji}: {shown_points:,}")
 
         return lines
     
@@ -693,7 +676,7 @@ class Teams(commands.Cog):
 
         winner_games = team_games.get(winner_team, 0)
         loser_games = team_games.get(loser_team, 0)
-        raw_multiplier = (loser_games + 1) / (winner_games + 1)
+        raw_multiplier = (loser_games + 20) / (winner_games + 20)
         return max(2 / 3, min(3 / 2, raw_multiplier))
 
     @staticmethod
@@ -715,6 +698,22 @@ class Teams(commands.Cog):
             numerator = 11 + lead
         return numerator / 11
     
+
+    @staticmethod
+    def _sector_claim_message(
+        *,
+        winner_name: str,
+        team_name: str,
+        before_total: int,
+        after_total: int,
+    ) -> str | None:
+        sector_size = TEAM_BATTLEGROUND_SEGMENT_SIZE // 5
+        if sector_size <= 0:
+            return None
+        if (after_total // sector_size) > (before_total // sector_size):
+            color = Teams._team_color_block(team_name)
+            return f"{winner_name} claimed a sector {color} for the {team_name} team!"
+        return None
 
     def _calculate_transfer_points(
         self,
@@ -769,7 +768,7 @@ class Teams(commands.Cog):
             totals.get(transfer_loser_team, {}).get("duel_points", TEAM_BATTLEGROUND_START_POINTS)
         )
 
-        skill_multiplier = self._skill_multiplier(winner_stats, loser_stats)
+        skill_multiplier = 1.0 if same_team else self._skill_multiplier(winner_stats, loser_stats)
         activity_multiplier = self._activity_multiplier(guild, int(set_id), winner_team, transfer_loser_team)
         segment_multiplier = self._segment_advantage_multiplier(winner_points, loser_points)
         transfer_points = self._calculate_transfer_points(
@@ -823,12 +822,21 @@ class Teams(commands.Cog):
             info = updated_totals.get(team, {})
             return int(info.get("duel_points", 0)) + int(info.get("bonus_points", 0))
 
+        winner_total = _total_for(winner_team)
+        sector_message = self._sector_claim_message(
+            winner_name=winner.display_name,
+            team_name=winner_team,
+            before_total=max(0, winner_total - moved_points),
+            after_total=winner_total,
+        )
+
         return moved_points, {
             "winner_team": winner_team,
             "loser_team": transfer_loser_team,
             "same_team": "yes" if same_team else "no",
-            "winner_total": _total_for(winner_team),
+            "winner_total": winner_total,
             "loser_total": _total_for(transfer_loser_team),
+            "sector_message": sector_message,
         }
 
     async def split_duel_team_points(
@@ -900,9 +908,12 @@ class Teams(commands.Cog):
         await self._ensure_message_exists(interaction.guild)
 
         total_points = int(totals.get("duel_points", 0)) + int(totals.get("bonus_points", 0))
-        await interaction.followup.send(
+        message = (
             f"{member.display_name} claimed **{int(points):,}** units of territory for the {team_name} team. "
-            f"Territory controlled: **{total_points:,}**.",
+            f"Territory controlled: **{total_points:,}**."
+        )
+        await interaction.followup.send(
+            message,
             ephemeral=True,
         )
 
@@ -1079,9 +1090,12 @@ class Teams(commands.Cog):
         to_total = int(updated_totals.get(to_team, {}).get("duel_points", 0)) + int(
             updated_totals.get(to_team, {}).get("bonus_points", 0)
         )
-        await interaction.followup.send(
+        message = (
             f"{interaction.user.display_name} claimed **{moved_points:,}** units of territory "
-            f"for the {to_team} team (set **{resolved_set_id}**). Territory controlled: **{to_total:,}**.",
+            f"for the {to_team} team (set **{resolved_set_id}**). Territory controlled: **{to_total:,}**."
+        )
+        await interaction.followup.send(
+            message,
             ephemeral=True,
         )
 
@@ -1187,9 +1201,12 @@ class Teams(commands.Cog):
         team_total = int(updated_totals.get(team_name, {}).get("duel_points", 0)) + int(
             updated_totals.get(team_name, {}).get("bonus_points", 0)
         )
-        await interaction.followup.send(
+        message = (
             f"{member.display_name} claimed **{moved_points:,}** units of territory for the {team_name} team "
-            f"(transferred from {transfer_from}). Territory controlled: **{team_total:,}**.",
+            f"(transferred from {transfer_from}). Territory controlled: **{team_total:,}**."
+        )
+        await interaction.followup.send(
+            message,
             ephemeral=True,
         )
 

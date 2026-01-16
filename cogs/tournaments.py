@@ -801,12 +801,34 @@ class Tournaments(commands.Cog):
             )
             return False
 
-        db_stats_record_loss(
+        loser_after, winner_after = db_stats_record_loss(
             self.state,
             loser_id=loser.id,
             winner_id=winner.id,
             set_id=CURRENT_ACTIVE_SET,
         )
+
+        team_message = None
+        teams = interaction.client.get_cog("Teams")
+        if interaction.guild and teams and hasattr(teams, "apply_duel_result"):
+            try:
+                moved_points, info = await teams.apply_duel_result(
+                    interaction.guild,
+                    winner=winner,
+                    loser=loser,
+                    winner_stats=winner_after,
+                    loser_stats=loser_after,
+                )
+                winner_team = info.get("winner_team", "Unknown team")
+                team_message = (
+                    f"{winner.display_name} claimed **{moved_points:,}** units of territory "
+                    f"for the {winner_team} team."
+                )
+                sector_message = info.get("sector_message")
+                if sector_message:
+                    team_message += f" {sector_message}"
+            except Exception:
+                self.logger.exception("[tournaments] failed to apply battleground points")
 
         quests = interaction.client.get_cog("Quests")
         try:
@@ -825,11 +847,15 @@ class Tournaments(commands.Cog):
         if reporter and reporter.id not in {loser.id, winner.id}:
             reporter_note = f" (reported by {getattr(reporter, 'display_name', 'an admin')})"
 
+        result_message = (
+            f"Tournament result of {loser.display_name}'s loss to {winner.display_name} "
+            f"has been recorded{tournament_fragment}.{reporter_note}"
+        ).strip()
+        if team_message:
+            result_message = f"{result_message}\n{team_message}"
+
         await interaction.followup.send(
-            (
-                f"Tournament result of {loser.display_name}'s loss to {winner.display_name} "
-                f"has been recorded{tournament_fragment}.{reporter_note}"
-            ).strip(),
+            result_message,
             ephemeral=not announce_publicly,
         )
 
