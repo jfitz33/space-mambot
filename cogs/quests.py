@@ -34,8 +34,8 @@ class Quests(commands.Cog):
         return ids
 
     async def cog_load(self):
-        await self.qm.load_defs()
         await self.bot.wait_until_ready()
+        await self.qm.load_defs()
         # Ensure rollover-style daily quests have their slots advanced through
         # today in case the bot was restarted and missed the regular scheduler.
         await self._prepare_rollover_for_date(rollover_date())
