@@ -166,11 +166,13 @@ class QuestManager:
     ) -> List[dict]:
         if q.max_rollover_days <= 0:
             return slots
-        # Do not auto-grant pack rewards; these are handled explicitly via
-        # admin tooling so users receive the correct pack selection later.
-        if any((s.get("reward_type") or "").lower() == "pack" for s in slots):
-            return slots
         pending = [s for s in slots if not s.get("claimed_at")]
+        # Do not auto-grant pack rewards unless explicitly allowed in the quest payload,
+        # so admins can still control manual pack selection if desired.
+        allow_pack_autogrant = bool((q.reward_payload or {}).get("allow_pack_rollover_autogrant"))
+        has_pending_pack = any((s.get("reward_type") or "").lower() == "pack" for s in pending)
+        if not allow_pack_autogrant and has_pending_pack:
+            return slots
         # If at or above the cap, auto grant the oldest pending slot to keep the queue size stable
         while len(pending) > q.max_rollover_days > 0:
             oldest = pending.pop(0)
