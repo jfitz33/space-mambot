@@ -31,6 +31,8 @@ from core.constants import (
     DUEL_TEAM_TRANSFER_BASE,
     DUEL_TEAM_TRANSFER_MAX,
     DUEL_TEAM_TRANSFER_MIN,
+    DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN,
+    DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX,
     TEAM_BATTLEGROUND_MIDPOINT,
     TEAM_BATTLEGROUND_SEGMENT_SIZE,
     TEAM_BATTLEGROUND_START_POINTS,
@@ -653,7 +655,11 @@ class Teams(commands.Cog):
         loser_wins = int(loser_stats.get("wins", 0) or 0)
         loser_losses = int(loser_stats.get("losses", 0) or 0)
         skill_diff = (winner_wins - winner_losses) - (loser_wins - loser_losses)
-        return 2 / (1 + math.pow(10, skill_diff / 65))
+        raw_multiplier = 2 / (1 + math.pow(10, skill_diff / 65))
+        return max(
+            DUEL_TEAM_WIN_PCT_MULTIPLIER_MIN,
+            min(DUEL_TEAM_WIN_PCT_MULTIPLIER_MAX, raw_multiplier),
+        )
 
     def _activity_multiplier(
         self,
