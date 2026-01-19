@@ -59,6 +59,7 @@ join queue and may be provided if you wish to update your duelingbook name
 - **/tournament_standings** — Pick an active tournament to view standings.
 - **/tournament_report** `winner` `loser` `replay_url` — Report a tournament match result; either participant can use it; `replay_url` required when the tournament enforces replays.
 - **/tournament_drop** `tournament` `member` — Drop from a tournament. If the tournament is active, you will need an admin to manually update in challonge.
+- **/timer** — Show the remaining time on the active round timer (if any)
 
 ## Miscellaneous
 - **/boop** — Give the bot a little boop on the snoot and see what he has to say!
@@ -114,6 +115,7 @@ Admin-only commands for the bot.
 - **/tournament_revert_result** — Roll back the most recent recorded tournament result for a match.
 - **/tournament_add_participant** `tournament` `member` — Manually add a Discord member to a Challonge tournament.
 - **/tournament_shuffle_seeds** `tournament` — Shuffle participant seeds before a tournament starts.
+- **/set_timer** `minutes` — Set a server-wide timer duration in minutes.
 
 ## System Maintenance
 - **/reload_data** — Reload packs, tins, and shop data from disk.

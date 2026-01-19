@@ -167,7 +167,7 @@ COGS = ["cogs.system", "cogs.packs", "cogs.collection",
         "cogs.cards_shop", "cogs.gamba", "cogs.quests",
         "cogs.stats", "cogs.boop", "cogs.shop_sim", "cogs.sales",
         "cogs.gamba_chips", "cogs.tournaments", "cogs.teams",
-        "cogs.daily_rewards", "cogs.duel_queue"]
+        "cogs.daily_rewards", "cogs.duel_queue", "cogs.timer"]
 
 @bot.event
 async def on_member_join(member: discord.Member):

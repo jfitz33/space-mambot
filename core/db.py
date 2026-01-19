@@ -88,6 +88,13 @@ def db_init(state: AppState):
         );
         """)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS timer_state (
+            guild_id   TEXT NOT NULL PRIMARY KEY,
+            end_ts     INTEGER,
+            updated_ts REAL NOT NULL DEFAULT (strftime('%s','now'))
+        );
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS starter_claims (
             user_id    TEXT NOT NULL PRIMARY KEY,
             status     TEXT NOT NULL,
@@ -143,6 +150,32 @@ def db_init(state: AppState):
         """)
 
 DEBUG_COLLECTION = False  # set True while testing
+
+def db_timer_set(state: AppState, guild_id: int, end_ts: int | None) -> None:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO timer_state (guild_id, end_ts, updated_ts)
+            VALUES (?, ?, strftime('%s','now'))
+            ON CONFLICT(guild_id) DO UPDATE SET
+                end_ts = excluded.end_ts,
+                updated_ts = excluded.updated_ts;
+            """,
+            (str(guild_id), end_ts),
+        )
+
+def db_timer_clear(state: AppState, guild_id: int) -> None:
+    db_timer_set(state, guild_id, None)
+
+def db_timer_get(state: AppState, guild_id: int) -> int | None:
+    with sqlite3.connect(state.db_path) as conn:
+        row = conn.execute(
+            "SELECT end_ts FROM timer_state WHERE guild_id = ?;",
+            (str(guild_id),),
+        ).fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
 
 def db_duelingbook_name_set(state: AppState, user_id: int, name: str) -> None:
     with sqlite3.connect(state.db_path) as conn, conn:
