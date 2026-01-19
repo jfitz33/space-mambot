@@ -2,7 +2,8 @@
   "default_limit": 3,
   "forbidden": [
     "Code Hack",
-    "Scrap Iron Scarecrow"
+    "Scrap Iron Scarecrow",
+    "Oil"
   ],
   "limited": [
     "Sangan",
@@ -14,14 +15,14 @@
     "Mirror Force",
     "Torrential Tribute",
     "Call of the Haunted",
-    "Compulsory Evacuation Device"
+    "Compulsory Evacuation Device",
+    "Dark Alligator",
+    "Therion \"Bull\" Ain"
   ],
   "semi_limited": [
     "One for One",
-    "Salvage",
     "Bottomless Trap Hole",
-    "Dragolithia Kunzite",
     "Lamia",
-    "Therion \"Bull\" Ain"
+    "Armored White Bear"
   ]
 }
