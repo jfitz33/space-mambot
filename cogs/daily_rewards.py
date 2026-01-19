@@ -19,6 +19,7 @@ from core.db import (
     db_daily_quest_pack_reward_for_day,
     db_daily_quest_pack_reset_total,
     db_init_starter_daily_rewards,
+    db_daily_quest_pack_set_total,
     db_starter_daily_get_amount,
     db_starter_daily_get_total,
     db_starter_daily_increment_total,
@@ -298,6 +299,39 @@ class DailyRewards(commands.Cog):
         db_daily_quest_pack_reset_total(self.bot.state, qid)
         await interaction.followup.send(
             f"Daily quest pack total for `{qid}` has been reset to 0.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="daily_packs_set_total",
+        description="(Admin) Set the running total of daily quest packs earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        total="New running total of daily quest packs earnable per user",
+        quest_id="Quest ID to set (default: matches_played for week 1 daily duel)",
+    )
+    async def daily_packs_set_total(
+        self,
+        interaction: discord.Interaction,
+        total: int,
+        quest_id: str | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if total < 0:
+            await interaction.followup.send(
+                "Total must be zero or greater.", ephemeral=True
+            )
+            return
+
+        qid = quest_id or WEEK1_QUEST_ID
+        current = db_daily_quest_pack_get_total(self.bot.state, qid)
+        updated = db_daily_quest_pack_set_total(self.bot.state, qid, total)
+        await interaction.followup.send(
+            f"Daily quest pack total for `{qid}` updated: **{current}** → **{updated}**.",
             ephemeral=True,
         )
 

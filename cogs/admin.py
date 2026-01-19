@@ -48,6 +48,7 @@ from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
 from core.db import db_add_cards
 from core.packs import open_pack_from_csv, open_box_from_csv
+from core.starters import load_starters_from_csv, grant_starter_to_user
 from core.views import _pack_embed_for_cards
 from cogs.packs import ac_pack_name_choices
 
@@ -91,6 +92,15 @@ class Admin(commands.Cog):
             choices = [c for c in choices if cur in c.name or cur == str(c.value)]
         return choices[:25]
     
+    async def ac_starter_deck(self, interaction: discord.Interaction, current: str):
+        if not getattr(self.state, "starters_index", None):
+            load_starters_from_csv(self.state)
+        starters = sorted((self.state.starters_index or {}).keys())
+        if current:
+            cur = (current or "").strip().lower()
+            starters = [name for name in starters if cur in name.lower()]
+        return [app_commands.Choice(name=name, value=name) for name in starters[:25]]
+
     # Re-using shop's suggest prints with set function for admin override ac
     async def ac_print(self, interaction: discord.Interaction, current: str):
         from cogs.cards_shop import suggest_prints_with_set  # you already have this
@@ -450,6 +460,101 @@ class Admin(commands.Cog):
         await interaction.channel.send(
             f"🗑 **{interaction.user.display_name}** removed x{removed} **{label}** from **{user.display_name}**'s collection."
         )
+
+    @app_commands.command(
+        name="admin_grant_starter",
+        description="(Admin) Grant a starter deck to a user or all members of a role.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        deck_name="Starter deck to grant",
+        user="User receiving the starter deck (omit if using role)",
+        role="Role to grant the starter deck to (omit if using user)",
+    )
+    @app_commands.autocomplete(deck_name=ac_starter_deck)
+    async def admin_grant_starter(
+        self,
+        interaction: discord.Interaction,
+        deck_name: str,
+        user: discord.Member | None = None,
+        role: discord.Role | None = None,
+    ) -> None:
+        if not getattr(self.state, "starters_index", None):
+            load_starters_from_csv(self.state)
+
+        starters_index = self.state.starters_index or {}
+        normalized_deck = (deck_name or "").strip()
+        if not normalized_deck or normalized_deck not in starters_index:
+            await interaction.response.send_message(
+                "That starter deck isn't available right now. Please load the starter lists.",
+                ephemeral=True,
+            )
+            return
+
+        if (user is None and role is None) or (user is not None and role is not None):
+            await interaction.response.send_message(
+                "❌ Please choose either a **user** or a **role** (not both).",
+                ephemeral=True,
+            )
+            return
+
+        if not starters_index.get(normalized_deck):
+            await interaction.response.send_message(
+                "That starter deck appears to be empty.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if role is not None:
+            members = [member for member in role.members if not member.bot]
+            if not members:
+                await interaction.followup.send(
+                    f"❌ No eligible members found in role **{role.name}**.",
+                    ephemeral=True,
+                )
+                return
+
+            total_cards = 0
+            for member in members:
+                total_cards += grant_starter_to_user(self.state, member.id, normalized_deck)
+
+            summary = (
+                f"✅ Granted **{normalized_deck}** starter deck to **{len(members)}** "
+                f"member{'s' if len(members) != 1 else ''} in **{role.name}** "
+                f"(total cards added: **{total_cards}**)."
+            )
+            await interaction.followup.send(summary, ephemeral=True)
+            if interaction.channel:
+                await interaction.channel.send(summary)
+            return
+
+        if user is None:
+            await interaction.followup.send(
+                "❌ Please choose a user or a role to grant the starter deck to.",
+                ephemeral=True,
+            )
+            return
+
+        total_added = grant_starter_to_user(self.state, user.id, normalized_deck)
+        if total_added <= 0:
+            await interaction.followup.send(
+                "That starter deck appears to be empty.",
+                ephemeral=True,
+            )
+            return
+
+        summary = (
+            f"✅ Granted **{normalized_deck}** starter deck to {user.mention} "
+            f"(total cards added: **{total_added}**)."
+        )
+        await interaction.followup.send(summary, ephemeral=True)
+        if interaction.channel:
+            await interaction.channel.send(summary)
 
     @app_commands.command(
         name="admin_award_pack",

@@ -1697,6 +1697,31 @@ def db_daily_quest_pack_reset_total(state, quest_id: str) -> int:
 
     return int(row[0]) if row and row[0] is not None else 0
 
+def db_daily_quest_pack_set_total(state, quest_id: str, total: int) -> int:
+    qid = str(quest_id or "").strip()
+    if not qid:
+        return 0
+
+    now = int(time.time())
+    new_total = max(0, int(total or 0))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO daily_quest_pack_totals (quest_id, last_day, total, updated_ts)
+            VALUES (?, NULL, ?, ?)
+            ON CONFLICT(quest_id) DO UPDATE SET
+                total = excluded.total,
+                updated_ts = excluded.updated_ts;
+            """,
+            (qid, new_total, now),
+        )
+        row = conn.execute(
+            "SELECT total FROM daily_quest_pack_totals WHERE quest_id=?",
+            (qid,),
+        ).fetchone()
+
+    return int(row[0]) if row and row[0] is not None else 0
+
 def db_clear_all_daily_quest_slots(state) -> int:
     """Delete all queued daily quest slots for all users."""
 
