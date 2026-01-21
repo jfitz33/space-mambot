@@ -525,7 +525,12 @@ class Teams(commands.Cog):
         left_segments = max(0, left_total // segment_size)
         right_segments = max(0, right_total // segment_size)
         lead = right_segments - left_segments
-        contested_shift = lead if lead >= 0 else lead + 1
+        if lead > 0:
+            contested_shift = lead - 1
+        elif lead < 0:
+            contested_shift = lead + 1
+        else:
+            contested_shift = 0
         contested_base_index = max(0, min(4, base_middle_index - contested_shift))
         middle_index = len(left_bonus_columns) + base_middle_index
         contested_index = len(left_bonus_columns) + contested_base_index

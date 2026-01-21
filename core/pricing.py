@@ -2,17 +2,17 @@
 from __future__ import annotations
 import math
 from typing import Optional, Tuple
-from zoneinfo import ZoneInfo
 from datetime import datetime
 from core.db import db_sales_get_for_day
+from core.daily_rollover import rollover_day_key
 from core.tins import is_tin_promo_print
 from core.constants import CRAFT_COST_BY_RARITY, SALE_DISCOUNT_PCT
 
-ET = ZoneInfo("America/New_York")
 
 def day_key_et(dt: Optional[datetime] = None) -> str:
-    dt = (dt or datetime.now(tz=ET)).astimezone(ET)
-    return dt.strftime("%Y%m%d")
+    if dt is None:
+        return rollover_day_key()
+    return rollover_day_key(dt)
 
 def _norm(s: Optional[str]) -> str:
     return (s or "").strip()

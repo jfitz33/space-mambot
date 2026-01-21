@@ -1,8 +1,6 @@
 # cogs/shop_sim.py
 import os, asyncio, discord, math, re, tempfile
 from pathlib import Path
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import List
 from discord.ext import commands
 from discord import app_commands
@@ -31,15 +29,15 @@ from core.constants import (
 from core.purchase_options import PACK_SHARD_ENABLED_SETS
 from core.currency import SHARD_SET_NAMES
 from core.images import mambuck_badge
+from core.daily_rollover import rollover_day_key
 from core.db import db_sales_get_for_day, db_shop_banner_load, db_shop_banner_store
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 SHOP_CHANNEL_NAME = "shop"
-ET = ZoneInfo("America/New_York")
 
 def _today_key_et() -> str:
-    return datetime.now(ET).strftime("%Y%m%d")
+    return rollover_day_key()
 
 def _rar_badge(state: AppState, rarity: str) -> str:
     rid = getattr(state, "rarity_emoji_ids", {}) or {}
