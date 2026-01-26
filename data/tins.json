@@ -31,5 +31,38 @@
       "Blazing Genesis",
       "Storm of the Abyss"
     ]
+  },
+  {
+    "name": "Frostfire Tins Wave 2",
+    "promo_cards": [
+      {
+        "name": "Lifeless Leaffish",
+        "rarity": "Ultra",
+        "cardcode": "CT02-EN001",
+        "cardid": "89617515"
+      },
+      {
+        "name": "Silver's Cry",
+        "rarity": "Ultra",
+        "cardcode": "CT02-EN002",
+        "cardid": "87025064"
+      },
+      {
+        "name": "Angel of Zera",
+        "rarity": "Ultra",
+        "cardcode": "CT10-EN003",
+        "cardid": "42216237"
+      },
+      {
+        "name": "Star Eater",
+        "rarity": "Ultra",
+        "cardcode": "CT02-EN004",
+        "cardid": "41517789"
+      }
+    ],
+    "packs": [
+      "Blazing Genesis",
+      "Storm of the Abyss"
+    ]
   }
 ]

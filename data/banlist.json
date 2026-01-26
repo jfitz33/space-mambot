@@ -3,11 +3,11 @@
   "forbidden": [
     "Code Hack",
     "Scrap Iron Scarecrow",
-    "Oil"
+    "Oil",
+    "Autonomous Action Unit"
   ],
   "limited": [
     "Sangan",
-    "Blue Flame Swordsman",
     "Black Rose Dragon",
     "Stardust Charge Warrior",
     "Fabled Ragin",
@@ -16,13 +16,17 @@
     "Torrential Tribute",
     "Call of the Haunted",
     "Compulsory Evacuation Device",
-    "Dark Alligator",
     "Therion \"Bull\" Ain"
   ],
   "semi_limited": [
     "One for One",
     "Bottomless Trap Hole",
     "Lamia",
-    "Armored White Bear"
+    "Armored White Bear",
+    "Baby Raccoon Tantan",
+    "Blue Flame Swordsman",
+    "Dandylion",
+    "Dark Alligator",
+    "Lifeless Leaffish"
   ]
 }

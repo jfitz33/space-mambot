@@ -13,6 +13,7 @@ from core.cards_shop import (
     card_label_with_badge,
     get_card_rarity,
     card_set_name,
+    resolve_card_set,
     register_print_if_missing,
     is_starter_card,
     is_starter_set,
@@ -43,7 +44,12 @@ GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 
 def suggest_prints_with_set(
-    state, query: str, limit: int = 25, *, include_starters: bool = False
+    state,
+    query: str,
+    limit: int = 25,
+    *,
+    include_starters: bool = False,
+    include_tins: bool = False,
 ):
     ensure_shop_index(state)
     q_tokens = [t for t in (query or "").lower().split() if t]
@@ -61,7 +67,7 @@ def suggest_prints_with_set(
             continue
         if not include_starters and is_starter_set(set_):
             continue
-        if is_tin_promo_print(state, card, set_name=set_):
+        if not include_tins and is_tin_promo_print(state, card, set_name=set_):
             continue
         sig = _sig_for_resolution(name, rarity, code, cid)
 
@@ -79,7 +85,7 @@ def suggest_prints_with_set(
             continue
         if not include_starters and is_starter_set(set_present):
             continue
-        if is_tin_promo_print(state, card, set_name=set_present):
+        if not include_tins and is_tin_promo_print(state, card, set_name=set_present):
             continue
         out.append(app_commands.Choice(name=card_label(card), value=k))
         if len(out) >= limit:
@@ -408,7 +414,7 @@ class CardsShop(commands.Cog):
 
     async def ac_card_lookup(self, interaction: discord.Interaction, current: str):
         # Allow starter cards to be suggested for lookup commands
-        return suggest_prints_with_set(self.state, current, include_starters=True)
+        return suggest_prints_with_set(self.state, current, include_starters=True, include_tins=True)
 
     async def _fetch_cardinfo_from_api(self, card: dict) -> Optional[dict]:
         loop = asyncio.get_running_loop()
@@ -544,7 +550,13 @@ class CardsShop(commands.Cog):
         await interaction.response.defer()
 
         api_entry = await self._fetch_cardinfo_from_api(card)
-        pack_name, rarity_from_api = self._resolve_set_info(card_set_name(card), api_entry)
+        resolved_set = resolve_card_set(self.state, card) or card_set_name(card)
+        is_tin_promo = bool(resolved_set and is_tin_promo_print(self.state, card, set_name=resolved_set))
+        if is_tin_promo:
+            pack_name = resolved_set
+            rarity_from_api = ""
+        else:
+            pack_name, rarity_from_api = self._resolve_set_info(resolved_set, api_entry)
 
         rarity = get_card_rarity(card) or rarity_from_api
         badge = rarity_badge(self.state, rarity)
@@ -565,9 +577,13 @@ class CardsShop(commands.Cog):
                 if images:
                     image_url = images[0].get("image_url") or images[0].get("image_url_small")
 
+        print_label = pack_name or "Unknown set"
+        if is_tin_promo:
+            print_label = f"{print_label} (Tin Promo)"
+
         desc_lines = [
             f"**{name}**",
-            f"Print: {badge} {pack_name or 'Unknown set'}",
+            f"Print: {badge} {print_label}",
             "",
             card_text,
         ]
