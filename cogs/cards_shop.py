@@ -579,7 +579,7 @@ class CardsShop(commands.Cog):
 
         print_label = pack_name or "Unknown set"
         if is_tin_promo:
-            print_label = f"{print_label} (Tin Promo)"
+            print_label = f"{print_label}"
 
         desc_lines = [
             f"**{name}**",
