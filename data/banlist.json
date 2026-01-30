@@ -3,30 +3,34 @@
   "forbidden": [
     "Code Hack",
     "Scrap Iron Scarecrow",
-    "Oil",
     "Autonomous Action Unit"
   ],
   "limited": [
     "Sangan",
     "Black Rose Dragon",
+    "Circle of the Fairies",
     "Stardust Charge Warrior",
     "Fabled Ragin",
     "Dark Hole",
     "Mirror Force",
     "Torrential Tribute",
     "Call of the Haunted",
-    "Compulsory Evacuation Device",
-    "Therion \"Bull\" Ain"
+    "Oil"
   ],
   "semi_limited": [
     "One for One",
     "Bottomless Trap Hole",
+    "Compulsory Evacuation Device",
     "Lamia",
     "Armored White Bear",
     "Baby Raccoon Tantan",
     "Blue Flame Swordsman",
+    "Cyclos the Circular Sprite",
+    "Fairyant the Circular Sorcerer",
     "Dandylion",
     "Dark Alligator",
-    "Lifeless Leaffish"
+    "Lifeless Leaffish",
+    "Gold Sarcophagus",
+    "Therion \"Bull\" Ain"
   ]
 }
