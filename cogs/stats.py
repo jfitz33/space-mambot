@@ -10,10 +10,18 @@ from core.db import (
     db_stats_get, db_stats_record_loss,
     db_match_h2h, db_team_battleground_user_points_for_user,
 )
-from core.constants import CURRENT_ACTIVE_SET, TEAM_ROLE_NAMES
+from core.constants import (
+    CURRENT_ACTIVE_SET,
+    DUEL_QUEUE_MAMBUCKS_LOSS,
+    DUEL_QUEUE_MAMBUCKS_WIN,
+    TEAM_ROLE_NAMES,
+)
+from core.currency import mambucks_label
+from core.wallet_api import credit_mambucks
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+DUEL_QUEUE_MAMBUCKS_ENABLED = os.getenv("DUEL_QUEUE_MAMBUCKS_ENABLED", "0") == "1"
 
 def _win_pct(wins: int, games: int) -> float:
     return (wins / games * 100.0) if games > 0 else 0.0
@@ -117,11 +125,27 @@ class Stats(commands.Cog):
         except Exception as e:
             print("[stats] quest tick error:", e)
 
+        reward_lines: list[str] = []
+        if DUEL_QUEUE_MAMBUCKS_ENABLED:
+            win_reward = max(0, int(DUEL_QUEUE_MAMBUCKS_WIN))
+            loss_reward = max(0, int(DUEL_QUEUE_MAMBUCKS_LOSS))
+            if win_reward:
+                credit_mambucks(self.state, winner.id, win_reward)
+                reward_lines.append(
+                    f"{winner.display_name} earned {mambucks_label(win_reward)}."
+                )
+            if loss_reward:
+                credit_mambucks(self.state, loser.id, loss_reward)
+                reward_lines.append(
+                    f"{loser.display_name} earned {mambucks_label(loss_reward)}."
+                )
+
         embed = discord.Embed(
             title="Match Result Recorded",
             description=(
                 f"**{winner.display_name}** defeated **{loser.display_name}**.\n"
                 f"{team_message}"
+                f"{'\n' + '\n'.join(reward_lines) if reward_lines else ''}"
             ),
             color=0xCC3333,
         )
