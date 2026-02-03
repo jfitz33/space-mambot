@@ -5,12 +5,14 @@ from discord import app_commands
 from datetime import datetime
 
 from core.constants import TEAM_ROLE_NAMES
+from core.currency import shard_set_name
 from core.daily_rollover import rollover_day_key, seconds_until_next_rollover
 from core.db import (
     db_init_wheel_tokens,
     db_wheel_tokens_grant_daily,
     db_wheel_tokens_add,
     db_wheel_tokens_get,
+    db_convert_all_wheel_tokens_to_shards,
 )
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -111,6 +113,43 @@ class GambaChips(commands.Cog):
             f"Before: {before} → After: **{after}**",
             ephemeral=True
         )
+
+    @app_commands.command(
+        name="gamba_convert",
+        description="(Admin) Convert all gamba chips into shards for a set.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        set_id="Shard set ID to receive conversions",
+        chips_to_shards="Number of shards granted per gamba chip when converting balances",
+    )
+    async def gamba_convert(
+        self,
+        interaction: discord.Interaction,
+        set_id: app_commands.Range[int, 1, None],
+        chips_to_shards: app_commands.Range[int, 1, None],
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        conversion = db_convert_all_wheel_tokens_to_shards(
+            self.bot.state, int(set_id), int(chips_to_shards)
+        )
+        converted_users = int(conversion.get("users", 0))
+        total_tokens = int(conversion.get("total_tokens", 0))
+        total_shards = int(conversion.get("total_shards", 0))
+        shard_title = shard_set_name(int(set_id))
+
+        if converted_users == 0 or total_tokens == 0:
+            line = f"ℹ️ No gamba chip balances needed conversion. Shard type: **{shard_title}**."
+        else:
+            line = (
+                f"✅ Converted **{total_tokens}** gamba chip(s) from **{converted_users}** user(s) "
+                f"into **{total_shards} {shard_title}** at **1 → {int(chips_to_shards)}**."
+            )
+
+        await interaction.followup.send(line, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(GambaChips(bot))

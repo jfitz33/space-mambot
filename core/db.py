@@ -1,4 +1,5 @@
 import sqlite3, json, time, asyncio
+from collections import defaultdict
 from typing import Tuple, List, Dict, Any, Optional, Iterable
 from core.state import AppState
 from core.util_norm import normalize_rarity, normalize_set_name, blank_to_none
@@ -210,6 +211,61 @@ def db_add_cards(
     If set is missing, use default_set.
     Returns total quantity added.
     """
+    def _apply_wishlist_reduction(
+        conn: sqlite3.Connection,
+        user_id_s: str,
+        name: str,
+        rarity: str,
+        cset: str,
+        code: str | None,
+        cid: str | None,
+        qty: int,
+    ) -> None:
+        row = conn.execute(
+            """
+            SELECT desired_qty FROM user_wishlist
+             WHERE user_id=?
+               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+               AND (card_code IS ? OR card_code=?)
+               AND (card_id IS ? OR card_id=?);
+            """,
+            (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+        ).fetchone()
+        if not row:
+            return
+        current = int(row[0] or 0)
+        if current <= 0:
+            return
+        remaining = current - min(current, qty)
+        if remaining > 0:
+            conn.execute(
+                """
+                UPDATE user_wishlist SET desired_qty=?
+                 WHERE user_id=?
+                   AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+                   AND (card_code IS ? OR card_code=?)
+                   AND (card_id IS ? OR card_id=?);
+                """,
+                (remaining, user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+            )
+        else:
+            conn.execute(
+                """
+                DELETE FROM user_wishlist
+                 WHERE user_id=?
+                   AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+                   AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
+                   AND (card_code IS ? OR card_code=?)
+                   AND (card_id IS ? OR card_id=?);
+                """,
+                (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
+            )
+
     total_added = 0
     user_id_s = str(user_id)
     with sqlite3.connect(state.db_path) as conn, conn:
@@ -247,6 +303,7 @@ def db_add_cards(
                 (user_id_s, name, rarity, cset, code, cid, qty),
             )
             total_added += qty
+            _apply_wishlist_reduction(conn, user_id_s, name, rarity, cset, code, cid, qty)
     return total_added
 
 def db_get_collection(state: AppState, user_id: int):
@@ -2146,9 +2203,16 @@ def db_collection_list_for_bulk_fragment(
         "id": str|None,
       }
     Only includes rows where to_frag > 0.
+    Binder copies are excluded from the available quantity.
     NOTE: Starlight is handled at the caller level; this function does not enforce rarity rules.
     """
     out: List[Dict] = []
+    binder_rows = db_binder_list(state, user_id)
+    binder_qty: dict[tuple[str, str, str, str, str], int] = defaultdict(int)
+    for item in binder_rows:
+        name, b_rarity, b_set, b_code, b_cid = _normalize_card_identity(item)
+        key = (name.lower(), b_rarity.lower(), b_set.lower(), b_code, b_cid)
+        binder_qty[key] += int(item.get("qty") or 0)
     with sqlite3.connect(state.db_path) as conn:
         params = [str(user_id)]
         clauses = ["user_id = ?"]
@@ -2170,12 +2234,19 @@ def db_collection_list_for_bulk_fragment(
         cur = conn.execute(query, params)
         for name, qty, r, cset, code, cid in cur.fetchall():
             qty = int(qty or 0)
-            to_frag = max(0, qty - int(keep))
+            n_name, n_rarity, n_set, n_code, n_cid = _normalize_card_identity(
+                None, name=name, rarity=r, card_set=cset, card_code=code, card_id=cid
+            )
+            key = (n_name.lower(), n_rarity.lower(), n_set.lower(), n_code, n_cid)
+            remaining = qty - binder_qty.get(key, 0)
+            if remaining <= 0:
+                continue
+            to_frag = max(0, remaining - int(keep))
             if to_frag <= 0:
                 continue
             out.append({
                 "name": name,
-                "qty": qty,
+                "qty": remaining,
                 "to_frag": to_frag,
                 "rarity": (rarity or r or "").lower().strip(),
                 "set": cset,
@@ -3582,3 +3653,43 @@ def db_wheel_tokens_clear(state, user_id: int) -> int:
             (str(user_id),),
         )
     return tokens
+
+def db_convert_all_wheel_tokens_to_shards(state, set_id: int, shards_per_token: int) -> dict:
+    """Convert all wheel tokens (gamba chips) to shards for the given set.
+
+    Returns a summary dict with keys: users, total_tokens, total_shards.
+    """
+    ratio = int(shards_per_token or 0)
+    if ratio <= 0:
+        return {"users": 0, "total_tokens": 0, "total_shards": 0}
+
+    set_id = int(set_id)
+    with conn(state.db_path) as c, c:
+        rows = c.execute(
+            "SELECT user_id, tokens FROM wheel_tokens WHERE COALESCE(tokens,0) > 0"
+        ).fetchall()
+
+        if not rows:
+            return {"users": 0, "total_tokens": 0, "total_shards": 0}
+
+        total_tokens = 0
+        total_shards = 0
+        for user_id, tokens in rows:
+            t = int(tokens or 0)
+            if t <= 0:
+                continue
+            shards = t * ratio
+            total_tokens += t
+            total_shards += shards
+            c.execute(
+                "INSERT OR IGNORE INTO wallet_shards(user_id,set_id,shards) VALUES (?,?,0)",
+                (str(user_id), set_id),
+            )
+            c.execute(
+                "UPDATE wallet_shards SET shards = shards + ? WHERE user_id=? AND set_id=?",
+                (shards, str(user_id), set_id),
+            )
+
+        c.execute("UPDATE wheel_tokens SET tokens = 0 WHERE COALESCE(tokens,0) > 0")
+
+        return {"users": len(rows), "total_tokens": total_tokens, "total_shards": total_shards}
