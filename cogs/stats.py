@@ -8,12 +8,14 @@ from core.state import AppState
 from core.db import (
     db_init_user_stats, db_init_match_log, db_init_user_set_wins,
     db_stats_get, db_stats_record_loss,
-    db_match_h2h, db_team_battleground_user_points_for_user,
+    db_match_h2h, db_stats_get_per_set,
+    db_team_battleground_user_points_for_user_all_sets,
 )
 from core.constants import (
     CURRENT_ACTIVE_SET,
     DUEL_QUEUE_MAMBUCKS_LOSS,
     DUEL_QUEUE_MAMBUCKS_WIN,
+    TEAM_SETS,
     TEAM_ROLE_NAMES,
 )
 from core.currency import mambucks_label
@@ -180,15 +182,45 @@ class Stats(commands.Cog):
         embed.add_field(name="Losses", value=f"**{data['losses']}**", inline=True)
         embed.add_field(name="Win %", value=f"**{pct:.1f}%**", inline=True)
 
+        if CURRENT_ACTIVE_SET >= 2:
+            per_set_stats = db_stats_get_per_set(self.state, target.id)
+            for set_id in range(1, CURRENT_ACTIVE_SET + 1):
+                team_cfg = TEAM_SETS.get(set_id, {})
+                team_defs = team_cfg.get("teams") or {}
+                team_emojis = [
+                    str(team_defs.get(team_name, {}).get("emoji", "")).strip()
+                    for team_name in (team_cfg.get("order") or team_defs.keys())
+                    if team_defs.get(team_name, {}).get("emoji")
+                ]
+                emoji_suffix = f" {' '.join(team_emojis)}" if team_emojis else ""
+                set_stats = per_set_stats.get(set_id, {"wins": 0, "losses": 0, "games": 0})
+                set_pct = _win_pct(set_stats["wins"], set_stats["games"])
+                embed.add_field(
+                    name=f"Set {set_id}{emoji_suffix}",
+                    value="\u200b",
+                    inline=False,
+                )
+                embed.add_field(name="Wins", value=f"**{set_stats['wins']}**", inline=True)
+                embed.add_field(name="Losses", value=f"**{set_stats['losses']}**", inline=True)
+                embed.add_field(name="Win %", value=f"**{set_pct:.1f}%**", inline=True)
+
         team_lines: list[str] = []
         guild = interaction.guild
         if guild and isinstance(target, discord.Member):
-            team_points = db_team_battleground_user_points_for_user(
-                self.state, guild.id, CURRENT_ACTIVE_SET, target.id
+            all_team_points = db_team_battleground_user_points_for_user_all_sets(
+                self.state, guild.id, target.id
             )
+            team_points: dict[str, int] = {}
+            for entry in all_team_points:
+                team_name = str(entry.get("team") or "")
+                if not team_name:
+                    continue
+                team_points[team_name] = team_points.get(team_name, 0) + int(
+                    entry.get("earned_points", 0) or 0
+                )
             team_roles = [role.name for role in target.roles if role.name in TEAM_ROLE_NAMES]
             for role_name in sorted(team_roles, key=str.lower):
-                points = int(team_points.get(role_name, {}).get("earned_points", 0))
+                points = int(team_points.get(role_name, 0))
                 team_lines.append(f"Team {role_name}: **{points:,}**")
 
         if team_lines:

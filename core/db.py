@@ -647,6 +647,30 @@ def db_collection_total_by_rarity(state, user_id: int, rarity: str) -> int:
         (total,) = cur.fetchone()
     return int(total or 0)
 
+def db_collection_total_by_rarity_and_sets(
+    state,
+    user_id: int,
+    rarity: str,
+    card_sets: Iterable[str],
+) -> int:
+    """Return the total owned count for a rarity across specific sets."""
+    normalized_sets = [str(cset).strip().lower() for cset in card_sets if str(cset or "").strip()]
+    if not normalized_sets:
+        return 0
+    placeholders = ", ".join(["?"] * len(normalized_sets))
+    query = f"""SELECT COALESCE(SUM(card_qty), 0)
+                 FROM user_collection
+                WHERE user_id = ?
+                  AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
+                  AND LOWER(TRIM(card_set)) IN ({placeholders})"""
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            query,
+            (str(user_id), rarity, *normalized_sets),
+        )
+        (total,) = cur.fetchone()
+    return int(total or 0)
+
 def _normalize_card_identity(card: dict | None, *, name: str | None = None,
                               rarity: str | None = None, card_set: str | None = None,
                               card_code: str | None = None, card_id: str | None = None) -> tuple[str, str, str, str, str]:
@@ -2425,6 +2449,33 @@ def db_init_user_stats(state):
         );
         """)
 
+def db_stats_get_per_set(state, user_id: int) -> dict[int, dict[str, int]]:
+    import sqlite3
+
+    results: dict[int, dict[str, int]] = {}
+    with sqlite3.connect(state.db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT set_id,
+                   SUM(CASE WHEN winner_id = ? THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN loser_id = ? THEN 1 ELSE 0 END) AS losses
+              FROM match_log
+             WHERE winner_id = ? OR loser_id = ?
+             GROUP BY set_id
+             ORDER BY set_id
+            """,
+            (str(user_id), str(user_id), str(user_id), str(user_id)),
+        ).fetchall()
+
+    for set_id, wins, losses in rows:
+        wins_val = int(wins or 0)
+        losses_val = int(losses or 0)
+        results[int(set_id)] = {
+            "wins": wins_val,
+            "losses": losses_val,
+            "games": wins_val + losses_val,
+        }
+    return results
 
 def db_init_user_set_wins(state):
     with sqlite3.connect(state.db_path) as conn, conn:

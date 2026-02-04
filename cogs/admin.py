@@ -11,6 +11,7 @@ from core.db import (
     db_admin_remove_card,
     db_collection_clear,
     db_collection_total_by_rarity,
+    db_collection_total_by_rarity_and_sets,
     db_wallet_set,
     db_wallet_add,
     db_wallet_get,
@@ -44,6 +45,7 @@ from core.quests.schema import (
 )
 from core.quests.timekeys import daily_key, now_et, rollover_date
 from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
+from core.constants import pack_names_for_set
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
 from core.db import db_add_cards
@@ -73,6 +75,30 @@ def _available_set_choices() -> List[app_commands.Choice[int]]:
     if not out:
         out.append(app_commands.Choice(name=f"1 — {shard_set_name(1)}", value=1))
     return out
+
+def _chunk_lines_for_discord(lines: List[str], *, limit: int = 1900) -> List[str]:
+    chunks: List[str] = []
+    current = ""
+    for line in lines:
+        if len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            start = 0
+            while start < len(line):
+                chunks.append(line[start : start + limit])
+                start += limit
+            continue
+        addition = ("\n" if current else "") + line
+        if len(current) + len(addition) > limit:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += addition
+    if current:
+        chunks.append(current)
+    return chunks
 
 class Admin(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -902,12 +928,15 @@ class Admin(commands.Cog):
     @app_commands.describe(
         amount_secrets="Maximum number of secret rares a member can have to be listed (default: 1)",
         amount_ultras="Maximum number of ultra rares a member can have to be listed (default: 1)",
+        set_number="Restrict to cards in a specific set number (optional)",
     )
+    @app_commands.autocomplete(set_number=ac_shard_set)
     async def get_poors(
         self,
         interaction: discord.Interaction,
         amount_secrets: int | None = 1,
         amount_ultras: int | None = 1,
+        set_number: int | None = None,
     ) -> None:
         if not interaction.guild:
             await interaction.response.send_message(
@@ -939,18 +968,47 @@ class Admin(commands.Cog):
                 msg += " Missing roles: " + ", ".join(sorted(missing_roles))
             await interaction.followup.send(msg, ephemeral=True)
             return
+        
+        selected_set_id: int | None = None
+        selected_set_names: List[str] = []
+        if set_number is not None:
+            selected_set_id = int(set_number)
+            if selected_set_id <= 0:
+                await interaction.followup.send(
+                    "❌ Set number must be greater than 0.", ephemeral=True
+                )
+                return
+            selected_set_names = pack_names_for_set(self.state, selected_set_id)
+            if not selected_set_names:
+                selected_set_names = sorted(PACKS_BY_SET.get(selected_set_id, []))
+            if not selected_set_names:
+                await interaction.followup.send(
+                    f"❌ Unknown set number **{selected_set_id}**.", ephemeral=True
+                )
+                return
 
         qualifying: list[tuple[discord.Member, int, int]] = []
         for member in members.values():
-            total_secret = db_collection_total_by_rarity(self.state, member.id, "secret")
-            total_ultra = db_collection_total_by_rarity(self.state, member.id, "ultra")
+            if selected_set_names:
+                total_secret = db_collection_total_by_rarity_and_sets(
+                    self.state, member.id, "secret", selected_set_names
+                )
+                total_ultra = db_collection_total_by_rarity_and_sets(
+                    self.state, member.id, "ultra", selected_set_names
+                )
+            else:
+                total_secret = db_collection_total_by_rarity(self.state, member.id, "secret")
+                total_ultra = db_collection_total_by_rarity(self.state, member.id, "ultra")
             if total_secret <= max_secrets and total_ultra <= max_ultras:
                 qualifying.append((member, total_secret, total_ultra))
 
         if not qualifying:
+            set_suffix = ""
+            if selected_set_id is not None:
+                set_suffix = f" in **Set {selected_set_id}**"
             msg = (
                 "No Fire/Water members have secret rare totals at or below "
-                f"**{max_secrets}** and ultra rare totals at or below **{max_ultras}**."
+                f"**{max_secrets}** and ultra rare totals at or below **{max_ultras}**{set_suffix}."
             )
             if missing_roles:
                 msg += " Missing roles: " + ", ".join(sorted(missing_roles))
@@ -959,10 +1017,14 @@ class Admin(commands.Cog):
 
         qualifying.sort(key=lambda pair: (pair[1], pair[2], pair[0].display_name.lower()))
 
+        set_suffix = ""
+        if selected_set_id is not None:
+            set_suffix = f" in **Set {selected_set_id}**"
+
         lines = [
             (
                 f"Fire/Water members with ≤ **{max_secrets}** secret rare(s) and "
-                f"≤ **{max_ultras}** ultra rare(s):"
+                f"≤ **{max_ultras}** ultra rare(s){set_suffix}:"
             ),
         ]
         for member, total_secret, total_ultra in qualifying:
@@ -977,7 +1039,8 @@ class Admin(commands.Cog):
             lines.append("")
             lines.append("Missing roles: " + ", ".join(sorted(missing_roles)))
 
-        await interaction.followup.send("\n".join(lines), ephemeral=True)
+        for chunk in _chunk_lines_for_discord(lines):
+            await interaction.followup.send(chunk, ephemeral=True)
 
     @app_commands.command(
         name="admin_reset_user_quests",

@@ -56,6 +56,7 @@ DROP_DISCOVERY_TOURNAMENT_STATES = (
     ACTIVE_TOURNAMENT_STATES | DROP_ELIGIBLE_TOURNAMENT_STATES
 )
 DECKLIST_ELIGIBLE_TOURNAMENT_STATES = ACTIVE_TOURNAMENT_STATES | {"complete"}
+TOURNAMENT_PARTICIPANT_ROLE_NAME = "Tournament_Participant"
 
 def _parse_challonge_timestamp(value: object) -> float:
     """Return a comparable timestamp value from Challonge API fields."""
@@ -292,6 +293,36 @@ class Tournaments(commands.Cog):
             return False
 
         return bool(settings.get("replays_required")) if settings else False
+
+    async def _ensure_tournament_participant_role(
+        self, member: discord.Member
+    ) -> discord.Role | None:
+        role = discord.utils.get(
+            member.guild.roles, name=TOURNAMENT_PARTICIPANT_ROLE_NAME
+        )
+        if role is None:
+            try:
+                role = await member.guild.create_role(
+                    name=TOURNAMENT_PARTICIPANT_ROLE_NAME,
+                    reason="Tournament participant role needed for join tracking.",
+                )
+            except Exception:
+                self.logger.exception(
+                    "Failed to create Tournament_Participant role in guild %s",
+                    member.guild.id,
+                )
+                return None
+
+        if role not in member.roles:
+            try:
+                await member.add_roles(
+                    role, reason="User joined a tournament via /tournament_join."
+                )
+            except Exception:
+                self.logger.exception(
+                    "Failed to add Tournament_Participant role to %s", member.id
+                )
+        return role
 
     @staticmethod
     def _build_replay_label(
@@ -1109,6 +1140,8 @@ class Tournaments(commands.Cog):
     )
     @app_commands.guilds(GUILD)
     async def tournament_join(self, interaction: discord.Interaction) -> None:
+        if interaction.guild and isinstance(interaction.user, discord.Member):
+            await self._ensure_tournament_participant_role(interaction.user)
         try:
             tournaments = await self._fetch_active_tournaments(
                 allowed_states=JOINABLE_TOURNAMENT_STATES
@@ -1830,6 +1863,57 @@ class Tournaments(commands.Cog):
                 )
             except Exception:
                 self.logger.exception("Failed to post decklist during tournament_summary")
+
+    @app_commands.command(
+        name="clear_tournament_participants",
+        description="(Admin) Remove the Tournament_Participant role from all members.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def clear_tournament_participants(
+        self, interaction: discord.Interaction
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(
+                "This command can only be used in a server.", ephemeral=True
+            )
+            return
+
+        role = discord.utils.get(
+            guild.roles, name=TOURNAMENT_PARTICIPANT_ROLE_NAME
+        )
+        if role is None:
+            await interaction.followup.send(
+                "The Tournament_Participant role doesn't exist in this server.",
+                ephemeral=True,
+            )
+            return
+
+        removed = 0
+        failed = 0
+        async for member in guild.fetch_members(limit=None):
+            if role not in member.roles:
+                continue
+            try:
+                await member.remove_roles(
+                    role, reason="Tournament completed; clearing participant role."
+                )
+                removed += 1
+            except Exception:
+                failed += 1
+                self.logger.exception(
+                    "Failed to remove Tournament_Participant role from %s",
+                    member.id,
+                )
+
+        message = f"Removed the Tournament_Participant role from {removed} member(s)."
+        if failed:
+            message += f" Failed to update {failed} member(s); check logs for details."
+        await interaction.followup.send(message, ephemeral=True)
+
 
     @app_commands.command(
         name="tournament_add_participant",
