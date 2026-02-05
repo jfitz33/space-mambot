@@ -2804,7 +2804,7 @@ class Tournaments(commands.Cog):
 
             if owned_qty < required_qty:
                 issues.append(
-                    f"Not enough copies: You only own {owned_qty} copies of {display_name}"
+                    f"Not enough copies: You {"only" if owned_qty > 0 else ""} own {owned_qty} copies of {display_name}"
                 )
 
             limit = banlist.limit_for(card_name)
