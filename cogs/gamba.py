@@ -46,6 +46,7 @@ class GambaPrize:
     amount: Optional[int] = None
     shard_set_id: Optional[int] = None
     shard_type: Optional[str] = None
+    shard_items: Optional[list[dict]] = None
 
 
 def _normalize_rarity(rarity: str) -> str:
@@ -158,6 +159,7 @@ def _load_prizes() -> List[GambaPrize]:
                 amount=entry.get("amount"),
                 shard_set_id=entry.get("shard_set_id"),
                 shard_type=entry.get("shard_type"),
+                shard_items=entry.get("shard_items"),
             )
         )
     return prizes
@@ -224,6 +226,43 @@ def _rarity_badge_tokens(state) -> dict[str, str]:
     return tokens
 
 
+def _resolve_shard_entry_set_id(entry: dict) -> int:
+    for candidate in (entry.get("set_id"), _shard_type_to_set_id(entry.get("shard_type"))):
+        try:
+            if candidate is not None:
+                return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    try:
+        return int(GAMBA_DEFAULT_SHARD_SET_ID)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _normalize_shard_entries(shard_items: Optional[list[dict]]) -> list[tuple[int, int]]:
+    entries: list[tuple[int, int]] = []
+    if not isinstance(shard_items, list):
+        return entries
+    for item in shard_items:
+        if not isinstance(item, dict):
+            continue
+        amount = int(item.get("amount") or 0)
+        if amount <= 0:
+            continue
+        set_id = _resolve_shard_entry_set_id(item)
+        entries.append((set_id, amount))
+    return entries
+
+
+def _format_shard_awards(state, entries: list[tuple[int, int]]) -> str:
+    if not entries:
+        return ""
+    parts = []
+    for set_id, amount in entries:
+        badge = _shard_badge_for_set(state, set_id)
+        parts.append(f"{badge}x{amount}")
+    return "".join(parts)
+
 def _render_prize_description(prize: GambaPrize, state) -> str:
     desc = prize.description
     badges = _rarity_badge_tokens(state)
@@ -236,6 +275,10 @@ def _render_prize_description(prize: GambaPrize, state) -> str:
         if amount:
             return f"{icon} Mambucks x{amount}"
         return f"{icon} {desc}"
+    if prize.prize_type == "shards":
+        entries = _normalize_shard_entries(prize.shard_items)
+        if entries:
+            return _format_shard_awards(state, entries)
     return desc
 
 def _shard_badge_for_set(state, set_id: int) -> str:
@@ -262,6 +305,14 @@ async def _resolve_and_award_prize(state, user_id: int, prize: GambaPrize) -> st
             return ", ".join(awarded)
 
     if prize.prize_type == "shards":
+        entries = _normalize_shard_entries(prize.shard_items)
+        if entries:
+            for set_id, amount in entries:
+                try:
+                    db_shards_add(state, user_id, set_id, amount)
+                except Exception as exc:
+                    print(f"[gamba] failed to add shards: {exc}")
+            return _format_shard_awards(state, entries)
         amount = int(prize.amount or 0)
         set_id = _resolve_shard_set_id(prize)
         if amount:

@@ -76,7 +76,7 @@ GAMBA_DEFAULT_SHARD_SET_ID = 1
 GAMBA_PRIZES = [
     {
         "key": "cards_super_rare_bundle",
-        "weight": 0.25,
+        "weight": 0.01,
         "prize_type": "cards",
         "rarity": "SUPER RARE",
         "amount": 2,
@@ -105,12 +105,14 @@ GAMBA_PRIZES = [
         "description": ":rar_secret: Secret",
     },
     {
-        "key": "shards_100_frostfire",
-        "weight": 0.25,
+        "key": "shards_100_frostfire_sandstorm",
+        "weight": 0.49,
         "prize_type": "shards",
-        "amount": 100,
-        "shard_type": "frostfire",
-        "description": ":rar_frostfire:Shards x100",
+        "shard_items": [
+            {"amount": 100, "shard_type": "frostfire"},
+            {"amount": 100, "shard_type": "sandstorm"},
+        ],
+        "description": ":rar_frostfire:Shards x100 + :rar_sandstorm:Shards x100",
     },
     {
         "key": "shards_500_frostfire",
@@ -138,7 +140,7 @@ STARTER_DECK_SET_NAMES = {
 # Which packs belong to which Set (uppercase pack names)
 PACKS_BY_SET = {
     1: {"Blazing Genesis", "Storm of the Abyss"},  # Set 1 → Frostfire Shards
-    2: {"Obsidian Empire", "Evolving Maelstrom"},   # Set 2 -> Sandstorm Shards
+    2: {"Ruins of Obsidian", "Evolving Maelstrom"},   # Set 2 -> Sandstorm Shards
     3: {"Power of the Primordial", "Cyberstorm Crisis"}
 }
 
@@ -189,12 +191,20 @@ TEAM_SETS = {
     1: {
         "order": ("Fire", "Water"),
         "teams": {
-            "Fire": {"display": "Team Fire", "emoji": "🔥"},
-            "Water": {"display": "Team Water", "emoji": "💧"},
+            "Fire": {
+                "display": "Team Fire", 
+                "emoji": "🔥",
+                "pack": "Blazing Genesis"
+            },
+            "Water": {
+                "display": "Team Water", 
+                "emoji": "💧",
+                "pack": "Storm of the Abyss"
+            },
         },
     },
     2: {
-        "order": ("Wind", "Earth"),
+        "order": ("Earth", "Wind"),
         "teams": {
             "Wind": {
                 "display": "Team Wind",
@@ -204,7 +214,7 @@ TEAM_SETS = {
             "Earth": {
                 "display": "Team Earth",
                 "emoji": "⛰️",
-                "pack": "Obsidian Empire",
+                "pack": "Ruins of Obsidian",
             },
         },
     },

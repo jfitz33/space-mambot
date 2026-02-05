@@ -166,8 +166,8 @@ class Teams(commands.Cog):
         team_name: str,
         pack_name: str,
     ) -> bool:
-        START_PACKS = 8
-        guaranteed_tops = ["super"] * 6 + ["ultra"] * 2
+        START_PACKS = 12
+        guaranteed_tops = ["super"] * 8 + ["ultra"] * 3 + ["secret"] * 1
 
         per_pack: list[list[dict]] = []
         for top_rarity in guaranteed_tops:
@@ -520,20 +520,8 @@ class Teams(commands.Cog):
 
         columns = [*left_bonus_columns, *base_columns, *right_bonus_columns]
         base_middle_index = 2
-        left_total = display_totals.get(left_team, left_duel + left_bonus)
-        right_total = display_totals.get(right_team, right_duel + right_bonus)
-        left_segments = max(0, left_total // segment_size)
-        right_segments = max(0, right_total // segment_size)
-        lead = right_segments - left_segments
-        if lead > 0:
-            contested_shift = lead - 1
-        elif lead < 0:
-            contested_shift = lead + 1
-        else:
-            contested_shift = 0
-        contested_base_index = max(0, min(4, base_middle_index - contested_shift))
         middle_index = len(left_bonus_columns) + base_middle_index
-        contested_index = len(left_bonus_columns) + contested_base_index
+        contested_index = middle_index
 
         def _header_label(value: int) -> str:
             keycap = {

@@ -44,7 +44,14 @@ from core.quests.schema import (
     db_daily_quest_get_slots_for_user,
 )
 from core.quests.timekeys import daily_key, now_et, rollover_date
-from core.constants import CURRENT_ACTIVE_SET, PACKS_BY_SET, TEAM_ROLE_NAMES, PACKS_IN_BOX
+from core.constants import (
+    CURRENT_ACTIVE_SET,
+    PACKS_BY_SET,
+    TEAM_ROLE_NAMES,
+    TEAM_SETS,
+    PACKS_IN_BOX,
+    PACK_COST,
+)
 from core.constants import pack_names_for_set
 from core.currency import shard_set_name  # pretty name per set
 from core.cards_shop import find_card_by_print_key, resolve_card_set, card_label
@@ -1760,6 +1767,155 @@ class Admin(commands.Cog):
             ephemeral=True,
         )
     
+    @app_commands.command(
+        name="mambucks_to_packs",
+        description="(Admin) Spend team members' mambucks on their team pack for a set.",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(set_id="Team set ID to process")
+    async def mambucks_to_packs(
+        self,
+        interaction: discord.Interaction,
+        set_id: app_commands.Range[int, 1, None],
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.followup.send(
+                "❌ This command can only be used in a guild.",
+                ephemeral=True,
+            )
+
+        team_set = TEAM_SETS.get(int(set_id))
+        if not team_set:
+            return await interaction.followup.send(
+                f"❌ No team configuration found for set **{set_id}**.",
+                ephemeral=True,
+            )
+
+        teams = team_set.get("teams") or {}
+        if not teams:
+            return await interaction.followup.send(
+                f"❌ No teams configured for set **{set_id}**.",
+                ephemeral=True,
+            )
+
+        if not getattr(self.state, "packs_index", None):
+            return await interaction.followup.send(
+                "❌ Pack data has not been loaded yet.",
+                ephemeral=True,
+            )
+
+        missing_roles: list[str] = []
+        missing_packs: list[str] = []
+        duplicate_users: list[int] = []
+        user_map: dict[int, tuple[discord.Member, str, str]] = {}
+
+        for team_name, team_cfg in teams.items():
+            pack_name = (team_cfg or {}).get("pack")
+            if not pack_name:
+                missing_packs.append(f"{team_name} (no pack configured)")
+                continue
+            if pack_name not in (self.state.packs_index or {}):
+                missing_packs.append(f"{team_name} → {pack_name} (missing pack data)")
+                continue
+            role = discord.utils.get(guild.roles, name=team_name)
+            if role is None:
+                missing_roles.append(team_name)
+                continue
+            for member in role.members:
+                if member.bot:
+                    continue
+                if member.id in user_map:
+                    duplicate_users.append(member.id)
+                    continue
+                user_map[member.id] = (member, team_name, pack_name)
+
+        if not user_map:
+            details = []
+            if missing_roles:
+                details.append(f"Missing roles: {', '.join(sorted(set(missing_roles)))}")
+            if missing_packs:
+                details.append(f"Pack issues: {', '.join(sorted(set(missing_packs)))}")
+            detail_text = f"\n{chr(10).join(details)}" if details else ""
+            return await interaction.followup.send(
+                f"❌ No eligible members found for set **{set_id}**.{detail_text}",
+                ephemeral=True,
+            )
+
+        total_spent = 0
+        total_packs = 0
+        awarded_users = 0
+        skipped_zero = 0
+        dm_failures: list[str] = []
+        lines: list[str] = []
+
+        for member, team_name, pack_name in user_map.values():
+            wallet = db_wallet_get(self.state, member.id)
+            mambucks = int(wallet.get("mambucks", 0) or 0)
+            if mambucks < PACK_COST:
+                skipped_zero += 1
+                continue
+
+            packs_to_open = mambucks // PACK_COST
+            spend = packs_to_open * PACK_COST
+            if packs_to_open <= 0:
+                skipped_zero += 1
+                continue
+
+            per_pack: list[list[dict]] = []
+            for _ in range(packs_to_open):
+                per_pack.append(open_pack_from_csv(self.state, pack_name, 1))
+
+            flat = [card for pack in per_pack for card in pack]
+            db_add_cards(self.state, member.id, flat, pack_name)
+
+            new_balance = mambucks - spend
+            db_wallet_set(self.state, member.id, mambucks=new_balance)
+
+            dm_sent = await self._dm_pack_results(member, pack_name, per_pack)
+            if not dm_sent:
+                dm_failures.append(member.display_name)
+
+            total_spent += spend
+            total_packs += packs_to_open
+            awarded_users += 1
+            lines.append(
+                f"{member.display_name} ({team_name}) → {packs_to_open} pack"
+                f"{'s' if packs_to_open != 1 else ''} of {pack_name}"
+                f" (spent {spend}, remaining {new_balance})"
+            )
+
+        header = (
+            f"✅ Converted mambucks to packs for set **{set_id}**.\n"
+            f"Users awarded: **{awarded_users}** | Packs opened: **{total_packs}** | "
+            f"Mambucks spent: **{total_spent}**"
+        )
+        footer_parts = []
+        if skipped_zero:
+            footer_parts.append(f"Skipped (insufficient mambucks): {skipped_zero}")
+        if missing_roles:
+            footer_parts.append(f"Missing roles: {', '.join(sorted(set(missing_roles)))}")
+        if missing_packs:
+            footer_parts.append(f"Pack issues: {', '.join(sorted(set(missing_packs)))}")
+        if duplicate_users:
+            footer_parts.append(f"Duplicate users skipped: {len(set(duplicate_users))}")
+        if dm_failures:
+            footer_parts.append(f"DM failures: {', '.join(dm_failures)}")
+
+        summary = header
+        if footer_parts:
+            summary = f"{summary}\n" + "\n".join(footer_parts)
+
+        await interaction.followup.send(summary, ephemeral=True)
+
+        if lines:
+            for chunk in _chunk_lines_for_discord(lines):
+                await interaction.followup.send(chunk, ephemeral=True)
+
     @app_commands.command(name="admin_fragment_override_set", description="(Admin) Temporarily override a card's fragment yield")
     @app_commands.guilds(GUILD)
     @app_commands.default_permissions(administrator=True)

@@ -197,7 +197,7 @@ class Stats(commands.Cog):
                 set_pct = _win_pct(set_stats["wins"], set_stats["games"])
                 embed.add_field(
                     name=f"Set {set_id}{emoji_suffix}",
-                    value="\u200b",
+                    value=" ",
                     inline=False,
                 )
                 embed.add_field(name="Wins", value=f"**{set_stats['wins']}**", inline=True)
