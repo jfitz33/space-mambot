@@ -16,11 +16,13 @@ from core.views import _pack_embed_for_cards, _pack_image_path
 from core.db import (
     db_add_cards,
     db_daily_quest_pack_get_total,
+    db_gamba_daily_get_total,
     db_starter_claim_abort,
     db_starter_claim_begin,
     db_starter_claim_complete,
     db_starter_claim_status,
     db_starter_daily_get_total,
+    db_wheel_tokens_add,
 )
 from core.images import ensure_rarity_emojis
 from core.wallet_api import credit_mambucks, add_shards
@@ -641,6 +643,13 @@ class Start(commands.Cog):
             new_wallet = credit_mambucks(self.state, member.id, daily_total)
             catchup_lines.append(
                 f"Credited {mambucks_label(daily_total)} (new total: {mambucks_label(new_wallet)})."
+            )
+
+        gamba_total = db_gamba_daily_get_total(self.state)
+        if gamba_total > 0:
+            new_chips = db_wheel_tokens_add(self.state, member.id, gamba_total)
+            catchup_lines.append(
+                f"Credited **{gamba_total}** gamba chip(s) (new total: **{new_chips}**)."
             )
 
         if CURRENT_ACTIVE_SET in (2, 3):

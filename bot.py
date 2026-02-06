@@ -18,6 +18,7 @@ from core.db import (
     db_init_shard_overrides,
     db_init_daily_sales,
     db_init_wheel_tokens,
+    db_init_craft_set_discounts,
 )
 from core.packs import load_packs_from_csv
 from core.starters import load_starters_from_csv
@@ -217,11 +218,12 @@ async def on_ready():
     await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
     await asyncio.to_thread(db_init_shard_overrides, bot.state)
     await asyncio.to_thread(db_init_daily_sales, bot.state)
+    await asyncio.to_thread(db_init_craft_set_discounts, bot.state)
 
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:
         gids = [GUILD_ID] if GUILD_ID else [g.id for g in bot.guilds]
-        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=False)
+        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=True)
         print("[rarity] cached emoji IDs:", getattr(bot.state, "rarity_emoji_ids", {}))
     except Exception as e:
         print("[rarity] setup skipped:", e)

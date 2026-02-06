@@ -41,6 +41,7 @@ from core.currency import shards_label
 from core.purchase_options import (
     PaymentOption,
     format_payment_options,
+    is_box_blocked,
     payment_options_for_set,
 )
 from typing import List, Tuple, Optional, Literal, Any
@@ -1298,6 +1299,12 @@ class PacksSelectView(discord.ui.View):
 
         if self.mode == "box":
             set_id = set_id_for_pack(pack_name)
+            if is_box_blocked(set_id):
+                await self._send_ephemeral(
+                    interaction,
+                    "Boxes are temporarily unavailable for this set. Please purchase packs instead.",
+                )
+                return
             payment_opts = payment_options_for_set(
                 set_id,
                 mambuck_cost=BOX_COST,

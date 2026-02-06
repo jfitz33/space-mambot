@@ -20,6 +20,8 @@ from core.db import (
     db_shard_override_set,
     db_shard_override_clear,
     db_shard_override_list_active,
+    db_craft_set_discount_set,
+    db_craft_set_discount_list,
     db_starter_claim_clear,
     db_stats_reset,
     db_stats_record_loss,
@@ -2007,6 +2009,55 @@ class Admin(commands.Cog):
             lines.append(f"• **{tgt}** → **{r['yield_override']}** shards/copy · until **{until}**")
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
+    @app_commands.command(
+        name="admin_craft_set_discount_set",
+        description="(Admin) Set a craft discount percentage for an entire set",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        set_id="Set number to discount (e.g., 1)",
+        discount_pct="Percent off normal craft cost (0 to clear)",
+    )
+    @app_commands.autocomplete(set_id=ac_shard_set)
+    async def admin_craft_set_discount_set(
+        self,
+        interaction: discord.Interaction,
+        set_id: app_commands.Range[int, 1, 9999],
+        discount_pct: app_commands.Range[int, 0, 100],
+    ):
+        db_craft_set_discount_set(self.state, int(set_id), int(discount_pct))
+        if discount_pct <= 0:
+            return await interaction.response.send_message(
+                f"🧹 Cleared craft discount for set **{set_id}**.",
+                ephemeral=True,
+            )
+        await interaction.response.send_message(
+            f"✅ Set **{shard_set_name(set_id)}** craft discount to **{discount_pct}%** off.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="admin_craft_set_discount_list",
+        description="(Admin) List craft discounts applied to sets",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    async def admin_craft_set_discount_list(self, interaction: discord.Interaction):
+        rows = db_craft_set_discount_list(self.state)
+        if not rows:
+            return await interaction.response.send_message("No craft set discounts configured.", ephemeral=True)
+        lines = []
+        for r in rows:
+            stamp = time.strftime("%Y-%m-%d %H:%M ET", time.localtime(int(r["updated_ts"])))
+            lines.append(
+                f"• **Set {r['set_id']} ({shard_set_name(r['set_id'])})** → **{r['discount_pct']}%** off (updated {stamp})"
+            )
+        chunks = _chunk_lines_for_discord(lines)
+        await interaction.response.send_message(chunks[0], ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
+
     # --- Admin: simulate next-day midnight rollover -------------------------
     @app_commands.command(
         name="admin_simulate_next_day",
@@ -2270,6 +2321,14 @@ class Admin(commands.Cog):
                         UPDATE wheel_tokens
                            SET last_grant_day = NULL
                          WHERE last_grant_day > ?;
+                        """,
+                        (today_key,),
+                    )
+                    conn.execute(
+                        """
+                        UPDATE gamba_daily_totals
+                           SET last_day = NULL
+                         WHERE id = 1 AND last_day > ?;
                         """,
                         (today_key,),
                     )

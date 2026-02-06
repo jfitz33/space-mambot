@@ -9,6 +9,10 @@ from core.currency import shard_set_name
 from core.daily_rollover import rollover_day_key, seconds_until_next_rollover
 from core.db import (
     db_init_wheel_tokens,
+    db_gamba_daily_increment_total,
+    db_gamba_daily_get_total,
+    db_gamba_daily_reset_total,
+    db_gamba_daily_set_total,
     db_wheel_tokens_grant_daily,
     db_wheel_tokens_add,
     db_wheel_tokens_get,
@@ -51,6 +55,9 @@ class GambaChips(commands.Cog):
             return
         day_key = day_key or _today_key()
         self._last_grant_day_key = day_key
+        total_after, did_total = db_gamba_daily_increment_total(
+            self.bot.state, day_key, 1
+        )
         awarded = 0
         seen_members = 0
         for guild in self.bot.guilds:
@@ -66,6 +73,10 @@ class GambaChips(commands.Cog):
                 if did:
                     awarded += 1
         print(f"[gamba] daily grant {day_key}: granted to {awarded} user(s).")
+        if did_total:
+            print(
+                f"[gamba] {day_key}: total gamba chips earnable now {total_after}."
+            )
         if awarded == 0 and seen_members == 0:
             print(
                 "[gamba] warning: no Fire/Water members seen in cache; grants will be "
@@ -150,6 +161,66 @@ class GambaChips(commands.Cog):
             )
 
         await interaction.followup.send(line, ephemeral=True)
+
+    # --- Admin: totals ------------------------------------------------------
+    @app_commands.command(
+        name="gamba_chips_total",
+        description="(Admin) View the running total of gamba chips earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def gamba_chips_total(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        total = db_gamba_daily_get_total(self.bot.state)
+        await interaction.followup.send(
+            f"Total gamba chips earnable per user: **{total}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="gamba_chips_reset_total",
+        description="(Admin) Reset the running total of gamba chips earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def gamba_chips_reset_total(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        db_gamba_daily_reset_total(self.bot.state)
+        await interaction.followup.send(
+            "Gamba chips earnable total has been reset to 0.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="gamba_chips_set_total",
+        description="(Admin) Set the running total of gamba chips earnable per user",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(total="New running total of gamba chips earnable per user")
+    async def gamba_chips_set_total(
+        self, interaction: discord.Interaction, total: int
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if total < 0:
+            await interaction.followup.send(
+                "Total must be zero or greater.", ephemeral=True
+            )
+            return
+
+        current = db_gamba_daily_get_total(self.bot.state)
+        updated = db_gamba_daily_set_total(self.bot.state, total)
+        await interaction.followup.send(
+            "Gamba chips earnable total updated: "
+            f"**{current}** → **{updated}**.",
+            ephemeral=True,
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(GambaChips(bot))

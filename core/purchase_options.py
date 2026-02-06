@@ -9,7 +9,7 @@ from core.currency import mambucks_label, shard_set_name, shards_label
 Currency = Literal["mambucks", "shards"]
 
 
-def _parse_shard_enabled_sets(env_value: str | None) -> set[int]:
+def _parse_set_ids(env_value: str | None) -> set[int]:
     enabled: set[int] = set()
     if not env_value:
         return enabled
@@ -25,7 +25,14 @@ def _parse_shard_enabled_sets(env_value: str | None) -> set[int]:
 
 
 # Comma-separated set IDs (e.g., "1,2") that are allowed to use shards for packs/boxes.
-PACK_SHARD_ENABLED_SETS = _parse_shard_enabled_sets(os.getenv("PACK_SHARD_ENABLED_SETS", ""))
+PACK_SHARD_ENABLED_SETS = _parse_set_ids(os.getenv("PACK_SHARD_ENABLED_SETS", ""))
+
+# Comma-separated set IDs (e.g., "2") that should not allow box purchases.
+BOX_BLOCKED_SETS = _parse_set_ids(os.getenv("BOX_BLOCKED_SETS", ""))
+
+
+def is_box_blocked(set_id: int | None) -> bool:
+    return set_id is not None and int(set_id) in BOX_BLOCKED_SETS
 
 
 @dataclass(frozen=True)

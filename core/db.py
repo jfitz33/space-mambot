@@ -2300,6 +2300,66 @@ def db_init_shard_overrides(state):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_shard_overrides_key ON shard_overrides(card_name, card_set);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_shard_overrides_time ON shard_overrides(ends_at, starts_at);")
 
+def db_init_craft_set_discounts(state):
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS craft_set_discounts (
+            set_id       INTEGER PRIMARY KEY,
+            discount_pct INTEGER NOT NULL,
+            updated_ts   INTEGER NOT NULL
+        );
+        """)
+
+
+def db_craft_set_discount_set(state, set_id: int, discount_pct: int):
+    import sqlite3
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        if discount_pct <= 0:
+            conn.execute("DELETE FROM craft_set_discounts WHERE set_id=?", (int(set_id),))
+            return
+        conn.execute(
+            """
+            INSERT INTO craft_set_discounts (set_id, discount_pct, updated_ts)
+            VALUES (?,?,?)
+            ON CONFLICT(set_id) DO UPDATE SET
+                discount_pct=excluded.discount_pct,
+                updated_ts=excluded.updated_ts
+            """,
+            (int(set_id), int(discount_pct), now),
+        )
+
+
+def db_craft_set_discount_get(state, set_id: int) -> int | None:
+    import sqlite3
+    with sqlite3.connect(state.db_path) as conn:
+        row = conn.execute(
+            "SELECT discount_pct FROM craft_set_discounts WHERE set_id=?",
+            (int(set_id),),
+        ).fetchone()
+        if not row:
+            return None
+        return int(row[0])
+
+
+def db_craft_set_discount_list(state) -> list[dict]:
+    import sqlite3
+    rows = []
+    with sqlite3.connect(state.db_path) as conn:
+        for r in conn.execute(
+            "SELECT set_id, discount_pct, updated_ts FROM craft_set_discounts ORDER BY set_id ASC"
+        ).fetchall():
+            rows.append(
+                {
+                    "set_id": int(r[0]),
+                    "discount_pct": int(r[1]),
+                    "updated_ts": int(r[2]),
+                }
+            )
+    return rows
+
 def db_shard_override_set(
     state,
     *,
@@ -3622,6 +3682,22 @@ def db_init_wheel_tokens(state):
             updated_ts     INTEGER NOT NULL
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS gamba_daily_totals (
+            id         INTEGER PRIMARY KEY CHECK(id=1),
+            last_day   TEXT,
+            total      INTEGER NOT NULL DEFAULT 0,
+            updated_ts INTEGER NOT NULL
+        );
+        """)
+        conn.execute(
+            """
+            INSERT INTO gamba_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (int(time.time()),),
+        )
 
 def db_wheel_tokens_get(state, user_id: int) -> int:
     with sqlite3.connect(state.db_path) as conn:
@@ -3689,6 +3765,97 @@ def db_wheel_tokens_grant_daily(state, user_id: int, day_key: str) -> tuple[int,
         granted = (cur.rowcount > 0)
     return (db_wheel_tokens_get(state, user_id), granted)
 
+def db_gamba_daily_increment_total(
+    state, day_key: str, amount: int
+) -> tuple[int, bool]:
+    """Add ``amount`` to the running gamba chip total once per ``day_key``."""
+
+    now = int(time.time())
+    amt = max(0, int(amount))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO gamba_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (now,),
+        )
+        cur = conn.execute(
+            """
+            UPDATE gamba_daily_totals
+               SET total = total + ?,
+                   last_day = ?,
+                   updated_ts = ?
+             WHERE id = 1
+               AND (last_day IS NULL OR last_day <> ?);
+            """,
+            (amt, day_key, now, day_key),
+        )
+        did = cur.rowcount > 0 and amt > 0
+        total_row = conn.execute(
+            "SELECT total FROM gamba_daily_totals WHERE id=1",
+        ).fetchone()
+    total_val = int(total_row[0]) if total_row and total_row[0] is not None else 0
+    return total_val, did
+
+
+def db_gamba_daily_get_total(state) -> int:
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO gamba_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO NOTHING;
+            """,
+            (int(time.time()),),
+        )
+        row = conn.execute(
+            "SELECT total FROM gamba_daily_totals WHERE id=1"
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def db_gamba_daily_reset_total(state) -> int:
+    now = int(time.time())
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO gamba_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, 0, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                total = 0,
+                last_day = NULL,
+                updated_ts = excluded.updated_ts;
+            """,
+            (now,),
+        )
+        row = conn.execute(
+            "SELECT total FROM gamba_daily_totals WHERE id=1"
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def db_gamba_daily_set_total(state, total: int) -> int:
+    """Set the running total of gamba chips earnable per user."""
+
+    now = int(time.time())
+    amt = max(0, int(total))
+    with sqlite3.connect(state.db_path) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO gamba_daily_totals (id, last_day, total, updated_ts)
+            VALUES (1, NULL, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                total = excluded.total,
+                updated_ts = excluded.updated_ts;
+            """,
+            (amt, now),
+        )
+        row = conn.execute(
+            "SELECT total FROM gamba_daily_totals WHERE id=1"
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 def db_wheel_tokens_clear(state, user_id: int) -> int:
     """Remove any stored wheel tokens for ``user_id``. Returns tokens cleared."""
