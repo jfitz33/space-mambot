@@ -17,12 +17,16 @@ from core.db import (
     db_team_battleground_totals_get,
     db_team_battleground_totals_update,
     db_team_battleground_user_points_clear,
+    db_team_battleground_user_points_all,
     db_team_battleground_user_points_for_user,
+    db_team_battleground_user_points_overall,
     db_team_battleground_user_points_top,
     db_team_battleground_user_points_update,
     db_team_battleground_totals_clear,
     db_team_tracker_load,
     db_team_tracker_store,
+    db_stats_get,
+    db_stats_get_per_set,
 )
 from core.state import AppState
 from core.constants import (
@@ -602,6 +606,21 @@ class Teams(commands.Cog):
             lines.append(f"{idx}. {display} — territory claimed: **{rounded_points:,}**")
         return "\n".join(lines)
     
+    async def _resolve_display_name(
+        self,
+        guild: discord.Guild,
+        user_id: int,
+    ) -> tuple[str, discord.Member | None]:
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except Exception:
+                member = None
+        if member:
+            return member.display_name, member
+        return f"<@{user_id}>", None
+
     def _round_totals_for_display(self, totals: dict[str, int | float]) -> dict[str, int]:
         if not totals:
             return {}
@@ -849,6 +868,109 @@ class Teams(commands.Cog):
             "Battleground team territory is updated automatically per match; no split is required.",
             None,
         )
+
+    @app_commands.command(
+        name="team_leaderboard",
+        description="Show battleground territory leaderboard.",
+    )
+    @app_commands.describe(
+        set_id="Team set number to view (defaults to the active set)",
+        overall="Show overall leaderboard across all sets",
+    )
+    @app_commands.guilds(GUILD)
+    @app_commands.guild_only()
+    async def team_leaderboard(
+        self,
+        interaction: discord.Interaction,
+        set_id: app_commands.Range[int, 1, 9999] | None = None,
+        overall: bool = False,
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        active_set_id, _ = _get_active_team_set()
+
+        if overall:
+            if not active_set_id:
+                await interaction.response.send_message(
+                    "No active team set is configured to resolve teams.",
+                    ephemeral=True,
+                )
+                return
+            rows = db_team_battleground_user_points_overall(self.state, guild.id)
+            resolved_set_id = None
+            title = "Leaderboard of Territory Claimed Overall"
+        else:
+            resolved_set_id = int(set_id or active_set_id or 0)
+            if not resolved_set_id:
+                await interaction.response.send_message(
+                    "No active team set is configured.",
+                    ephemeral=True,
+                )
+                return
+            rows = db_team_battleground_user_points_all(self.state, guild.id, resolved_set_id)
+            title = f"Leaderboard of Territory Claimed for Set {resolved_set_id}"
+
+        points_by_user: dict[int, int] = {}
+        team_by_user: dict[int, str] = {}
+        for row in rows:
+            user_id = int(row.get("user_id", 0))
+            earned_points = int(row.get("earned_points", 0))
+            if earned_points <= 0 or not user_id:
+                continue
+            points_by_user[user_id] = points_by_user.get(user_id, 0) + earned_points
+            if not overall and user_id not in team_by_user:
+                team_by_user[user_id] = str(row.get("team") or "Unassigned")
+
+        entries = sorted(points_by_user.items(), key=lambda item: (-item[1], item[0]))
+
+        if not entries:
+            embed = discord.Embed(
+                title=title,
+                description="_No contributors yet._",
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+
+        lines: list[str] = []
+        max_entries = 25
+        active_names = set(_get_active_team_names()) if overall else set()
+        for idx, (user_id, points) in enumerate(entries[:max_entries], start=1):
+            display, member = await self._resolve_display_name(guild, user_id)
+            if overall:
+                team_name = self._resolve_member_team(member) if member else None
+            else:
+                team_name = team_by_user.get(user_id)
+            if overall:
+                team_label = team_name if team_name in active_names else "Unassigned"
+            else:
+                team_label = team_name or "Unassigned"
+
+            if overall:
+                stats = db_stats_get(self.state, user_id)
+            else:
+                stats_by_set = db_stats_get_per_set(self.state, user_id)
+                stats = stats_by_set.get(int(resolved_set_id), {"wins": 0, "losses": 0, "games": 0})
+
+            wins = int(stats.get("wins", 0) or 0)
+            losses = int(stats.get("losses", 0) or 0)
+            games = int(stats.get("games", wins + losses) or (wins + losses))
+            win_pct = (wins / games * 100.0) if games else 0.0
+
+            lines.append(
+                (
+                    f"{idx}. {display} — {team_label} | "
+                    f"W {wins:,} | L {losses:,} | Win% {win_pct:.1f}% | Territory {points:,}"
+                )
+            )
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+        )
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="team_award", description="(Admin) Award territory to a team member")
     @app_commands.describe(member="Member to award territory to", points="Amount of territory to award")

@@ -76,7 +76,7 @@ GAMBA_DEFAULT_SHARD_SET_ID = 1
 GAMBA_PRIZES = [
     {
         "key": "cards_super_rare_bundle",
-        "weight": 0.01,
+        "weight": 0.25,
         "prize_type": "cards",
         "rarity": "SUPER RARE",
         "amount": 2,
@@ -84,14 +84,14 @@ GAMBA_PRIZES = [
     },
     {
         "key": "card_ultra_rare",
-        "weight": 0.15,
+        "weight": 0.20,
         "prize_type": "card",
         "rarity": "ULTRA RARE",
         "description": ":rar_ultra: Ultra",
     },
     {
         "key": "cards_ultra_rare_bundle",
-        "weight": 0.10,
+        "weight": 0.075,
         "prize_type": "cards",
         "rarity": "ULTRA RARE",
         "amount": 2,
@@ -99,14 +99,14 @@ GAMBA_PRIZES = [
     },
     {
         "key": "card_secret_rare",
-        "weight": 0.05,
+        "weight": 0.025,
         "prize_type": "card",
         "rarity": "SECRET RARE",
         "description": ":rar_secret: Secret",
     },
     {
         "key": "shards_100_frostfire_sandstorm",
-        "weight": 0.49,
+        "weight": 0.25,
         "prize_type": "shards",
         "shard_items": [
             {"amount": 100, "shard_type": "frostfire"},
@@ -115,19 +115,21 @@ GAMBA_PRIZES = [
         "description": ":rar_frostfire:Shards x100 + :rar_sandstorm:Shards x100",
     },
     {
-        "key": "shards_500_frostfire",
-        "weight": 0.10,
+        "key": "shards_500_frostfire_sandstorm",
+        "weight": 0.05,
         "prize_type": "shards",
-        "amount": 500,
-        "shard_type": "frostfire",
-        "description": ":rar_frostfire:Shards x500",
+        "shard_items": [
+            {"amount": 500, "shard_type": "frostfire"},
+            {"amount": 500, "shard_type": "sandstorm"},
+        ],
+        "description": ":rar_frostfire:Shards x500 + :rar_sandstorm:Shards x500",
     },
     {
-        "key": "mambucks_10",
-        "weight": 0.10,
+        "key": "mambucks_20",
+        "weight": 0.15,
         "prize_type": "mambucks",
-        "amount": 10,
-        "description": "Mambucks x10",
+        "amount": 20,
+        "description": "Mambucks x20",
     },
 ]
 

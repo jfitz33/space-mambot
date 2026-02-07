@@ -185,9 +185,9 @@ async def on_member_join(member: discord.Member):
 
     message = (
         f"Hi {member.mention}! Welcome to the Nemesis Format server. Rules and info can be found in the appropriate channels. \n"
-        f"To begin, you'll need to join the Fire {fire_emoji or ':Smug:'} or Water {water_emoji or ':Mampray:'} teams, and get your starting card pool. "
-        "To help you decide you can look at the cards in each pack in ⁠card-pool and the banlist in ⁠banlist. "
-        "Use /start command to choose your team. Once you've done so, you'll be dm'd a set of packs by me!"
+        f"To get started, use /start to get awarded your set 1 starter deck, packs, and currency. We are now in set 2, so the team "
+        "you choose is not important at this point for the start command. Once you have done that, use /join_team to select your set 2 team."
+        "Check out the card-pool channel to see what is in each pack released so far to help you make your decision, and happy dueling!"
     )
 
     try:
@@ -223,7 +223,7 @@ async def on_ready():
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:
         gids = [GUILD_ID] if GUILD_ID else [g.id for g in bot.guilds]
-        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=True)
+        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=False)
         print("[rarity] cached emoji IDs:", getattr(bot.state, "rarity_emoji_ids", {}))
     except Exception as e:
         print("[rarity] setup skipped:", e)

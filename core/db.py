@@ -3505,6 +3505,28 @@ def db_team_battleground_user_points_all(
         ]
 
 
+def db_team_battleground_user_points_overall(
+    state,
+    guild_id: int,
+) -> list[dict[str, int]]:
+    import sqlite3
+
+    with sqlite3.connect(state.db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT user_id, SUM(earned_points) AS earned_points
+              FROM team_battleground_user_points
+             WHERE guild_id = ?
+             GROUP BY user_id
+             ORDER BY earned_points DESC, user_id ASC
+            """,
+            (str(guild_id),),
+        )
+        return [
+            {"user_id": int(row[0]), "earned_points": int(row[1] or 0)}
+            for row in cur.fetchall()
+        ]
+
 def db_team_battleground_user_points_for_user_all_sets(
     state,
     guild_id: int,
