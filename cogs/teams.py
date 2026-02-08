@@ -1587,6 +1587,19 @@ class Teams(commands.Cog):
             )
             return
 
+        join_message = f"{member.mention} joined the **{chosen}** team."
+        channel = interaction.channel
+        if channel:
+            try:
+                await channel.send(join_message)
+            except Exception:
+                pass
+        else:
+            try:
+                await interaction.followup.send(join_message, ephemeral=False)
+            except Exception:
+                pass
+
         await self._ensure_message_exists(interaction.guild)
         await self._grant_team_packs(interaction, member, chosen, pack_name)
 
