@@ -223,7 +223,7 @@ async def on_ready():
     # Cache rarity emoji IDs (auto-creates from /images/rarity_logos if missing)
     try:
         gids = [GUILD_ID] if GUILD_ID else [g.id for g in bot.guilds]
-        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=False)
+        await ensure_rarity_emojis(bot, guild_ids=gids, create_if_missing=True, verbose=True, refresh=True)
         print("[rarity] cached emoji IDs:", getattr(bot.state, "rarity_emoji_ids", {}))
     except Exception as e:
         print("[rarity] setup skipped:", e)
