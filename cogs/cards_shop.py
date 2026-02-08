@@ -410,7 +410,7 @@ class CardsShop(commands.Cog):
 
     async def ac_craft(self, interaction: discord.Interaction, current: str):
         # Suggest craftable prints from shop index (set-aware, as before)
-        return suggest_prints_with_set(self.state, current)
+        return suggest_prints_with_set(self.state, current, include_starters=True)
 
     async def ac_card_lookup(self, interaction: discord.Interaction, current: str):
         # Allow starter cards to be suggested for lookup commands
@@ -510,8 +510,6 @@ class CardsShop(commands.Cog):
         set_present = (c.get("set") or c.get("cardset") or "").strip()
         if not set_present:
             return await interaction.response.send_message("This printing is missing a set and can’t be crafted.", ephemeral=True)
-        if is_starter_set(set_present):
-            return await interaction.response.send_message("❌ Starter deck cards cannot be crafted.", ephemeral=True)
         if is_tin_promo_print(self.state, c, set_name=set_present):
             return await interaction.response.send_message("❌ Tin promo cards cannot be crafted.", ephemeral=True)
 

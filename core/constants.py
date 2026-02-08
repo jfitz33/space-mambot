@@ -133,7 +133,7 @@ GAMBA_PRIZES = [
     },
 ]
 
-# Starter deck card sets are excluded from crafting/fragmenting.
+# Starter deck card sets are excluded from fragmenting.
 STARTER_DECK_SET_NAMES = {
     "Starter Deck Water",
     "Starter Deck Fire",

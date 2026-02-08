@@ -9,7 +9,6 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 BOOP_LINES = [
-    "Hey that hurt! 😖",
     "Ive been booped! 😮",
     "Awww you little rascal you 😆",
     "Certified boop moment™",
@@ -19,27 +18,25 @@ BOOP_LINES = [
     "Howdy friend 🤠",
     "Do you mind? I was busy being a bot and stuff 😒",
     "55 BURGERS 55 FRIES 🍔🍟",
-    "Sorry not in the booping mood today 😔",
     "A boop a day keeps the... uhm... I forget what I was gonna say 😳",
     "Don't touch me I'm sterile!",
     "Ba da da da da da da. Tequila! 🍹",
     "You booped me! Norway!!!",
-    "Pssst, I'm secretly rooting for the fire team. Don't tell anyone!",
-    "Pssst, I'm secretly rooting for the water team. Don't tell anyone!",
     "I'm blue, da ba dee da ba di 🎵",
     "Fear is the mind-killer.",
     "“I witnessed the primordial fire triumph over the depths of the sea in a war long past… wait, what was I saying?",
     "I bet knightblader can’t guess what I’m gonna say next :)",
     "Wind team has nothing on the desert sands, if you ask me 😏",
-    "Earth team has nothing on the arid peaks, if you ask me 😏",
+    "Earth team has nothing on the windswept peaks, if you ask me 😏",
     "Oh no, a sandstorm! I wonder who’s duel caused that :o",
     "“I hope there’s an oasis somewhere close by, this battleground drying my scales out :(",
-    "HEY! Boop ME, not the cactus!",
+    "Remember, don't boop a cactus! I tried that once 🤕",
     "These desert sands… much like the sea beds of the past and the sands of.. Huh.",
     "Oh, I love that movie! Gone with the, uh, what was it again?",
-    "Skies are clear today folks soooooo that should lead to clear flying. If you could uhhhhhhh just put your tray tables up, and uhhhhhh sit in the full upright position... we'll be airborne soon. Thank you as always for flying Space Mambo",
+    "Skies are clear today folks soooooo that should lead to smooth flying. If you could uhhhhhhh just put your tray tables up, and uhhhhhh sit in the full upright position... we'll be airborne soon. Thank you as always for flying Space Mambo",
     "I tried to boop a tornado and it was mean :(",
-    "Still waiting for Dmitri’s topping list"
+    "Still waiting for Dmitri’s topping list",
+    "I swam through the desert as a bot with a name. It feels bad to be out of the rain 🎶"
 ]
 
 def boop_image_path() -> Path:

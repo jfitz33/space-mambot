@@ -20,7 +20,7 @@ to importing
 - **/card** `cardname` — View card details for a given cardname
 
 ## Crafting & Fragmenting
-- **/craft** `card` `amount` — Craft individual cards using shards; `amount` optional default is 1, max 3; starter cards and promos are un-craftable.
+- **/craft** `card` `amount` — Craft individual cards using shards; `amount` optional default is 1, max 3; promo cards are un-craftable.
 - **/fragment** `card` `amount` — Break down owned copies of cards into shards; `amount` optional default is 1, max 100.
 - **/fragment_bulk** `pack` `rarity` `keep` — Fragment owned cards from a pack at a specific rarity while keeping at least the chosen amount; `keep` optional default is 3; example: /fragment_bulk `Blazing Genesis` `Super Rare` `3` will fragment all your excess super rare cards owned from blazing genesis that you own more than 3 copies of
 

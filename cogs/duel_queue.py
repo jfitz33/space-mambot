@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.constants import CURRENT_ACTIVE_SET, TEAM_SETS
 from core.db import db_duelingbook_name_get, db_duelingbook_name_set
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -274,6 +275,20 @@ class DuelQueue(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        if CURRENT_ACTIVE_SET >= 2:
+            team_config = TEAM_SETS.get(CURRENT_ACTIVE_SET)
+            active_team_names = set(team_config.get("teams", {}).keys()) if team_config else set()
+            if active_team_names:
+                member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+                roles = member.roles if member else getattr(interaction.user, "roles", []) or []
+                if not any(role.name in active_team_names for role in roles):
+                    teams_list = ", ".join(sorted(active_team_names))
+                    await interaction.response.send_message(
+                        f"You need a Set {CURRENT_ACTIVE_SET} team role ({teams_list}) before joining the queue.",
+                        ephemeral=True,
+                    )
+                    return
 
         async with self.lock:
             if interaction.user.id in self.active_pairs:

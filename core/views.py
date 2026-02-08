@@ -661,8 +661,6 @@ class ConfirmBuyCardView(discord.ui.View):
             card_label,
             get_card_rarity,
             resolve_card_set,
-            is_starter_card,
-            is_starter_set,
         )
         from core.db import db_add_cards, db_shards_get, db_shards_add
         from core.constants import CRAFT_COST_BY_RARITY, set_id_for_pack
@@ -690,10 +688,6 @@ class ConfirmBuyCardView(discord.ui.View):
             await _finalize_interaction_message(interaction, "⚠️ Card printing not found.")
             return
         
-        if is_starter_card(card):
-            self._processing = False
-            await _finalize_interaction_message(interaction, "❌ Starter deck cards cannot be crafted.")
-            return
 
         set_name = resolve_card_set(self.state, card)
         if not set_name:
@@ -704,10 +698,6 @@ class ConfirmBuyCardView(discord.ui.View):
             )
             return
         
-        if is_starter_set(set_name):
-            self._processing = False
-            await _finalize_interaction_message(interaction, "❌ Starter deck cards cannot be crafted.")
-            return
         
         cost_each, sale_row = craft_cost_for_card(self.state, card, set_name)
         if cost_each <= 0:
