@@ -6,6 +6,7 @@ from datetime import datetime
 from core.db import db_sales_get_for_day, db_craft_set_discount_get
 from core.daily_rollover import rollover_day_key
 from core.tins import is_tin_promo_print
+from core.purchase_options import is_craft_blocked
 from core.constants import CRAFT_COST_BY_RARITY, set_id_for_pack
 
 
@@ -30,6 +31,8 @@ def craft_cost_for_card(state, card: dict, set_name: str, *, on_day: Optional[st
     # Apply set-wide craft discount (if configured).
     set_id = set_id_for_pack(set_name) if set_name else None
     if set_id is not None:
+        if is_craft_blocked(set_id):
+            return (0, None)
         set_discount_pct = db_craft_set_discount_get(state, set_id)
         if set_discount_pct and set_discount_pct > 0:
             base = int(math.ceil(base * (100 - int(set_discount_pct)) / 100.0))

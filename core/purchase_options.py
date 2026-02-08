@@ -30,10 +30,14 @@ PACK_SHARD_ENABLED_SETS = _parse_set_ids(os.getenv("PACK_SHARD_ENABLED_SETS", ""
 # Comma-separated set IDs (e.g., "2") that should not allow box purchases.
 BOX_BLOCKED_SETS = _parse_set_ids(os.getenv("BOX_BLOCKED_SETS", ""))
 
+# Comma-separated set IDs (e.g., "2") that should not allow crafting.
+CRAFT_BLOCKED_SETS = _parse_set_ids(os.getenv("CRAFT_BLOCKED_SETS", ""))
 
 def is_box_blocked(set_id: int | None) -> bool:
     return set_id is not None and int(set_id) in BOX_BLOCKED_SETS
 
+def is_craft_blocked(set_id: int | None) -> bool:
+    return set_id is not None and int(set_id) in CRAFT_BLOCKED_SETS
 
 @dataclass(frozen=True)
 class PaymentOption:

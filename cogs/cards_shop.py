@@ -37,6 +37,7 @@ from core.db import (
     db_shards_get
 )
 from core.pricing import craft_cost_for_card
+from core.purchase_options import is_craft_blocked
 from core.cards_shop import ensure_shop_index, card_label, _sig_for_resolution
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
@@ -510,6 +511,9 @@ class CardsShop(commands.Cog):
         set_present = (c.get("set") or c.get("cardset") or "").strip()
         if not set_present:
             return await interaction.response.send_message("This printing is missing a set and can’t be crafted.", ephemeral=True)
+        set_id = set_id_for_pack(set_present)
+        if is_craft_blocked(set_id):
+            return await interaction.response.send_message("❌ Crafting is temporarily disabled for this set.", ephemeral=True)
         if is_tin_promo_print(self.state, c, set_name=set_present):
             return await interaction.response.send_message("❌ Tin promo cards cannot be crafted.", ephemeral=True)
 
@@ -520,7 +524,7 @@ class CardsShop(commands.Cog):
         total = price_each * amount
         # Reuse your existing confirmation view (performs wallet debit + award)
         view = ConfirmBuyCardView(self.state, requester=interaction.user, print_key=card, amount=amount, total_cost=total)
-        shard_pretty = shard_set_name(set_id_for_pack(set_present) or 1)
+        shard_pretty = shard_set_name(set_id or 1)
         return await interaction.response.send_message(
             f"Are you sure you want to **craft** **{amount}× {card_label_with_badge(self.state, c)}** for **{total}** {shard_pretty}?",
             view=view,
@@ -777,13 +781,6 @@ class CardsShop(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))
-
-    for guild in (GUILD, None):
-        bot.tree.remove_command(
-            "craft",
-            type=discord.AppCommandType.chat_input,
-            guild=guild,
-        )
 
     if not is_shop_gamba_enabled():
         for cmd_name in ("craft", "fragment", "fragment_bulk"):

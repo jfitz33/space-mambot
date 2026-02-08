@@ -34,6 +34,7 @@ from core.constants import (
     PACKS_IN_BOX,
     BOX_COST,
     BOX_SHARD_COST,
+    BUNDLE_BOX_SHARD_COST,
     BUNDLES,
     set_id_for_pack,
 )
@@ -665,6 +666,7 @@ class ConfirmBuyCardView(discord.ui.View):
         from core.db import db_add_cards, db_shards_get, db_shards_add
         from core.constants import CRAFT_COST_BY_RARITY, set_id_for_pack
         from core.currency import shard_set_name
+        from core.purchase_options import is_craft_blocked
 
         if interaction.user.id != self.requester.id:
             return await interaction.response.send_message("This confirmation isn’t for you.", ephemeral=True)
@@ -699,6 +701,15 @@ class ConfirmBuyCardView(discord.ui.View):
             return
         
         
+        set_id = set_id_for_pack(set_name)
+        if is_craft_blocked(set_id):
+            self._processing = False
+            await _finalize_interaction_message(
+                interaction,
+                "❌ Crafting is temporarily disabled for this set.",
+            )
+            return
+
         cost_each, sale_row = craft_cost_for_card(self.state, card, set_name)
         if cost_each <= 0:
             self._processing = False
@@ -707,7 +718,7 @@ class ConfirmBuyCardView(discord.ui.View):
 
         total_cost = cost_each * self.amount
 
-        set_id = set_id_for_pack(set_name) or 1  # default Set 1
+        set_id = set_id or 1  # default Set 1
         have = db_shards_get(self.state, self.requester.id, set_id)
         if have < total_cost:
             self._processing = False
@@ -1256,7 +1267,9 @@ class PacksSelectView(discord.ui.View):
             
             set_id = bundle_info.get("set_id")
             bundle_cost = int(bundle_info.get("cost", 0))
-            bundle_shard_cost = int(bundle_info.get("shard_cost", bundle_cost))
+            bundle_shard_cost = int(
+                bundle_info.get("shard_cost") or BUNDLE_BOX_SHARD_COST
+            )
             payment_opts = payment_options_for_set(
                 set_id,
                 mambuck_cost=bundle_cost,
