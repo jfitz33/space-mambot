@@ -26,7 +26,20 @@ BOOP_LINES = [
     "You booped me! Norway!!!",
     "Pssst, I'm secretly rooting for the fire team. Don't tell anyone!",
     "Pssst, I'm secretly rooting for the water team. Don't tell anyone!",
-    "I'm blue, da ba dee da ba di 🎵"
+    "I'm blue, da ba dee da ba di 🎵",
+    "Fear is the mind-killer.",
+    "“I witnessed the primordial fire triumph over the depths of the sea in a war long past… wait, what was I saying?",
+    "I bet knightblader can’t guess what I’m gonna say next :)",
+    "Wind team has nothing on the desert sands, if you ask me 😏",
+    "Earth team has nothing on the arid peaks, if you ask me 😏",
+    "Oh no, a sandstorm! I wonder who’s duel caused that :o",
+    "“I hope there’s an oasis somewhere close by, this battleground drying my scales out :(",
+    "HEY! Boop ME, not the cactus!",
+    "These desert sands… much like the sea beds of the past and the sands of.. Huh.",
+    "Oh, I love that movie! Gone with the, uh, what was it again?",
+    "Skies are clear today folks soooooo that should lead to clear flying. If you could uhhhhhhh just put your tray tables up, and uhhhhhh sit in the full upright position... we'll be airborne soon. Thank you as always for flying Space Mambo",
+    "I tried to boop a tornado and it was mean :(",
+    "Still waiting for Dmitri’s topping list"
 ]
 
 def boop_image_path() -> Path:
