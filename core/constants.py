@@ -147,13 +147,13 @@ PACKS_BY_SET = {
 }
 
 BUNDLES = (
-    #{
-    #    "id": "frostfire",
-    #    "name": FROSTFIRE_BUNDLE_NAME,
-    #    "cost": BUNDLE_BOX_COST,
-    #    "shard_cost": BUNDLE_BOX_SHARD_COST,
-    #    "set_id": 1,
-    #},
+    {
+        "id": "frostfire",
+        "name": FROSTFIRE_BUNDLE_NAME,
+        "cost": BUNDLE_BOX_COST,
+        "shard_cost": BUNDLE_BOX_SHARD_COST,
+        "set_id": 1,
+    },
     #{
     #    "id": "sandstorm",
     #    "name": SANDSTORM_BUNDLE_NAME,
