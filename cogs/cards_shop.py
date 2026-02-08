@@ -778,6 +778,13 @@ class CardsShop(commands.Cog):
 async def setup(bot: commands.Bot):
     await bot.add_cog(CardsShop(bot))
 
+    for guild in (GUILD, None):
+        bot.tree.remove_command(
+            "craft",
+            type=discord.AppCommandType.chat_input,
+            guild=guild,
+        )
+
     if not is_shop_gamba_enabled():
         for cmd_name in ("craft", "fragment", "fragment_bulk"):
             for guild in (GUILD, None):
