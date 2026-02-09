@@ -74,8 +74,12 @@ class Stats(commands.Cog):
 
         queue = interaction.client.get_cog("DuelQueue")
         is_paired = False
+        used_claim = False
         try:
-            if queue and hasattr(queue, "is_active_pair"):
+            if queue and hasattr(queue, "claim_pairing"):
+                used_claim = True
+                is_paired = await queue.claim_pairing(caller.id, opponent.id)
+            elif queue and hasattr(queue, "is_active_pair"):
                 is_paired = await queue.is_active_pair(caller.id, opponent.id)
         except Exception as e:
             print("[stats] failed to verify duel pairing:", e)
@@ -94,12 +98,24 @@ class Stats(commands.Cog):
             winner, loser = opponent, caller
 
         # Atomically update stats + log match
-        loser_after, winner_after = db_stats_record_loss(
-            self.state,
-            loser_id=loser.id,
-            winner_id=winner.id,
-            set_id=CURRENT_ACTIVE_SET,
-        )
+        try:
+            loser_after, winner_after = db_stats_record_loss(
+                self.state,
+                loser_id=loser.id,
+                winner_id=winner.id,
+                set_id=CURRENT_ACTIVE_SET,
+            )
+        except Exception as exc:
+            print("[stats] failed to record duel result:", exc)
+            if used_claim and queue and hasattr(queue, "restore_pairing"):
+                try:
+                    await queue.restore_pairing(caller.id, opponent.id)
+                except Exception as restore_exc:
+                    print("[stats] failed to restore duel pairing:", restore_exc)
+            return await interaction.followup.send(
+                "Unable to record the match result right now. Please try again shortly.",
+                ephemeral=True,
+            )
 
         moved_points = 0
         team_message = None

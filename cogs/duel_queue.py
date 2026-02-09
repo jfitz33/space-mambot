@@ -343,6 +343,25 @@ class DuelQueue(commands.Cog):
                 changed = True
         return changed
     
+    async def claim_pairing(self, user_a_id: int, user_b_id: int) -> bool:
+        async with self.lock:
+            if (
+                self.active_pairs.get(user_a_id) != user_b_id
+                or self.active_pairs.get(user_b_id) != user_a_id
+            ):
+                return False
+            self.active_pairs.pop(user_a_id, None)
+            self.active_pairs.pop(user_b_id, None)
+            return True
+
+    async def restore_pairing(self, user_a_id: int, user_b_id: int) -> bool:
+        async with self.lock:
+            if user_a_id in self.active_pairs or user_b_id in self.active_pairs:
+                return False
+            self.active_pairs[user_a_id] = user_b_id
+            self.active_pairs[user_b_id] = user_a_id
+            return True
+
     async def is_active_pair(self, user_a_id: int, user_b_id: int) -> bool:
         async with self.lock:
             return (
