@@ -5,7 +5,7 @@ from typing import Optional
 import discord
 
 from core.db import db_add_cards
-from core.packs import open_pack_from_csv
+from core.packs import open_pack_from_csv, open_mini_pack_from_csv
 from core.views import _pack_embed_for_cards
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,38 @@ class PackRewardHelper:
             f"Opened {qty}× {pack_name} pack(s) and sent results via DM."
             if dm_sent
             else f"Opened {qty}× {pack_name} pack(s); could not DM results."
+        )
+        return status
+
+    async def grant_mini_pack(
+        self,
+        user_id: int,
+        pack_names: list[str],
+        quantity: int = 1,
+        display_name: str | None = None,
+    ) -> str:
+        """Grant a mini pack (4 commons + 1 rare) and DM results."""
+        if not pack_names:
+            raise RuntimeError("Mini pack reward payload missing 'pack' name.")
+
+        qty = max(1, int(quantity or 1))
+        available_packs = [name for name in pack_names if name in (self.state.packs_index or {})]
+        if not available_packs:
+            raise RuntimeError("Unknown pack(s) for mini pack reward.")
+
+        per_pack: list[list[dict]] = []
+        for _ in range(qty):
+            per_pack.append(open_mini_pack_from_csv(self.state, available_packs))
+
+        flat = [card for pack in per_pack for card in pack]
+        db_add_cards(self.state, user_id, flat, available_packs[0])
+
+        pack_label = display_name or available_packs[0]
+        dm_sent = await self._send_results(user_id, pack_label, per_pack)
+        status = (
+            f"Opened {qty}× {pack_label} and sent results via DM."
+            if dm_sent
+            else f"Opened {qty}× {pack_label}; could not DM results."
         )
         return status
 

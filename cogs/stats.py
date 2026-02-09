@@ -1,4 +1,4 @@
-import os, discord
+import os, random, discord
 import asyncio
 from typing import Optional
 from discord.ext import commands
@@ -15,15 +15,24 @@ from core.constants import (
     CURRENT_ACTIVE_SET,
     DUEL_QUEUE_MAMBUCKS_LOSS,
     DUEL_QUEUE_MAMBUCKS_WIN,
+    pack_names_for_set,
     TEAM_SETS,
     TEAM_ROLE_NAMES,
 )
 from core.currency import mambucks_label
+from core.currency import shard_set_name
 from core.wallet_api import credit_mambucks
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 DUEL_QUEUE_MAMBUCKS_ENABLED = os.getenv("DUEL_QUEUE_MAMBUCKS_ENABLED", "0") == "1"
+DUEL_QUEUE_MINI_PACK_REWARD = os.getenv("DUEL_QUEUE_MINI_PACK_REWARD", "0") == "1"
+
+def _mini_pack_name(set_id: int) -> str:
+    shard_name = shard_set_name(set_id)
+    suffix = " Shards"
+    base = shard_name[:-len(suffix)] if shard_name.endswith(suffix) else shard_name
+    return f"{base} Mini Pack"
 
 def _win_pct(wins: int, games: int) -> float:
     return (wins / games * 100.0) if games > 0 else 0.0
@@ -141,6 +150,28 @@ class Stats(commands.Cog):
                 reward_lines.append(
                     f"{loser.display_name} earned {mambucks_label(loss_reward)}."
                 )
+
+        if DUEL_QUEUE_MINI_PACK_REWARD:
+            pack_candidates = pack_names_for_set(self.state, CURRENT_ACTIVE_SET)
+            if not pack_candidates:
+                pack_candidates = sorted((self.state.packs_index or {}).keys())
+            if pack_candidates and hasattr(self.state, "shop") and hasattr(self.state.shop, "grant_mini_pack"):
+                pack_label = _mini_pack_name(CURRENT_ACTIVE_SET)
+                for user in (winner, loser):
+                    try:
+                        await self.state.shop.grant_mini_pack(
+                            user.id,
+                            pack_candidates,
+                            1,
+                            display_name=pack_label,
+                        )
+                    except Exception as exc:
+                        print("[stats] failed to grant mini pack reward:", exc)
+                reward_lines.append(
+                    f"Mini pack rewards were sent via DM for **{pack_label}**."
+                )
+            else:
+                print("[stats] mini pack reward skipped: no eligible packs or reward helper missing.")
 
         embed = discord.Embed(
             title="Match Result Recorded",

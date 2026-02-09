@@ -170,6 +170,32 @@ def open_pack_from_csv(state: AppState, pack_name: str, amount: int = 1) -> list
         pulls.append(_weighted_pick(pool))
     return pulls
 
+def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> list[dict]:
+    """Open a mini pack: 4 commons and 1 rare (with fallback rarities if needed)."""
+    if isinstance(pack_names, str):
+        pack_names = [pack_names]
+
+    by_rarity = defaultdict(list)
+    for pack_name in pack_names:
+        if pack_name not in state.packs_index:
+            continue
+        for rarity, cards in state.packs_index[pack_name]["by_rarity"].items():
+            by_rarity[rarity].extend(cards)
+
+    if not by_rarity:
+        raise ValueError("No eligible packs found for mini pack reward.")
+
+    pulls: list[dict] = []
+
+    common_pool = by_rarity.get("common") or _fallback_pool(by_rarity, ["uncommon", "rare", "super", "ultra", "secret"])
+    for _ in range(4):
+        pulls.append(_weighted_pick(common_pool))
+
+    rare_pool = by_rarity.get("rare") or _fallback_pool(by_rarity, ["super", "ultra", "secret", "uncommon", "common"])
+    pulls.append(_weighted_pick(rare_pool))
+
+    return pulls
+
 def resolve_card_in_pack(state: AppState, card_set: str, card_name: str, card_code: str="", card_id: str="") -> dict:
     if not state.packs_index or card_set not in state.packs_index:
         raise ValueError(f"Set '{card_set}' not found.")
