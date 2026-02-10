@@ -199,6 +199,68 @@ def db_duelingbook_name_get(state: AppState, user_id: int) -> str | None:
         ).fetchone()
     return row[0] if row else None
 
+def _apply_wishlist_reduction_with_conn(
+    conn: sqlite3.Connection,
+    user_id_s: str,
+    name: str,
+    rarity: str,
+    cset: str,
+    code: str | None,
+    cid: str | None,
+    qty: int,
+) -> None:
+    rarity_norm = normalize_rarity(rarity)
+    set_norm = normalize_set_name(cset)
+    code_norm = blank_to_none(code)
+    cid_norm = blank_to_none(cid)
+
+    rows = conn.execute(
+        """
+        SELECT rowid, card_rarity, card_set, card_code, card_id, desired_qty
+          FROM user_wishlist
+         WHERE user_id=?
+           AND LOWER(TRIM(card_name)) = LOWER(TRIM(?));
+        """,
+        (user_id_s, name),
+    ).fetchall()
+
+    match = None
+    for row in rows:
+        row_code = blank_to_none(row[3])
+        row_cid = blank_to_none(row[4])
+        if row_code != code_norm or row_cid != cid_norm:
+            continue
+        if normalize_rarity(row[1]) != rarity_norm:
+            continue
+        if normalize_set_name(row[2]) != set_norm:
+            continue
+        match = row
+        break
+
+    if not match:
+        return
+    rowid = match[0]
+    current = int(match[5] or 0)
+    if current <= 0:
+        return
+    remaining = current - min(current, qty)
+    if remaining > 0:
+        conn.execute(
+            """
+            UPDATE user_wishlist SET desired_qty=?
+             WHERE rowid=?;
+            """,
+            (remaining, rowid),
+        )
+    else:
+        conn.execute(
+            """
+            DELETE FROM user_wishlist
+             WHERE rowid=?;
+            """,
+            (rowid,),
+        )
+
 def db_add_cards(
     state,
     user_id: int,
@@ -211,60 +273,6 @@ def db_add_cards(
     If set is missing, use default_set.
     Returns total quantity added.
     """
-    def _apply_wishlist_reduction(
-        conn: sqlite3.Connection,
-        user_id_s: str,
-        name: str,
-        rarity: str,
-        cset: str,
-        code: str | None,
-        cid: str | None,
-        qty: int,
-    ) -> None:
-        row = conn.execute(
-            """
-            SELECT desired_qty FROM user_wishlist
-             WHERE user_id=?
-               AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
-               AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
-               AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
-               AND (card_code IS ? OR card_code=?)
-               AND (card_id IS ? OR card_id=?);
-            """,
-            (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
-        ).fetchone()
-        if not row:
-            return
-        current = int(row[0] or 0)
-        if current <= 0:
-            return
-        remaining = current - min(current, qty)
-        if remaining > 0:
-            conn.execute(
-                """
-                UPDATE user_wishlist SET desired_qty=?
-                 WHERE user_id=?
-                   AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
-                   AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
-                   AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
-                   AND (card_code IS ? OR card_code=?)
-                   AND (card_id IS ? OR card_id=?);
-                """,
-                (remaining, user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
-            )
-        else:
-            conn.execute(
-                """
-                DELETE FROM user_wishlist
-                 WHERE user_id=?
-                   AND LOWER(TRIM(card_name))   = LOWER(TRIM(?))
-                   AND LOWER(TRIM(card_rarity)) = LOWER(TRIM(?))
-                   AND LOWER(TRIM(card_set))    = LOWER(TRIM(?))
-                   AND (card_code IS ? OR card_code=?)
-                   AND (card_id IS ? OR card_id=?);
-                """,
-                (user_id_s, name, rarity, cset, code or None, code or None, cid or None, cid or None),
-            )
 
     total_added = 0
     user_id_s = str(user_id)
@@ -303,7 +311,7 @@ def db_add_cards(
                 (user_id_s, name, rarity, cset, code, cid, qty),
             )
             total_added += qty
-            _apply_wishlist_reduction(conn, user_id_s, name, rarity, cset, code, cid, qty)
+            _apply_wishlist_reduction_with_conn(conn, user_id_s, name, rarity, cset, code, cid, qty)
     return total_added
 
 def db_get_collection(state: AppState, user_id: int):
@@ -1344,6 +1352,16 @@ def db_apply_trade_atomic(state, t: dict) -> tuple[bool, str]:
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (B, it["name"], it["rarity"], it["card_set"],
                           it.get("card_code") or None, it.get("card_id") or None, int(it["qty"])))
+                _apply_wishlist_reduction_with_conn(
+                    conn,
+                    B,
+                    it["name"],
+                    it["rarity"],
+                    it["card_set"],
+                    it.get("card_code"),
+                    it.get("card_id"),
+                    int(it["qty"]),
+                )
 
             # 2) Remove B's card items; credit to A
             for it in get:
@@ -1385,6 +1403,16 @@ def db_apply_trade_atomic(state, t: dict) -> tuple[bool, str]:
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (A, it["name"], it["rarity"], it["card_set"],
                           it.get("card_code") or None, it.get("card_id") or None, int(it["qty"])))
+                _apply_wishlist_reduction_with_conn(
+                    conn,
+                    A,
+                    it["name"],
+                    it["rarity"],
+                    it["card_set"],
+                    it.get("card_code"),
+                    it.get("card_id"),
+                    int(it["qty"]),
+                )
 
         # shards (non-card) are simpler and don’t need to be in the same SQL txn as cards
         # but you can also move them inside the same `with conn, conn:` if you prefer strict atomicity
