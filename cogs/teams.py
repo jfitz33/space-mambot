@@ -786,7 +786,14 @@ class Teams(commands.Cog):
             totals.get(transfer_loser_team, {}).get("duel_points", TEAM_BATTLEGROUND_START_POINTS)
         )
 
-        skill_multiplier = 1.0 if same_team else self._skill_multiplier(winner_stats, loser_stats)
+        if same_team:
+            skill_multiplier = 1.0
+        else:
+            winner_stats_by_set = db_stats_get_per_set(self.state, winner.id)
+            loser_stats_by_set = db_stats_get_per_set(self.state, loser.id)
+            winner_set_stats = winner_stats_by_set.get(int(set_id), winner_stats)
+            loser_set_stats = loser_stats_by_set.get(int(set_id), loser_stats)
+            skill_multiplier = self._skill_multiplier(winner_set_stats, loser_set_stats)
         activity_multiplier = self._activity_multiplier(guild, int(set_id), winner_team, transfer_loser_team)
         segment_multiplier = self._segment_advantage_multiplier(winner_points, loser_points)
         transfer_points = self._calculate_transfer_points(
