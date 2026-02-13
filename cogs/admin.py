@@ -85,6 +85,12 @@ def _available_set_choices() -> List[app_commands.Choice[int]]:
         out.append(app_commands.Choice(name=f"1 — {shard_set_name(1)}", value=1))
     return out
 
+def _mini_pack_name(set_id: int) -> str:
+    shard_name = shard_set_name(set_id)
+    suffix = " Shards"
+    base = shard_name[:-len(suffix)] if shard_name.endswith(suffix) else shard_name
+    return f"{base} Mini Pack"
+
 def _chunk_lines_for_discord(lines: List[str], *, limit: int = 1900) -> List[str]:
     chunks: List[str] = []
     current = ""
@@ -1375,12 +1381,14 @@ class Admin(commands.Cog):
     @app_commands.describe(
         loser="Player who lost the match",
         winner="Player who won the match",
+        grant_mini_pack="If true, both players also receive a mini pack reward via DM",
     )
     async def admin_report_loss(
         self,
         interaction: discord.Interaction,
         loser: discord.Member,
         winner: discord.Member,
+        grant_mini_pack: bool = False,
     ) -> None:
         if loser.id == winner.id:
             await interaction.response.send_message("You must choose two different players.", ephemeral=True)
@@ -1432,20 +1440,45 @@ class Admin(commands.Cog):
         except Exception as e:
             print("[admin] quest tick error during admin_report_loss:", e)
 
+        reward_lines: list[str] = []
+        if grant_mini_pack:
+            pack_candidates = pack_names_for_set(self.state, CURRENT_ACTIVE_SET)
+            if not pack_candidates:
+                pack_candidates = sorted((self.state.packs_index or {}).keys())
+            if pack_candidates and hasattr(self.state, "shop") and hasattr(self.state.shop, "grant_mini_pack"):
+                pack_label = _mini_pack_name(CURRENT_ACTIVE_SET)
+                for user in (winner, loser):
+                    try:
+                        await self.state.shop.grant_mini_pack(
+                            user.id,
+                            pack_candidates,
+                            1,
+                            display_name=pack_label,
+                        )
+                    except Exception as exc:
+                        print("[admin] failed to grant mini pack reward:", exc)
+                reward_lines.append(
+                    f"Mini pack rewards were sent via DM for **{pack_label}**."
+                )
+            else:
+                print("[admin] mini pack reward skipped: no eligible packs or reward helper missing.")
+
         embed = discord.Embed(
             title="Admin Match Recorded",
             description=(
                 f"**{loser.display_name}** lost to **{winner.display_name}**.\n"
                 f"{team_message}"
+                f"{'\n' + '\n'.join(reward_lines) if reward_lines else ''}"
             ),
             color=0xCC3333,
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
         if interaction.channel:
+            extra = "\n" + "\n".join(reward_lines) if reward_lines else ""
             await interaction.channel.send(
                 f"📝 Admin recorded a result: **{loser.display_name}** lost to **{winner.display_name}**. "
-                f"{team_message}"
+                f"{team_message}{extra}"
             )
 
         # Remove the user(s) from the queue if there is an actively paired match

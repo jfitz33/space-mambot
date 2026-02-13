@@ -35,7 +35,8 @@ from core.db import (
     db_stats_revert_result,
 )
 from core.state import AppState
-from core.constants import CURRENT_ACTIVE_SET
+from core.constants import CURRENT_ACTIVE_SET, pack_names_for_set
+from core.currency import shard_set_name
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
@@ -57,6 +58,12 @@ DROP_DISCOVERY_TOURNAMENT_STATES = (
 )
 DECKLIST_ELIGIBLE_TOURNAMENT_STATES = ACTIVE_TOURNAMENT_STATES | {"complete"}
 TOURNAMENT_PARTICIPANT_ROLE_NAME = "Tournament_Participant"
+
+def _mini_pack_name(set_id: int) -> str:
+    shard_name = shard_set_name(set_id)
+    suffix = " Shards"
+    base = shard_name[:-len(suffix)] if shard_name.endswith(suffix) else shard_name
+    return f"{base} Mini Pack"
 
 def _parse_challonge_timestamp(value: object) -> float:
     """Return a comparable timestamp value from Challonge API fields."""
@@ -814,6 +821,7 @@ class Tournaments(commands.Cog):
         reporter: discord.abc.User | None,
         tournament_name: str | None = None,
         announce_publicly: bool = True,
+        grant_mini_pack_rewards: bool = False,
     ) -> bool:
         try:
             await self._challonge_request(
@@ -884,6 +892,26 @@ class Tournaments(commands.Cog):
         ).strip()
         if team_message:
             result_message = f"{result_message}\n{team_message}"
+
+        if grant_mini_pack_rewards:
+            pack_candidates = pack_names_for_set(self.state, CURRENT_ACTIVE_SET)
+            if not pack_candidates:
+                pack_candidates = sorted((self.state.packs_index or {}).keys())
+            if pack_candidates and hasattr(self.state, "shop") and hasattr(self.state.shop, "grant_mini_pack"):
+                pack_label = _mini_pack_name(CURRENT_ACTIVE_SET)
+                for user in (winner, loser):
+                    try:
+                        await self.state.shop.grant_mini_pack(
+                            user.id,
+                            pack_candidates,
+                            1,
+                            display_name=pack_label,
+                        )
+                    except Exception:
+                        self.logger.exception("[tournaments] failed to grant mini pack reward")
+                result_message = f"{result_message}\nMini pack rewards were sent via DM for **{pack_label}**."
+            else:
+                self.logger.warning("[tournaments] mini pack reward skipped: no eligible packs or reward helper missing")
 
         await interaction.followup.send(
             result_message,
@@ -1358,6 +1386,7 @@ class Tournaments(commands.Cog):
             reporter=reporter,
             tournament_name=tournament_name,
             announce_publicly=True,
+            grant_mini_pack_rewards=True,
         )
 
         if not finalized:
