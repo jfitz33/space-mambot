@@ -48,7 +48,7 @@ class PackRewardHelper:
         quantity: int = 1,
         display_name: str | None = None,
     ) -> str:
-        """Grant a mini pack (4 commons + 1 rare) and DM results."""
+        """Grant a mini pack (1 mini-exclusive + 4 commons + 1 rare/super) and DM results."""
         if not pack_names:
             raise RuntimeError("Mini pack reward payload missing 'pack' name.")
 
