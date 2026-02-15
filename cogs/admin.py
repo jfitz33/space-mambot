@@ -1002,7 +1002,7 @@ class Admin(commands.Cog):
                 )
                 return
 
-        qualifying: list[tuple[discord.Member, int, int]] = []
+        qualifying: list[tuple[discord.Member, int, int, int]] = []
         for member in members.values():
             if selected_set_names:
                 total_secret = db_collection_total_by_rarity_and_sets(
@@ -1011,11 +1011,15 @@ class Admin(commands.Cog):
                 total_ultra = db_collection_total_by_rarity_and_sets(
                     self.state, member.id, "ultra", selected_set_names
                 )
+                total_super = db_collection_total_by_rarity_and_sets(
+                    self.state, member.id, "super", selected_set_names
+                )
             else:
                 total_secret = db_collection_total_by_rarity(self.state, member.id, "secret")
                 total_ultra = db_collection_total_by_rarity(self.state, member.id, "ultra")
+                total_super = db_collection_total_by_rarity(self.state, member.id, "super")
             if total_secret <= max_secrets and total_ultra <= max_ultras:
-                qualifying.append((member, total_secret, total_ultra))
+                qualifying.append((member, total_secret, total_ultra, total_super))
 
         if not qualifying:
             set_suffix = ""
@@ -1030,7 +1034,7 @@ class Admin(commands.Cog):
             await interaction.followup.send(msg, ephemeral=True)
             return
 
-        qualifying.sort(key=lambda pair: (pair[1], pair[2], pair[0].display_name.lower()))
+        qualifying.sort(key=lambda pair: (pair[1], pair[2], pair[3], pair[0].display_name.lower()))
 
         set_suffix = ""
         if selected_set_id is not None:
@@ -1042,11 +1046,12 @@ class Admin(commands.Cog):
                 f"≤ **{max_ultras}** ultra rare(s){set_suffix}:"
             ),
         ]
-        for member, total_secret, total_ultra in qualifying:
+        for member, total_secret, total_ultra, total_super in qualifying:
             lines.append(
                 (
                     f"• {member.mention} — **{total_secret}** secret rare(s), "
-                    f"**{total_ultra}** ultra rare(s) owned"
+                    f"**{total_ultra}** ultra rare(s), "
+                    f"**{total_super}** super rare(s) owned"
                 )
             )
 
@@ -1645,11 +1650,12 @@ class Admin(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
-        user="Player to adjust (ignored if all_users=true)",
+        user="Player to adjust (ignored if role/all_users is provided)",
         currency="Choose Mambucks or Shards",
         amount="Amount to add (>=1)",
         shard_set="Required if currency=shards",
         all_users="Add the currency to all starter-role members (Fire/Water)",
+        role="Give currency to all members that have this role",
     )
     @app_commands.autocomplete(shard_set=ac_shard_set)
     async def wallet_add(
@@ -1660,8 +1666,41 @@ class Admin(commands.Cog):
         user: Optional[discord.Member] = None,  
         shard_set: Optional[int] = None,
         all_users: bool = False,
+        role: Optional[discord.Role] = None,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if role is not None:
+            role_members = list(role.members)
+            if not role_members:
+                return await interaction.followup.send(
+                    f"❌ No members found in role {role.mention}.",
+                    ephemeral=True,
+                )
+
+            if currency == "mambucks":
+                for member in role_members:
+                    db_wallet_add(self.state, member.id, d_mambucks=amount)
+
+                return await interaction.followup.send(
+                    f"✅ Added **{amount} Mambucks** to **{len(role_members)}** members in {role.mention}.",
+                    ephemeral=True,
+                )
+
+            if shard_set is None:
+                return await interaction.followup.send(
+                    "❌ Please choose a **shard_set** for shards.",
+                    ephemeral=True,
+                )
+
+            for member in role_members:
+                db_shards_add(self.state, member.id, shard_set, amount)
+
+            title = shard_set_name(shard_set)
+            return await interaction.followup.send(
+                f"✅ Added **{amount} {title}** to **{len(role_members)}** members in {role.mention}.",
+                ephemeral=True,
+            )
 
         if all_users:
             guild = interaction.guild
@@ -1751,21 +1790,88 @@ class Admin(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
-        user="Player to adjust",
+        user="Player to adjust (ignored if role is provided)",
         currency="Choose Mambucks or Shards",
         amount="Amount to remove (>=1)",
         shard_set="Required if currency=shards",
+        role="Remove currency from all members that have this role",
     )
     @app_commands.autocomplete(shard_set=ac_shard_set)
     async def wallet_remove(
         self,
         interaction: discord.Interaction,
-        user: discord.Member,
+        user: Optional[discord.Member],
         currency: Currency,
         amount: app_commands.Range[int, 1, None],
         shard_set: Optional[int] = None,
+        role: Optional[discord.Role] = None,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if role is not None:
+            role_members = list(role.members)
+            if not role_members:
+                return await interaction.followup.send(
+                    f"❌ No members found in role {role.mention}.",
+                    ephemeral=True,
+                )
+
+            if currency == "mambucks":
+                impacted = 0
+                total_removed = 0
+                for member in role_members:
+                    before = db_wallet_get(self.state, member.id)
+                    old_m = int(before["mambucks"])
+                    new_m = max(0, old_m - int(amount))
+                    if new_m != old_m:
+                        impacted += 1
+                        total_removed += (old_m - new_m)
+                    db_wallet_set(self.state, member.id, mambucks=new_m)
+
+                return await interaction.followup.send(
+                    (
+                        f"🧹 Removed up to **{amount} Mambucks** from **{len(role_members)}** members in {role.mention}.\n"
+                        f"Members changed: **{impacted}** | Total removed: **{total_removed}**"
+                    ),
+                    ephemeral=True,
+                )
+
+            if shard_set is None:
+                return await interaction.followup.send(
+                    "❌ Please choose a **shard_set** for shards.",
+                    ephemeral=True,
+                )
+
+            impacted = 0
+            total_removed = 0
+            for member in role_members:
+                before = db_shards_get(self.state, member.id, shard_set)
+                delta = -min(int(amount), int(before))
+                if delta != 0:
+                    impacted += 1
+                    total_removed += abs(delta)
+                    db_shards_add(self.state, member.id, shard_set, delta)
+
+            if total_removed == 0:
+                return await interaction.followup.send(
+                    f"ℹ️ Nothing to remove for members in {role.mention}.",
+                    ephemeral=True,
+                )
+
+            title = shard_set_name(shard_set)
+            return await interaction.followup.send(
+                (
+                    f"🧹 Removed up to **{amount} {title}** from **{len(role_members)}** members in {role.mention}.\n"
+                    f"Members changed: **{impacted}** | Total removed: **{total_removed}**"
+                ),
+                ephemeral=True,
+            )
+
+        if user is None:
+            return await interaction.followup.send(
+                "❌ Please select a **user** or provide a **role**.",
+                ephemeral=True,
+            )
 
         if currency == "mambucks":
             before = db_wallet_get(self.state, user.id)
