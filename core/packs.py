@@ -180,7 +180,7 @@ def open_pack_from_csv(state: AppState, pack_name: str, amount: int = 1) -> list
     return pulls
 
 def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> list[dict]:
-    """Open a mini pack: 1 guaranteed mini-exclusive, then 4 commons and a 90% rare / 10% super slot."""
+    """Open a mini pack: 1 guaranteed mini-exclusive, then 4 commons and a 70% rare / 30% super slot."""
     if isinstance(pack_names, str):
         pack_names = [pack_names]
 
@@ -207,7 +207,7 @@ def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> lis
 
     rare_pool = _normal_pack_pool(by_rarity.get("rare") or _fallback_pool(by_rarity, ["super", "ultra", "secret", "uncommon", "common"]))
     super_pool = _normal_pack_pool(by_rarity.get("super") or _fallback_pool(by_rarity, ["ultra", "secret", "rare", "uncommon", "common"]))
-    bonus_pool = super_pool if random.random() < 0.10 else rare_pool
+    bonus_pool = super_pool if random.random() < 0.30 else rare_pool
     pulls.append(_weighted_pick(bonus_pool))
 
     return pulls
