@@ -1,5 +1,6 @@
 # cogs/teams.py
 import asyncio
+import csv
 import math
 import os
 import random
@@ -50,6 +51,7 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
 
 TEAM_CHANNEL_NAME = "battleground-⚔️"
+TEAM_BATTLEGROUND_CALC_LOG_PATH = os.getenv("BATTLEGROUND_CALC_LOG_PATH", "logs/battleground_calculations.csv")
 TEAM_COLOR_EMOJIS = {
     "fire": "🟥",
     "water": "🟦",
@@ -733,6 +735,60 @@ class Teams(commands.Cog):
             return f"{winner_name} claimed a sector {color} for the {team_name} team!"
         return None
 
+    def _log_battleground_calculation(
+        self,
+        *,
+        guild_id: int,
+        set_id: int,
+        player_1: discord.Member,
+        player_2: discord.Member,
+        winner: discord.Member,
+        winner_team: str,
+        loser_team: str,
+        base_score: int,
+        skill_multiplier: float,
+        activity_multiplier: float,
+        segment_advantage_multiplier: float,
+        final_score: int,
+    ) -> None:
+        try:
+            path = os.path.abspath(TEAM_BATTLEGROUND_CALC_LOG_PATH)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            write_header = not os.path.exists(path) or os.path.getsize(path) == 0
+
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow([
+                        "guild_id",
+                        "set_id",
+                        "player_1",
+                        "player_2",
+                        "winner",
+                        "teams",
+                        "base_score",
+                        "skill_multiplier",
+                        "activity_multiplier",
+                        "segment_advantage_multiplier",
+                        "final_score",
+                    ])
+
+                writer.writerow([
+                    guild_id,
+                    set_id,
+                    f"{player_1.display_name} ({player_1.id})",
+                    f"{player_2.display_name} ({player_2.id})",
+                    f"{winner.display_name} ({winner.id})",
+                    f"{winner_team} vs {loser_team}",
+                    base_score,
+                    f"{skill_multiplier:.6f}",
+                    f"{activity_multiplier:.6f}",
+                    f"{segment_advantage_multiplier:.6f}",
+                    final_score,
+                ])
+        except Exception as exc:
+            print(f"[teams] failed to write battleground calculation log: {exc}")
+
     def _calculate_transfer_points(
         self,
         *,
@@ -802,6 +858,21 @@ class Teams(commands.Cog):
         )
 
         moved_points = min(transfer_points, loser_points)
+
+        self._log_battleground_calculation(
+            guild_id=guild.id,
+            set_id=int(set_id),
+            player_1=winner,
+            player_2=loser,
+            winner=winner,
+            winner_team=winner_team,
+            loser_team=transfer_loser_team,
+            base_score=DUEL_TEAM_TRANSFER_BASE,
+            skill_multiplier=skill_multiplier,
+            activity_multiplier=activity_multiplier,
+            segment_advantage_multiplier=segment_multiplier,
+            final_score=moved_points,
+        )
 
         if moved_points > 0:
             db_team_battleground_totals_update(
