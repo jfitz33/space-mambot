@@ -64,5 +64,99 @@
       "Blazing Genesis",
       "Storm of the Abyss"
     ]
+  },
+  {
+    "name": "Frostfire Tins Wave 3",
+    "promo_cards": [
+      {
+        "name": "Batteryman Charger",
+        "rarity": "Ultra",
+        "cardcode": "CT03-EN001",
+        "cardid": "83446909"
+      },
+      {
+        "name": "Carpiponica, Mystical Beast of the Forest",
+        "rarity": "Ultra",
+        "cardcode": "CT03-EN002",
+        "cardid": "85055821"
+      },
+      {
+        "name": "Tenyi Spirit - Nahata",
+        "rarity": "Ultra",
+        "cardcode": "CT03-EN003",
+        "cardid": "97036149"
+      },
+      {
+        "name": "Worm Xex",
+        "rarity": "Ultra",
+        "cardcode": "CT03-EN004",
+        "cardid": "11722335"
+      },
+      {
+        "name": "Guoglim, Spear of the Ghoti",
+        "rarity": "Ultra",
+        "cardcode": "CT03-EN005",
+        "cardid": "2405631"
+      },
+      {
+        "name": "Old Entity Hastorr",
+        "rarity": "Ultra",
+        "cardcode": "CT03-EN006",
+        "cardid": "70913714"
+      }
+    ],
+    "packs": [
+      "Ruins of Obsidian",
+      "Evolving Maelstrom"
+    ],
+    "packs_in_tin": 3,
+    "mambuck_cost": 40
+  },
+  {
+    "name": "Sandstorm Tins Wave 1",
+    "promo_cards": [
+      {
+        "name": "Dark Magician of Chaos",
+        "rarity": "Ultra",
+        "cardcode": "CT11-EN001",
+        "cardid": "40737112"
+      },
+      {
+        "name": "Genex Ally Birdman",
+        "rarity": "Ultra",
+        "cardcode": "CT11-EN002",
+        "cardid": "64034255"
+      },
+      {
+        "name": "Raiza the Storm Monarch",
+        "rarity": "Ultra",
+        "cardcode": "CT11-EN003",
+        "cardid": "73125233"
+      },
+      {
+        "name": "Shaddoll Falco",
+        "rarity": "Ultra",
+        "cardcode": "CT11-EN004",
+        "cardid": "37445295"
+      },
+      {
+        "name": "WAKE CUP! Mocha",
+        "rarity": "Ultra",
+        "cardcode": "CT11-EN005",
+        "cardid": "91818544"
+      },
+      {
+        "name": "Armades, Keeper of Boundaries",
+        "rarity": "Ultra",
+        "cardcode": "CT11-EN006",
+        "cardid": "88033975"
+      }
+    ],
+    "packs": [
+      "Ruins of Obsidian",
+      "Evolving Maelstrom"
+    ],
+    "packs_in_tin": 3,
+    "mambuck_cost": 40
   }
 ]

@@ -49,7 +49,10 @@ def load_tins_from_json(state, path: str | Path) -> Dict[str, dict]:
         {
             "name": "Tin Name",
             "promo_cards": [ { name/cardname, rarity, set?, code?, id? }, ... ],
-            "packs": ["Pack A", "Pack B"]
+            "packs": ["Pack A", "Pack B"],
+            "packs_in_tin": 5,
+            "mambuck_cost": 70,
+            "shard_cost": 800
         }
     """
 
@@ -75,7 +78,17 @@ def load_tins_from_json(state, path: str | Path) -> Dict[str, dict]:
             continue
         promo_cards = [_normalize_promo_card(name, pc) for pc in (entry.get("promo_cards") or []) if pc]
         packs = _normalize_pack_list(entry.get("packs") or [])
-        tins[name] = {"name": name, "promo_cards": promo_cards, "packs": packs}
+        packs_in_tin = int(entry.get("packs_in_tin", 5) or 5)
+        mambuck_cost = int(entry.get("mambuck_cost", 70) or 70)
+        shard_cost = int(entry.get("shard_cost", 800) or 800)
+        tins[name] = {
+            "name": name,
+            "promo_cards": promo_cards,
+            "packs": packs,
+            "packs_in_tin": max(1, packs_in_tin),
+            "mambuck_cost": max(0, mambuck_cost),
+            "shard_cost": max(0, shard_cost),
+        }
 
     state.tins_index = tins
     return tins

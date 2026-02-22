@@ -180,7 +180,7 @@ def open_pack_from_csv(state: AppState, pack_name: str, amount: int = 1) -> list
     return pulls
 
 def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> list[dict]:
-    """Open a mini pack: 1 guaranteed mini-exclusive, then 4 commons and a 70% rare / 30% super slot."""
+    """Open a mini pack: 2 mini-exclusives, 3 commons, and a 65% rare / 30% super / 5% ultra slot."""
     if isinstance(pack_names, str):
         pack_names = [pack_names]
 
@@ -200,14 +200,17 @@ def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> lis
     if not exclusive_pool:
         raise ValueError("No mini-pack-exclusive cards found for mini pack reward.")
     pulls.append(_weighted_pick(exclusive_pool))
+    pulls.append(_weighted_pick(exclusive_pool))
 
     common_pool = _normal_pack_pool(by_rarity.get("common") or _fallback_pool(by_rarity, ["uncommon", "rare", "super", "ultra", "secret"]))
-    for _ in range(4):
+    for _ in range(3):
         pulls.append(_weighted_pick(common_pool))
 
     rare_pool = _normal_pack_pool(by_rarity.get("rare") or _fallback_pool(by_rarity, ["super", "ultra", "secret", "uncommon", "common"]))
     super_pool = _normal_pack_pool(by_rarity.get("super") or _fallback_pool(by_rarity, ["ultra", "secret", "rare", "uncommon", "common"]))
-    bonus_pool = super_pool if random.random() < 0.30 else rare_pool
+    ultra_pool = _normal_pack_pool(by_rarity.get("ultra") or _fallback_pool(by_rarity, ["super", "secret", "rare", "uncommon", "common"]))
+    roll = random.random()
+    bonus_pool = ultra_pool if roll < 0.05 else (super_pool if roll < 0.35 else rare_pool)
     pulls.append(_weighted_pick(bonus_pool))
 
     return pulls

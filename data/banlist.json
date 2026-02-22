@@ -9,6 +9,7 @@
     "Recycling Batteries"
   ],
   "limited": [
+    "Block Golemn",
     "Cyclos the Circular Sprite",
     "Sangan",
     "Battlewasp - Ballista the Armageddon",
@@ -19,7 +20,6 @@
     "Crystron Ametrix",
     "Dark Hole",
     "Night Beam",
-    "Mirror Force",
     "Torrential Tribute"
   ],
   "semi_limited": [
@@ -27,15 +27,14 @@
     "Therion \"Bull\" Ain",
     "Battlewasp - Rapier the Onslaught",
     "Ichiki Sayori-Hime",
-    "Summoner Monk",
     "Gokipole",
     "Fairyant the Circular Sorcerer",
     "Ib The World Chalice Justiciar",
     "Foolish Burial",
     "Gold Sarcophagus",
-    "Oil",
     "Compulsory Evacuation Device",
     "Floodgate Trap Hole",
+    "Mirror Force",
     "Destructive Daruma Karma Cannon",
     "Trap Stun"
   ]

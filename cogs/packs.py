@@ -109,8 +109,15 @@ class TinSelectionView(discord.ui.View):
             if pname:
                 parts.append(f"Promo: **{pname}**")
         if self.selected_pack:
-            parts.append(f"Pack selection: **{self.selected_pack}** (x5)")
+            count = self._selected_packs_in_tin()
+            parts.append(f"Pack selection: **{self.selected_pack}** (x{count})")
         return "\n".join(parts)
+    
+    def _selected_packs_in_tin(self) -> int:
+        if not self.selected_tin:
+            return 5
+        tin_meta = (self.state.tins_index or {}).get(self.selected_tin, {})
+        return max(1, int(tin_meta.get("packs_in_tin", 5) or 5))
 
     async def _to_confirmation(self, interaction: discord.Interaction):
         if not (self.selected_tin and self.selected_promo and self.selected_pack):
@@ -121,10 +128,15 @@ class TinSelectionView(discord.ui.View):
         tin_name = self.selected_tin
 
         set_id = set_id_for_pack(pack_name)
+        tin_meta = (self.state.tins_index or {}).get(tin_name, {})
+        packs_in_tin = max(1, int(tin_meta.get("packs_in_tin", 5) or 5))
+        mambuck_cost = int(tin_meta.get("mambuck_cost", TIN_COST) or TIN_COST)
+        shard_cost = int(tin_meta.get("shard_cost", TIN_SHARD_COST) or TIN_SHARD_COST)
+
         payment_options = payment_options_for_set(
             set_id,
-            mambuck_cost=TIN_COST,
-            shard_cost=TIN_SHARD_COST,
+            mambuck_cost=mambuck_cost,
+            shard_cost=shard_cost,
         )
         payment_text = format_payment_options(payment_options)
 
@@ -138,14 +150,15 @@ class TinSelectionView(discord.ui.View):
                 tin_name=tin_name,
                 promo_card=self.selected_promo,
                 pack_choice=pack_name,
-                packs_in_tin=5,
+                packs_in_tin=packs_in_tin,
             ),
             payment_options=payment_options,
             display_description=f"**{tin_name}** containing **{promo_name}** and **{pack_name}**",
         )
 
         prompt = (
-            f"Purchase the **{tin_name}** containing {promo_name} and {pack_name}?\n"
+            f"Purchase the **{tin_name}** containing {promo_name} and {pack_name} "
+            f"(x{packs_in_tin} packs)?\n"
             f"Payment options:\n{payment_text}"
         )
 
