@@ -1,17 +1,19 @@
 {
   "default_limit": 3,
   "forbidden": [
+    "Queen Butterfly Danaus",
+    "The Cuckoo Commanded to Croon",
     "Code Hack",
     "Scrap Iron Scarecrow",
     "Autonomous Action Unit",
     "Adamancipator Laputite",
-    "Call of the Haunted",
-    "Recycling Batteries"
+    "Call of the Haunted"
   ],
   "limited": [
     "Block Golemn",
     "Cyclos the Circular Sprite",
     "Sangan",
+    "Spirit of the Fall Wind",
     "Battlewasp - Ballista the Armageddon",
     "Kuibelt the Blade Dragon",
     "Lightstorm Dragon",
@@ -20,10 +22,10 @@
     "Crystron Ametrix",
     "Dark Hole",
     "Night Beam",
+    "Recycling Batteries",
     "Torrential Tribute"
   ],
   "semi_limited": [
-    "Dragolithia Kunzite",
     "Therion \"Bull\" Ain",
     "Battlewasp - Rapier the Onslaught",
     "Ichiki Sayori-Hime",
@@ -35,7 +37,6 @@
     "Compulsory Evacuation Device",
     "Floodgate Trap Hole",
     "Mirror Force",
-    "Destructive Daruma Karma Cannon",
-    "Trap Stun"
+    "Destructive Daruma Karma Cannon"
   ]
 }
