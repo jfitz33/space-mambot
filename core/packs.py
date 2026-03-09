@@ -196,21 +196,38 @@ def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> lis
 
     pulls: list[dict] = []
 
-    exclusive_pool = [card for cards in by_rarity.values() for card in cards if card.get("mini_exclusive", False)]
+    # Exclusive slot: prefer mini-exclusive commons from selected packs, then any mini-exclusive common,
+    # then any mini-exclusive card as a last resort.
+    common_cards = by_rarity.get("common") or []
+    exclusive_pool = [card for card in common_cards if card.get("mini_exclusive", False)]
+    if not exclusive_pool:
+        all_cards = [card for pack in (state.packs_index or {}).values() for cards in pack.get("by_rarity", {}).values() for card in cards]
+        exclusive_pool = [
+            card
+            for card in all_cards
+            if card.get("mini_exclusive", False)
+            and str(card.get("rarity") or "").strip().lower() == "common"
+        ]
+    if not exclusive_pool:
+        all_cards = [card for pack in (state.packs_index or {}).values() for cards in pack.get("by_rarity", {}).values() for card in cards]
+        exclusive_pool = [card for card in all_cards if card.get("mini_exclusive", False)]
     if not exclusive_pool:
         raise ValueError("No mini-pack-exclusive cards found for mini pack reward.")
     pulls.append(_weighted_pick(exclusive_pool))
-    pulls.append(_weighted_pick(exclusive_pool))
 
-    common_pool = _normal_pack_pool(by_rarity.get("common") or _fallback_pool(by_rarity, ["uncommon", "rare", "super", "ultra", "secret"]))
+    # Three regular commons from selected active-set pack pool.
+    regular_common_pool = [card for card in common_cards if not card.get("mini_exclusive", False)]
+    if not regular_common_pool:
+        regular_common_pool = _normal_pack_pool(
+            by_rarity.get("common") or _fallback_pool(by_rarity, ["uncommon", "rare", "super", "secret", "ultra"])
+        )
     for _ in range(3):
-        pulls.append(_weighted_pick(common_pool))
+        pulls.append(_weighted_pick(regular_common_pool))
 
-    rare_pool = _normal_pack_pool(by_rarity.get("rare") or _fallback_pool(by_rarity, ["super", "ultra", "secret", "uncommon", "common"]))
-    super_pool = _normal_pack_pool(by_rarity.get("super") or _fallback_pool(by_rarity, ["ultra", "secret", "rare", "uncommon", "common"]))
-    ultra_pool = _normal_pack_pool(by_rarity.get("ultra") or _fallback_pool(by_rarity, ["super", "secret", "rare", "uncommon", "common"]))
-    roll = random.random()
-    bonus_pool = ultra_pool if roll < 0.05 else (super_pool if roll < 0.35 else rare_pool)
+    # Final slot odds: 90% rare, 10% super, 0% ultra.
+    rare_pool = _normal_pack_pool(by_rarity.get("rare") or _fallback_pool(by_rarity, ["uncommon", "common", "super", "secret"]))
+    super_pool = _normal_pack_pool(by_rarity.get("super") or _fallback_pool(by_rarity, ["rare", "uncommon", "common", "secret"]))
+    bonus_pool = super_pool if random.random() < 0.10 else rare_pool
     pulls.append(_weighted_pick(bonus_pool))
 
     return pulls

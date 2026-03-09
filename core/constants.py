@@ -14,7 +14,7 @@ TIN_SHARD_COST=int(os.getenv("TIN_SHARD_COST", "800"))
 FROSTFIRE_BUNDLE_NAME="Frostfire Bundle"
 SANDSTORM_BUNDLE_NAME="Sandstorm Bundle"
 TEMPORAL_BUNDLE_NAME="Temporal Bundle"
-SALE_DISCOUNT_PCT=10
+SALE_DISCOUNT_PCT=15
 def _parse_active_set_env() -> int:
     # Ensure we load the .env file even if this module is imported before bot.py
     # (or another entry point) has a chance to call load_dotenv. This keeps
@@ -57,7 +57,7 @@ DUEL_QUEUE_MAMBUCKS_LOSS = int(os.getenv("DUEL_QUEUE_MAMBUCKS_LOSS", "15"))
 # Daily sale layout: (rarity, number of entries)
 SALE_LAYOUT = [
     ("ultra", 4),
-    ("secret", 1),
+    ("secret", 2),
 ]
 
 RARITY_ORDER = ["common", "rare", "super", "ultra", "secret", "starlight"]
@@ -76,7 +76,7 @@ GAMBA_DEFAULT_SHARD_SET_ID = 1
 GAMBA_PRIZES = [
     {
         "key": "cards_super_rare_bundle",
-        "weight": 0.25,
+        "weight": 0.45,
         "prize_type": "cards",
         "rarity": "SUPER RARE",
         "amount": 2,
@@ -84,7 +84,7 @@ GAMBA_PRIZES = [
     },
     {
         "key": "card_ultra_rare",
-        "weight": 0.20,
+        "weight": 0.25,
         "prize_type": "card",
         "rarity": "ULTRA RARE",
         "description": ":rar_ultra: Ultra",
@@ -104,29 +104,29 @@ GAMBA_PRIZES = [
         "rarity": "SECRET RARE",
         "description": ":rar_secret: Secret",
     },
-    {
-        "key": "shards_100_frostfire_sandstorm",
-        "weight": 0.25,
-        "prize_type": "shards",
-        "shard_items": [
-            {"amount": 100, "shard_type": "frostfire"},
-            {"amount": 100, "shard_type": "sandstorm"},
-        ],
-        "description": ":rar_frostfire:Shards x100 + :rar_sandstorm:Shards x100",
-    },
-    {
-        "key": "shards_500_frostfire_sandstorm",
-        "weight": 0.05,
-        "prize_type": "shards",
-        "shard_items": [
-            {"amount": 500, "shard_type": "frostfire"},
-            {"amount": 500, "shard_type": "sandstorm"},
-        ],
-        "description": ":rar_frostfire:Shards x500 + :rar_sandstorm:Shards x500",
-    },
+    #{
+    #    "key": "shards_100_frostfire_sandstorm",
+    #    "weight": 0.25,
+    #    "prize_type": "shards",
+    #    "shard_items": [
+    #        {"amount": 100, "shard_type": "frostfire"},
+    #        {"amount": 100, "shard_type": "sandstorm"},
+    #    ],
+    #    "description": ":rar_frostfire:Shards x100 + :rar_sandstorm:Shards x100",
+    #},
+    #{
+    #    "key": "shards_500_frostfire_sandstorm",
+    #    "weight": 0.05,
+    #    "prize_type": "shards",
+    #    "shard_items": [
+    #        {"amount": 500, "shard_type": "frostfire"},
+    #        {"amount": 500, "shard_type": "sandstorm"},
+    #    ],
+    #    "description": ":rar_frostfire:Shards x500 + :rar_sandstorm:Shards x500",
+    #},
     {
         "key": "mambucks_20",
-        "weight": 0.15,
+        "weight": 0.20,
         "prize_type": "mambucks",
         "amount": 20,
         "description": "Mambucks x20",
@@ -154,13 +154,13 @@ BUNDLES = (
         "shard_cost": BUNDLE_BOX_SHARD_COST,
         "set_id": 1,
     },
-    #{
-    #    "id": "sandstorm",
-    #    "name": SANDSTORM_BUNDLE_NAME,
-    #    "cost": BUNDLE_BOX_COST,
-    #    "shard_cost": BUNDLE_BOX_SHARD_COST,
-    #    "set_id": 2,
-    #},
+    {
+        "id": "sandstorm",
+        "name": SANDSTORM_BUNDLE_NAME,
+        "cost": BUNDLE_BOX_COST,
+        "shard_cost": BUNDLE_BOX_SHARD_COST,
+        "set_id": 2,
+    },
     #{
     #    "id": "temporal",
     #    "name": TEMPORAL_BUNDLE_NAME,

@@ -157,7 +157,33 @@ class Sales(commands.Cog):
             picks: List[Dict[str, Any]] = []
             # If we have two packs for the active set and multiple slots, try to split evenly.
             pack_list = sorted(list(allowed_pack_names))
-            if len(pack_list) == 2 and count > 1:
+            if rarity == "secret" and len(pack_list) == 2 and count >= 2:
+                used_secret_keys = set()
+
+                def _secret_key(choice: Dict[str, Any]) -> tuple:
+                    card = choice.get("card") or {}
+                    return (
+                        str(card.get("id") or card.get("cardid") or "").strip().lower(),
+                        str(card.get("code") or card.get("cardcode") or "").strip().lower(),
+                        str(card.get("name") or card.get("cardname") or "").strip().lower(),
+                    )
+
+                for pack_name in pack_list:
+                    pack_pool = [c for c in candidates if c.get("pack") == pack_name]
+                    if not pack_pool:
+                        continue
+
+                    unique_pool = [c for c in pack_pool if _secret_key(c) not in used_secret_keys]
+                    source_pool = unique_pool or pack_pool
+                    choice = random.choice(source_pool)
+                    picks.append(choice)
+                    used_secret_keys.add(_secret_key(choice))
+
+                remaining_pool = [c for c in candidates if c not in picks]
+                remaining_slots = min(count, len(candidates)) - len(picks)
+                if remaining_slots > 0 and remaining_pool:
+                    picks.extend(random.sample(remaining_pool, k=min(remaining_slots, len(remaining_pool))))
+            elif len(pack_list) == 2 and count > 1:
                 per_pack_counts = [count // 2, count // 2]
                 for i in range(count - sum(per_pack_counts)):
                     per_pack_counts[i % 2] += 1

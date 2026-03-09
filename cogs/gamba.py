@@ -15,9 +15,10 @@ from core.constants import (
     CURRENT_ACTIVE_SET,
     GAMBA_DEFAULT_SHARD_SET_ID,
     GAMBA_PRIZES,
+    pack_names_for_set,
     set_id_for_pack,
 )
-from core.currency import shards_label
+from core.currency import shards_label, shard_set_name
 from core.images import mambuck_badge
 from core.db import (
     db_add_cards,
@@ -30,6 +31,17 @@ from core.db import (
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 GUILD = discord.Object(id=GUILD_ID) if GUILD_ID else None
+GAMBA_BONUS_MINI_PACKS_ENABLED = os.getenv("GAMBA_BONUS_MINI_PACKS_ENABLED", "0") == "1"
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return max(minimum, default)
+
+
+GAMBA_BONUS_MINI_PACKS_AMOUNT = _env_int("GAMBA_BONUS_MINI_PACKS_AMOUNT", 1, minimum=0)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +299,40 @@ def _shard_badge_for_set(state, set_id: int) -> str:
     )
     return _rarity_badge_tokens(state).get(set_key, f":rar_{set_key}:")
 
+def _mini_pack_name(set_id: int) -> str:
+    shard_name = shard_set_name(set_id)
+    suffix = " Shards"
+    base = shard_name[: -len(suffix)] if shard_name.endswith(suffix) else shard_name
+    return f"{base} Mini Pack"
+
+
+async def _award_bonus_mini_packs(state, user_id: int) -> Optional[str]:
+    if not GAMBA_BONUS_MINI_PACKS_ENABLED or GAMBA_BONUS_MINI_PACKS_AMOUNT <= 0:
+        return None
+    if not hasattr(state, "shop") or not hasattr(state.shop, "grant_mini_pack"):
+        print("[gamba] mini-pack bonus skipped: reward helper missing")
+        return None
+
+    pack_candidates = pack_names_for_set(state, CURRENT_ACTIVE_SET)
+    if not pack_candidates:
+        pack_candidates = sorted((state.packs_index or {}).keys())
+    if not pack_candidates:
+        print("[gamba] mini-pack bonus skipped: no eligible packs")
+        return None
+
+    pack_label = _mini_pack_name(CURRENT_ACTIVE_SET)
+    try:
+        status = await state.shop.grant_mini_pack(
+            user_id,
+            pack_candidates,
+            GAMBA_BONUS_MINI_PACKS_AMOUNT,
+            display_name=pack_label,
+        )
+        return status
+    except Exception as exc:
+        print(f"[gamba] failed to grant mini-pack bonus reward: {exc}")
+        return None
+
 async def _resolve_and_award_prize(state, user_id: int, prize: GambaPrize) -> str:
     if prize.prize_type in {"card", "cards"} and prize.rarity:
         quantity = max(1, int(prize.amount or 1))
@@ -376,6 +422,7 @@ class GambaConfirmView(discord.ui.View):
 
         prize = self._choose_prize()
         prize_text = await _resolve_and_award_prize(self.state, self.requester_id, prize)
+        mini_pack_bonus_status = await _award_bonus_mini_packs(self.state, self.requester_id)
 
         for child in self.children:
             child.disabled = True
@@ -384,7 +431,10 @@ class GambaConfirmView(discord.ui.View):
         except Exception:
             pass
 
-        await interaction.followup.send(f"Congrats! {interaction.user.mention} won {prize_text}!")
+        msg = f"Congrats! {interaction.user.mention} won {prize_text}!"
+        if mini_pack_bonus_status:
+            msg += f"\n🎁 Bonus mini pack reward: {mini_pack_bonus_status}"
+        await interaction.followup.send(msg)
         self.stop()
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.danger)
@@ -463,7 +513,7 @@ class Gamba(commands.Cog):
     def _gamba_embed(self, chips: int) -> tuple[discord.Embed, list[discord.File]]:
         description = (
             "Welcome to snipe hunter's slots! I run a fair casino and like to let my clients know what they're playing for. "
-            "Spin for a chance at a random card or currency. Here's what I got on my wheel today:\n\n"
+            "Spin for a chance at a random card or currency. I'll even throw in some mini packs for playing. Here's what I got on my wheel today:\n\n"
             + "\n".join(self._prize_lines(self.bot.state))
             + "\n\n**Spend 1 gamba chip to spin the slots?**"
         )

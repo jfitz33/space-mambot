@@ -26,17 +26,11 @@ BOOP_LINES = [
     "Fear is the mind-killer.",
     "“I witnessed the primordial fire triumph over the depths of the sea in a war long past… wait, what was I saying?",
     "I bet knightblader can’t guess what I’m gonna say next :)",
-    "Wind team has nothing on the desert sands, if you ask me 😏",
-    "Earth team has nothing on the windswept peaks, if you ask me 😏",
-    "Oh no, a sandstorm! I wonder who’s duel caused that :o",
-    "“I hope there’s an oasis somewhere close by, this battleground drying my scales out :(",
-    "Remember, don't boop a cactus! I tried that once 🤕",
-    "These desert sands… much like the sea beds of the past and the sands of.. Huh.",
-    "Oh, I love that movie! Gone with the, uh, what was it again?",
-    "Skies are clear today folks soooooo that should lead to smooth flying. If you could uhhhhhhh just put your tray tables up, and uhhhhhh sit in the full upright position... we'll be airborne soon. Thank you as always for flying Space Mambo",
-    "I tried to boop a tornado and it was mean :(",
+    "!esrever ni kcuts got i pleH",
+    "Beep boop",
+    "I swim in the ocean of the 4th dimension. Yesterday? Tomorrow? It is no different to me than left or right, up or down.",
+    "I made the desert sands into a nice little hourglass :3",
     "Still waiting for Dmitri’s topping list",
-    "I swam through the desert as a bot with a name. It feels bad to be out of the rain 🎶"
 ]
 
 def boop_image_path() -> Path:
