@@ -227,7 +227,7 @@ def open_mini_pack_from_csv(state: AppState, pack_names: str | list[str]) -> lis
     # Final slot odds: 90% rare, 10% super, 0% ultra.
     rare_pool = _normal_pack_pool(by_rarity.get("rare") or _fallback_pool(by_rarity, ["uncommon", "common", "super", "secret"]))
     super_pool = _normal_pack_pool(by_rarity.get("super") or _fallback_pool(by_rarity, ["rare", "uncommon", "common", "secret"]))
-    bonus_pool = super_pool if random.random() < 0.10 else rare_pool
+    bonus_pool = super_pool if random.random() < 0.30 else rare_pool
     pulls.append(_weighted_pick(bonus_pool))
 
     return pulls
