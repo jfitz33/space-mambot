@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, Iterable
 
 from core.cards_shop import canonicalize_rarity
+from core.constants import TIN_COST, TIN_SHARD_COST
 
 
 def _normalize_promo_card(tin_name: str, raw: dict) -> dict:
@@ -52,7 +53,7 @@ def load_tins_from_json(state, path: str | Path) -> Dict[str, dict]:
             "packs": ["Pack A", "Pack B"],
             "packs_in_tin": 5,
             "mambuck_cost": 70,
-            "shard_cost": 800
+            "shard_cost": 400
         }
     """
 
@@ -79,8 +80,8 @@ def load_tins_from_json(state, path: str | Path) -> Dict[str, dict]:
         promo_cards = [_normalize_promo_card(name, pc) for pc in (entry.get("promo_cards") or []) if pc]
         packs = _normalize_pack_list(entry.get("packs") or [])
         packs_in_tin = int(entry.get("packs_in_tin", 5) or 5)
-        mambuck_cost = int(entry.get("mambuck_cost", 70) or 70)
-        shard_cost = int(entry.get("shard_cost", 800) or 800)
+        mambuck_cost = int(entry.get("mambuck_cost", TIN_COST) or TIN_COST)
+        shard_cost = int(entry.get("shard_cost", TIN_SHARD_COST) or TIN_SHARD_COST)
         tins[name] = {
             "name": name,
             "promo_cards": promo_cards,
