@@ -697,7 +697,7 @@ class Teams(commands.Cog):
         winner_games = team_games.get(winner_team, 0)
         loser_games = team_games.get(loser_team, 0)
         raw_multiplier = (loser_games + 20) / (winner_games + 20)
-        return max(0.8, min(1.2, raw_multiplier))
+        return max(0.9, min(1.1, raw_multiplier))
 
     @staticmethod
     def _segments_owned(points: int) -> int:
