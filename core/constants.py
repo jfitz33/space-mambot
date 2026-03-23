@@ -76,7 +76,7 @@ GAMBA_DEFAULT_SHARD_SET_ID = 1
 GAMBA_PRIZES = [
     {
         "key": "cards_super_rare_bundle",
-        "weight": 0.45,
+        "weight": 0.25,
         "prize_type": "cards",
         "rarity": "SUPER RARE",
         "amount": 2,
@@ -84,7 +84,7 @@ GAMBA_PRIZES = [
     },
     {
         "key": "card_ultra_rare",
-        "weight": 0.25,
+        "weight": 0.15,
         "prize_type": "card",
         "rarity": "ULTRA RARE",
         "description": ":rar_ultra: Ultra",
@@ -104,26 +104,28 @@ GAMBA_PRIZES = [
         "rarity": "SECRET RARE",
         "description": ":rar_secret: Secret",
     },
-    #{
-    #    "key": "shards_100_frostfire_sandstorm",
-    #    "weight": 0.25,
-    #    "prize_type": "shards",
-    #    "shard_items": [
-    #        {"amount": 100, "shard_type": "frostfire"},
-    #        {"amount": 100, "shard_type": "sandstorm"},
-    #    ],
-    #    "description": ":rar_frostfire:Shards x100 + :rar_sandstorm:Shards x100",
-    #},
-    #{
-    #    "key": "shards_500_frostfire_sandstorm",
-    #    "weight": 0.05,
-    #    "prize_type": "shards",
-    #    "shard_items": [
-    #        {"amount": 500, "shard_type": "frostfire"},
-    #        {"amount": 500, "shard_type": "sandstorm"},
-    #    ],
-    #    "description": ":rar_frostfire:Shards x500 + :rar_sandstorm:Shards x500",
-    #},
+    {
+        "key": "shards_100_frostfire_sandstorm_temporal",
+        "weight": 0.25,
+        "prize_type": "shards",
+        "shard_items": [
+            {"amount": 100, "shard_type": "frostfire"},
+            {"amount": 100, "shard_type": "sandstorm"},
+            {"amount": 100, "shard_type": "temporal"},
+        ],
+        "description": ":rar_frostfire:Shards x100 + :rar_sandstorm:Shards x100 + :rar_temporal:Shards x100",
+    },
+    {
+        "key": "shards_500_frostfire_sandstorm_temporal",
+        "weight": 0.05,
+        "prize_type": "shards",
+        "shard_items": [
+            {"amount": 500, "shard_type": "frostfire"},
+            {"amount": 500, "shard_type": "sandstorm"},
+            {"amount": 500, "shard_type": "temporal"},
+        ],
+        "description": ":rar_frostfire:Shards x500 + :rar_sandstorm:Shards x500 + :rar_sandstorm:Shards x500",
+    },
     {
         "key": "mambucks_20",
         "weight": 0.20,

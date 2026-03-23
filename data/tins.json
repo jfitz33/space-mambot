@@ -158,5 +158,88 @@
     ],
     "packs_in_tin": 3,
     "mambuck_cost": 40
+  },
+  {
+    "name": "Temporal Tins Wave 1",
+    "promo_cards": [
+      {
+        "name": "Caius the Shadow Monarch",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN001",
+        "cardid": "9748752"
+      },
+      {
+        "name": "Condemned Witch",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN002",
+        "cardid": "44656450"
+      },
+      {
+        "name": "Glow-Up Bulb",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN003",
+        "cardid": "67441435"
+      },
+      {
+        "name": "Jet Synchron",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN004",
+        "cardid": "9742784"
+      },
+      {
+        "name": "Morgana the Witch of Eyes",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN005",
+        "cardid": "29439831"
+      },
+      {
+        "name": "Paces, Light of the Ghoti",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN006",
+        "cardid": "46037983"
+      },
+      {
+        "name": "Super Quantum Blue Layer",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN007",
+        "cardid": "12369277"
+      },
+      {
+        "name": "Tempest, Dragon Ruler of Storms",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN008",
+        "cardid": "89399912"
+      },
+      {
+        "name": "Tindangle Jhrelth",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN009",
+        "cardid": "24158464"
+      },
+      {
+        "name": "Virtual World Hime - Nyannyan",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN010",
+        "cardid": "8736823"
+      },
+      {
+        "name": "Formula Synchron",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN011",
+        "cardid": "50091196"
+      },
+      {
+        "name": "T.G. Star Guardian",
+        "rarity": "Ultra",
+        "cardcode": "CT21-EN012",
+        "cardid": "99937842"
+      }
+    ],
+    "packs": [
+      "Power of the Primordial",
+      "Cyberstorm Crisis"
+    ],
+    "packs_in_tin": 3,
+    "mambuck_cost": 40
   }
 ]
