@@ -2,6 +2,7 @@
   "default_limit": 3,
   "forbidden": [
     "Animadorned Archosaur",
+    "Cyclos the Circular Sprite",
     "Queen Butterfly Danaus",
     "The Cuckoo Commanded to Croon",
     "Code Hack",
@@ -12,9 +13,7 @@
   ],
   "limited": [
     "Batteryman Industrial Strength",
-    "Cyclos the Circular Sprite",
     "Sangan",
-    "Spirit of the Fall Wind",
     "Souleating Oviraptor",
     "Witch of the Black Forest",
     "Battlewasp - Ballista the Armageddon",
@@ -28,7 +27,6 @@
     "Wind Pegasus @Ignister",
     "Dark Hole",
     "Night Beam",
-    "Recycling Batteries",
     "Bottomless Trap Hole",
     "Floodgate Trap Hole",
     "Torrential Tribute"
@@ -37,8 +35,6 @@
     "Block Golem",
     "Ichiki Sayori-Hime",
     "Mathematician",
-    "Prototype Psychic Blaster",
-    "Swordsman of Revealing Light",
     "Tearlament Scheiren",
     "Therion \"Bull\" Ain",
     "Crystron Ametrix",
@@ -47,6 +43,7 @@
     "Fossil Dig",
     "Gold Sarcophagus",
     "Pot of Prosperity",
+    "Ragnaraika Bloom",
     "Bottomless Trap Hole",
     "Destructive Daruma Karma Cannon",
     "Floodgate Trap Hole",
