@@ -3,7 +3,6 @@
   "forbidden": [
     "Animadorned Archosaur",
     "Cyclos the Circular Sprite",
-    "Queen Butterfly Danaus",
     "The Cuckoo Commanded to Croon",
     "Code Hack",
     "Autonomous Action Unit",
@@ -13,6 +12,7 @@
   ],
   "limited": [
     "Batteryman Industrial Strength",
+    "Queen Butterfly Danaus",
     "Sangan",
     "Souleating Oviraptor",
     "Witch of the Black Forest",
@@ -27,8 +27,6 @@
     "Wind Pegasus @Ignister",
     "Dark Hole",
     "Night Beam",
-    "Bottomless Trap Hole",
-    "Floodgate Trap Hole",
     "Torrential Tribute"
   ],
   "semi_limited": [
