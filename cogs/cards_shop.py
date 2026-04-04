@@ -495,14 +495,14 @@ class CardsShop(commands.Cog):
     @app_commands.guilds(GUILD)
     @app_commands.describe(
         card="Choose the exact printing",
-        amount="How many copies (max 3)",
+        amount="How many copies",
     )
     @app_commands.autocomplete(card=ac_craft)
     async def craft(
         self,
         interaction: discord.Interaction,
         card: str,
-        amount: app_commands.Range[int, 1, 3] = 1,
+        amount: app_commands.Range[int, 1, 9999] = 1,
     ):
         c = find_card_by_print_key(self.state, card)
         if not c:
