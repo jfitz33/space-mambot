@@ -182,6 +182,10 @@ def ensure_shop_index(state) -> None:
         promo_container = {name: {"cards": meta.get("promo_cards") or []} for name, meta in tins_index.items()}
         _ingest_container(promo_container, "tins_index")
 
+    admin_grant_index = getattr(state, "admin_grant_cards_index", None)
+    if isinstance(admin_grant_index, dict):
+        _ingest_container(admin_grant_index, "admin_grant_cards_index")
+
 def shop_load_csvs_into_index(state, glob_pattern: str) -> int:
     """
     Optional: load CSV files (starters, extra sets) into the shop indexes.

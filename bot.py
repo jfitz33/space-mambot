@@ -27,6 +27,7 @@ from core.images import ensure_rarity_emojis
 from core.art_import import download_cardpool_art_from_state
 from core.quests.schema import db_init_quests, db_seed_quests_from_json
 from core.tins import load_tins_from_json
+from core.admin_grant_cards import load_admin_grant_cards_from_csv
 from core.pack_rewards import PackRewardHelper
 from core.constants import TEAM_ROLE_NAMES, TEAM_SETS
 
@@ -71,6 +72,7 @@ tree = bot.tree
 bot.state = AppState(db_path="collections.sqlite3", packs_dir="packs_csv")
 bot.state.banlist_path = str((BASE_DIR / "data" / "banlist.json").resolve())
 bot.state.tins_path = str((BASE_DIR / "data" / "tins.json").resolve())
+bot.state.admin_grant_cards_path = str((BASE_DIR / "data" / "admin_grant_cards.csv").resolve())
 
 STARTER_ROLES = TEAM_ROLE_NAMES
 TEAM_DISPLAY_ROLE_NAMES = {
@@ -213,6 +215,7 @@ async def on_ready():
     bot.state.shop = PackRewardHelper(bot.state, bot)
     load_starters_from_csv(bot.state)
     load_tins_from_json(bot.state, bot.state.tins_path)
+    load_admin_grant_cards_from_csv(bot.state, bot.state.admin_grant_cards_path)
     db_init_wallet(bot.state)
     db_init_wheel_tokens(bot.state)
     await db_wallet_migrate_to_mambucks_and_shards_per_set(bot.state)
